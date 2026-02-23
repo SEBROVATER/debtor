@@ -1,50 +1,152 @@
-# [PROJECT_NAME] Constitution
-<!-- Example: Spec Constitution, TaskFlow Constitution, etc. -->
+<!--
+=============================================================================
+SYNC IMPACT REPORT
+=============================================================================
+Version change: 2.2.0 → 2.3.0
+  Bump rationale: MINOR — New principle added: VI. Test-Driven Development.
+
+Modified principles:
+  - (none)
+
+Added sections/principles:
+  - VI. Test-Driven Development (TDD as primary paradigm)
+
+Removed principles:
+  - (none)
+
+Templates checked:
+  ✅ .specify/templates/plan-template.md  — Constitution Check gate is generic;
+     aligns with TDD principle.
+  ✅ .specify/templates/spec-template.md  — Technology-agnostic; no changes.
+  ⚠ .specify/templates/tasks-template.md — Test tasks are currently labelled
+     OPTIONAL. With TDD now mandatory, the agent generating tasks.md MUST
+     include test tasks by default. Template wording updated to reflect this.
+  ✅ .specify/templates/constitution-template.md — Source template; unchanged.
+
+Deferred TODOs:
+  - (none)
+=============================================================================
+-->
+
+# debtor Constitution
 
 ## Core Principles
 
-### [PRINCIPLE_1_NAME]
-<!-- Example: I. Library-First -->
-[PRINCIPLE_1_DESCRIPTION]
-<!-- Example: Every feature starts as a standalone library; Libraries must be self-contained, independently testable, documented; Clear purpose required - no organizational-only libraries -->
+### I. JavaScript-Free Frontend
 
-### [PRINCIPLE_2_NAME]
-<!-- Example: II. CLI Interface -->
-[PRINCIPLE_2_DESCRIPTION]
-<!-- Example: Every library exposes functionality via CLI; Text in/out protocol: stdin/args → stdout, errors → stderr; Support JSON + human-readable formats -->
+The frontend MUST be implemented without JavaScript except for the single
+permitted library: [htmx](https://htmx.org). No JavaScript frameworks,
+bundlers, build steps, or custom JS scripts are allowed. All interactivity
+MUST be expressed through hypermedia (HTMX attributes, HTML forms, server
+responses). Browser-native behaviour is preferred over any programmatic
+workaround.
 
-### [PRINCIPLE_3_NAME]
-<!-- Example: III. Test-First (NON-NEGOTIABLE) -->
-[PRINCIPLE_3_DESCRIPTION]
-<!-- Example: TDD mandatory: Tests written → User approved → Tests fail → Then implement; Red-Green-Refactor cycle strictly enforced -->
+**Rationale**: A JavaScript-free approach keeps the frontend auditable,
+dependency-free, and aligned with the project's personal/local-use nature.
+HTMX is the single pragmatic exception that enables modern UX without a JS
+ecosystem.
 
-### [PRINCIPLE_4_NAME]
-<!-- Example: IV. Integration Testing -->
-[PRINCIPLE_4_DESCRIPTION]
-<!-- Example: Focus areas requiring integration tests: New library contract tests, Contract changes, Inter-service communication, Shared schemas -->
+### II. Rust Backend (acton-htmx)
 
-### [PRINCIPLE_5_NAME]
-<!-- Example: V. Observability, VI. Versioning & Breaking Changes, VII. Simplicity -->
-[PRINCIPLE_5_DESCRIPTION]
-<!-- Example: Text I/O ensures debuggability; Structured logging required; Or: MAJOR.MINOR.BUILD format; Or: Start simple, YAGNI principles -->
+The backend MUST be implemented in Rust using the [acton-htmx](https://github.com/Govcraft/acton-dx)
+(acton-dx) framework. Development MUST follow the [official acton-htmx guides](https://github.com/Govcraft/acton-dx/tree/main/docs/guides)
+to ensure consistency with hypermedia-first patterns. Code MUST follow idiomatic
+Rust patterns. Use of `unsafe` blocks MUST be documented with a clear
+justification comment. External crates MAY be used freely provided they are
+reliable, actively maintained, and have a meaningful user base.
 
-## [SECTION_2_NAME]
-<!-- Example: Additional Constraints, Security Requirements, Performance Standards, etc. -->
+**Rationale**: `acton-htmx` is an opinionated framework designed specifically
+for server-rendered hypermedia applications, perfectly aligning with the
+project's JS-free and Rust-based goals.
 
-[SECTION_2_CONTENT]
-<!-- Example: Technology stack requirements, compliance standards, deployment policies, etc. -->
+### III. Vanilla CSS & Semantic HTML
 
-## [SECTION_3_NAME]
-<!-- Example: Development Workflow, Review Process, Quality Gates, etc. -->
+Styling MUST use modern, vanilla CSS only. CSS frameworks (Bootstrap, Tailwind,
+Bulma, etc.) are NOT permitted. HTML MUST be semantic — use the correct
+element for the correct purpose (`<nav>`, `<main>`, `<section>`, `<article>`,
+`<time>`, etc.). CSS custom properties MUST be used for design tokens (colours,
+spacing, typography). Layouts MUST use CSS Grid or Flexbox.
 
-[SECTION_3_CONTENT]
-<!-- Example: Code review requirements, testing gates, deployment approval process, etc. -->
+**Rationale**: Keeping CSS framework-free preserves full control over the
+visual output and avoids bloated, opaque stylesheets. Semantic HTML improves
+accessibility and maintainability.
+
+### IV. Single-User Secured Access
+
+Authentication MUST be implemented. The system MUST support exactly one user
+account (the owner). There MUST be no self-registration flow. All
+expense-related routes MUST be behind authentication. Credentials MUST be
+stored securely (hashed with a modern algorithm, e.g., Argon2). Sessions
+MUST be managed server-side with secure, HTTP-only cookies.
+
+**Rationale**: Although this is a personal project, expenses are private
+financial data. Proper auth prevents accidental or malicious exposure if the
+service is reachable on a network.
+
+### V. Simplicity & Personal-First
+
+This project is for personal use by a single owner. MUST NOT introduce
+premature abstractions, over-engineered patterns, or unnecessary complexity.
+Apply YAGNI: build what is needed now. Complexity additions MUST be justified
+against a concrete current need.
+
+**Rationale**: A personal expense-sharing tool does not need enterprise
+patterns. Keeping it simple makes it easier to maintain, extend, and enjoy
+working on.
+
+### VI. Test-Driven Development (NON-NEGOTIABLE)
+
+TDD is the primary development paradigm. Tests MUST be written before
+implementation code. The Red-Green-Refactor cycle MUST be followed strictly:
+
+1. **Red**: Write a failing test that defines the desired behaviour.
+2. **Green**: Write the minimal implementation to make the test pass.
+3. **Refactor**: Clean up code while keeping all tests passing.
+
+No feature MUST be considered complete unless it has corresponding tests that
+were written first. Skipping the Red phase (writing tests after implementation)
+is NOT permitted.
+
+**Rationale**: TDD forces a clear specification of behaviour before coding
+begins, reduces defects, and keeps the codebase safe to refactor — especially
+valuable for a long-lived personal project maintained by a single developer.
+
+## Technology Stack
+
+| Layer       | Technology                                      |
+|-------------|-------------------------------------------------|
+| Framework   | acton-htmx (acton-dx)                           |
+| Backend     | Rust                                            |
+| Frontend    | HTMX + server-rendered HTML                    |
+| Styling     | Vanilla CSS (no frameworks)                     |
+| Database    | SQLite (primary)                                |
+| Data access | Sea-ORM (primary ORM)                           |
+| Auth        | Single-user; server-side sessions; secure hash  |
+| Testing     | TDD (mandatory); Rust built-in test framework  |
+| Deployment  | Docker Compose (allowed; decision per feature)  |
+
+Technology additions SHOULD be documented in the relevant feature plan and
+validated against the Simplicity principle before adoption.
 
 ## Governance
-<!-- Example: Constitution supersedes all other practices; Amendments require documentation, approval, migration plan -->
 
-[GOVERNANCE_RULES]
-<!-- Example: All PRs/reviews must verify compliance; Complexity must be justified; Use [GUIDANCE_FILE] for runtime development guidance -->
+This constitution supersedes all other development practices for the debtor
+project. Amendments MUST be documented as a new version in this file with an
+updated Sync Impact Report.
 
-**Version**: [CONSTITUTION_VERSION] | **Ratified**: [RATIFICATION_DATE] | **Last Amended**: [LAST_AMENDED_DATE]
-<!-- Example: Version: 2.1.1 | Ratified: 2025-06-13 | Last Amended: 2025-07-16 -->
+**Amendment procedure**:
+1. Identify which principle(s) or sections change.
+2. Determine version bump (MAJOR/MINOR/PATCH per semantic rules below).
+3. Update this file; update the Sync Impact Report comment.
+4. Commit with message: `docs: amend constitution to vX.Y.Z (<summary>)`
+
+**Versioning policy**:
+- MAJOR: Principle removed, redefined, or governance fundamentally changed.
+- MINOR: New principle or section added; material expansion of guidance.
+- PATCH: Clarification, wording improvement, typo fix.
+
+All feature specifications, plans, and task lists produced by the speckit
+workflows MUST reference and comply with the active version of this
+constitution.
+
+**Version**: 2.3.0 | **Ratified**: 2026-02-23 | **Last Amended**: 2026-02-23
