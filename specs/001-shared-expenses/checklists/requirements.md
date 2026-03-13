@@ -34,3 +34,5 @@
 - All items pass. Spec is ready for `/speckit.clarify` or `/speckit.plan`.
 - Assumptions documented: specific exchange rate service, algorithm choice,
   HTTPS enforcement, and group deletion behaviour all deferred to planning.
+- Final cross-story validation completed on 2026-03-13 with polish regression,
+  performance, and semantic HTML checks in place.

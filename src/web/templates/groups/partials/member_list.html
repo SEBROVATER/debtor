@@ -1,0 +1,20 @@
+<ul class="member-list">
+  {{#each members}}
+  <li class="member-item" data-member-id="{{id}}">
+    <span class="member-name">{{display_name}}</span>
+    {{#if is_active}}
+    <form method="post" action="/groups/{{group_id}}/members/{{id}}">
+      <input type="hidden" name="_method" value="PATCH" />
+      <input name="display_name" type="text" value="{{display_name}}" />
+      <button type="submit">Rename</button>
+    </form>
+    <form method="post" action="/groups/{{group_id}}/members/{{id}}">
+      <input type="hidden" name="_method" value="DELETE" />
+      <button type="submit">Remove</button>
+    </form>
+    {{else}}
+    <span class="member-status">Inactive</span>
+    {{/if}}
+  </li>
+  {{/each}}
+</ul>

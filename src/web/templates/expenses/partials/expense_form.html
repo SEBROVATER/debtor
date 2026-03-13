@@ -1,0 +1,39 @@
+<form method="post" action="/groups/{{group_id}}/expenses" class="expense-form">
+  <label for="payer">Payer</label>
+  <select id="payer" name="payer_member_id">
+    {{#each members}}
+    <option value="{{id}}">{{display_name}}</option>
+    {{/each}}
+  </select>
+
+  <label for="amount">Amount</label>
+  <input id="amount" name="amount" type="number" step="0.01" required />
+
+  <label for="currency">Currency</label>
+  <input id="currency" name="currency" type="text" maxlength="3" required />
+
+  <label for="expense-date">Date</label>
+  <input id="expense-date" name="expense_date" type="date" required />
+
+  <label for="note">Note</label>
+  <textarea id="note" name="note" rows="2"></textarea>
+
+  <fieldset>
+    <legend>Shares</legend>
+    <p class="hint">Provide equal, percent, or amount shares for members.</p>
+    <!-- Share inputs rendered dynamically by server -->
+    {{#each members}}
+    <div class="share-row">
+      <span>{{display_name}}</span>
+      <select name="shares[{{id}}][mode]">
+        <option value="equal">Equal</option>
+        <option value="percent">Percent</option>
+        <option value="amount">Amount</option>
+      </select>
+      <input name="shares[{{id}}][value]" type="number" step="0.01" />
+    </div>
+    {{/each}}
+  </fieldset>
+
+  <button type="submit">Add expense</button>
+</form>

@@ -4,3 +4,39 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+acton-htmx = { package = "acton-dx", version = "1.0.0-beta.10", default-features = false }
+argon2 = "0.5"
+async-trait = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+debtor-migration = { path = "migrations" }
+reqwest = { version = "0.12", default-features = false, features = [
+  "json",
+  "rustls-tls"
+] }
+rust_decimal = { version = "1", features = ["serde"] }
+sea-orm = { version = "1", features = [
+  "macros",
+  "runtime-tokio-rustls",
+  "sqlx-sqlite",
+  "with-rust_decimal",
+  "with-time"
+] }
+sea-orm-migration = { version = "1", features = [
+  "runtime-tokio-rustls",
+  "sqlx-sqlite"
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+time = { version = "0.3", features = [
+  "formatting",
+  "macros",
+  "parsing",
+  "serde"
+] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+uuid = { version = "1", features = ["serde", "v4"] }
+
+[dev-dependencies]
+tempfile = "3"

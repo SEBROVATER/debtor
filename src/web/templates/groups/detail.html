@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Group Detail</title>
+  </head>
+  <body>
+    <main class="group-detail">
+      <header>
+        <h1>{{group_name}}</h1>
+        <p>Target currency: {{target_currency}}</p>
+      </header>
+
+      <section class="group-settings">
+        <h2>Group Settings</h2>
+        <form method="post" action="/groups/{{group_id}}" data-refresh-debts="true">
+          <input type="hidden" name="_method" value="PATCH" />
+          <label for="group-name">Name</label>
+          <input id="group-name" name="name" type="text" value="{{group_name}}" />
+
+          <label for="group-currency">Target Currency</label>
+          <input
+            id="group-currency"
+            name="target_currency"
+            type="text"
+            value="{{target_currency}}"
+            maxlength="3"
+          />
+
+          <button type="submit">Save changes</button>
+        </form>
+      </section>
+
+      <section class="members">
+        <h2>Members</h2>
+        <form method="post" action="/groups/{{group_id}}/members">
+          <label for="member-name">Add member</label>
+          <input id="member-name" name="display_name" type="text" required />
+          <button type="submit">Add</button>
+        </form>
+
+        {{> groups/partials/member_list }}
+      </section>
+
+      <section class="expenses">
+        <h2>Expenses</h2>
+        <div id="expense-list">
+          <!-- Expense list will render here -->
+        </div>
+      </section>
+
+      <section class="debts" id="debt-summary">
+        <h2>Debt Summary</h2>
+        <div class="debt-summary">
+          <!-- Debt summary will render here -->
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

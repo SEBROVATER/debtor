@@ -17,12 +17,12 @@
 
 **Purpose**: Initialize Rust web app structure and baseline frontend assets.
 
-- [ ] T001 Create crate/module skeleton in `/mnt/d/projects/pet/debtor/src/main.rs` and `/mnt/d/projects/pet/debtor/src/app/mod.rs`
-- [ ] T002 Add core dependencies and crate features in `/mnt/d/projects/pet/debtor/Cargo.toml`
-- [ ] T003 [P] Implement environment configuration loader in `/mnt/d/projects/pet/debtor/src/app/config.rs`
-- [ ] T004 [P] Implement app bootstrap wiring in `/mnt/d/projects/pet/debtor/src/app/state.rs`
-- [ ] T005 [P] Create semantic base layout template with HTMX import in `/mnt/d/projects/pet/debtor/src/web/templates/layout.html`
-- [ ] T006 [P] Create CSS design tokens and responsive baseline styles in `/mnt/d/projects/pet/debtor/static/css/app.css`
+- [X] T001 Create crate/module skeleton in `/mnt/d/projects/pet/debtor/src/main.rs` and `/mnt/d/projects/pet/debtor/src/app/mod.rs`
+- [X] T002 Add core dependencies and crate features in `/mnt/d/projects/pet/debtor/Cargo.toml`
+- [X] T003 [P] Implement environment configuration loader in `/mnt/d/projects/pet/debtor/src/app/config.rs`
+- [X] T004 [P] Implement app bootstrap wiring in `/mnt/d/projects/pet/debtor/src/app/state.rs`
+- [X] T005 [P] Create semantic base layout template with HTMX import in `/mnt/d/projects/pet/debtor/src/web/templates/layout.html`
+- [X] T006 [P] Create CSS design tokens and responsive baseline styles in `/mnt/d/projects/pet/debtor/static/css/app.css`
 
 ---
 
@@ -34,27 +34,27 @@
 
 ### Tests for Foundational Phase (write first, must fail first)
 
-- [ ] T007 [P] Add DB bootstrap and migration smoke test in `/mnt/d/projects/pet/debtor/tests/integration/test_db_bootstrap.rs`
-- [ ] T008 [P] Add foundational unauthenticated-redirect matrix test for protected routes in `/mnt/d/projects/pet/debtor/tests/integration/test_foundation_auth_redirects.rs`
-- [ ] T009 [P] Add session-cookie policy unit test (HttpOnly/SameSite/Secure behavior) in `/mnt/d/projects/pet/debtor/tests/unit/test_session_cookie_policy.rs`
-- [ ] T010 [P] Add CSRF middleware contract test for state-changing form routes in `/mnt/d/projects/pet/debtor/tests/integration/test_csrf_contract.rs`
+- [X] T007 [P] Add DB bootstrap and migration smoke test in `/mnt/d/projects/pet/debtor/tests/integration/test_db_bootstrap.rs`
+- [X] T008 [P] Add foundational unauthenticated-redirect matrix test for protected routes in `/mnt/d/projects/pet/debtor/tests/integration/test_foundation_auth_redirects.rs`
+- [X] T009 [P] Add session-cookie policy unit test (HttpOnly/SameSite/Secure behavior) in `/mnt/d/projects/pet/debtor/tests/unit/test_session_cookie_policy.rs`
+- [X] T010 [P] Add CSRF middleware contract test for state-changing form routes in `/mnt/d/projects/pet/debtor/tests/integration/test_csrf_contract.rs`
 
 ### Implementation for Foundational Phase
 
-- [ ] T011 Create initial SeaORM migration schema in `/mnt/d/projects/pet/debtor/migrations/src/m20260223_000001_init_schema.rs`
-- [ ] T012 Register migrator modules in `/mnt/d/projects/pet/debtor/migrations/src/lib.rs` and `/mnt/d/projects/pet/debtor/migrations/src/main.rs`
-- [ ] T013 [P] Create auth/session entity models in `/mnt/d/projects/pet/debtor/src/db/entities/admin_users.rs`, `/mnt/d/projects/pet/debtor/src/db/entities/auth_state.rs`, and `/mnt/d/projects/pet/debtor/src/db/entities/sessions.rs`
-- [ ] T014 [P] Create domain entity models in `/mnt/d/projects/pet/debtor/src/db/entities/groups.rs`, `/mnt/d/projects/pet/debtor/src/db/entities/members.rs`, `/mnt/d/projects/pet/debtor/src/db/entities/expenses.rs`, `/mnt/d/projects/pet/debtor/src/db/entities/expense_shares.rs`, and `/mnt/d/projects/pet/debtor/src/db/entities/exchange_rates.rs`
-- [ ] T015 Wire entity exports and relations in `/mnt/d/projects/pet/debtor/src/db/entities/mod.rs`
-- [ ] T016 Implement async SQLite connection and WAL settings in `/mnt/d/projects/pet/debtor/src/db/connection.rs`
-- [ ] T017 Implement DB bootstrap + startup migrations in `/mnt/d/projects/pet/debtor/src/db/bootstrap.rs`
-- [ ] T018 [P] Implement shared application error mapping in `/mnt/d/projects/pet/debtor/src/web/error.rs`
-- [ ] T019 [P] Build reusable test fixtures/seeding helpers in `/mnt/d/projects/pet/debtor/tests/support/mod.rs`
-- [ ] T020 Implement CSRF token generation/verification middleware in `/mnt/d/projects/pet/debtor/src/web/csrf.rs` and `/mnt/d/projects/pet/debtor/src/web/router.rs`
-- [ ] T021 Implement auth guard middleware and session extraction in `/mnt/d/projects/pet/debtor/src/auth/middleware.rs`
-- [ ] T022 Implement base router with health/public/protected groups in `/mnt/d/projects/pet/debtor/src/web/router.rs`
-- [ ] T023 Implement secure session-cookie defaults and policy wiring in `/mnt/d/projects/pet/debtor/src/auth/session_repo.rs` and `/mnt/d/projects/pet/debtor/src/app/config.rs`
-- [ ] T024 Add foundational routing smoke tests in `/mnt/d/projects/pet/debtor/tests/integration/test_foundation_routing.rs`
+- [X] T011 Create initial SeaORM migration schema in `/mnt/d/projects/pet/debtor/migrations/src/m20260223_000001_init_schema.rs`
+- [X] T012 Register migrator modules in `/mnt/d/projects/pet/debtor/migrations/src/lib.rs` and `/mnt/d/projects/pet/debtor/migrations/src/main.rs`
+- [X] T013 [P] Create auth/session entity models in `/mnt/d/projects/pet/debtor/src/db/entities/admin_users.rs`, `/mnt/d/projects/pet/debtor/src/db/entities/auth_state.rs`, and `/mnt/d/projects/pet/debtor/src/db/entities/sessions.rs`
+- [X] T014 [P] Create domain entity models in `/mnt/d/projects/pet/debtor/src/db/entities/groups.rs`, `/mnt/d/projects/pet/debtor/src/db/entities/members.rs`, `/mnt/d/projects/pet/debtor/src/db/entities/expenses.rs`, `/mnt/d/projects/pet/debtor/src/db/entities/expense_shares.rs`, and `/mnt/d/projects/pet/debtor/src/db/entities/exchange_rates.rs`
+- [X] T015 Wire entity exports and relations in `/mnt/d/projects/pet/debtor/src/db/entities/mod.rs`
+- [X] T016 Implement async SQLite connection and WAL settings in `/mnt/d/projects/pet/debtor/src/db/connection.rs`
+- [X] T017 Implement DB bootstrap + startup migrations in `/mnt/d/projects/pet/debtor/src/db/bootstrap.rs`
+- [X] T018 [P] Implement shared application error mapping in `/mnt/d/projects/pet/debtor/src/web/error.rs`
+- [X] T019 [P] Build reusable test fixtures/seeding helpers in `/mnt/d/projects/pet/debtor/tests/support/mod.rs`
+- [X] T020 Implement CSRF token generation/verification middleware in `/mnt/d/projects/pet/debtor/src/web/csrf.rs` and `/mnt/d/projects/pet/debtor/src/web/router.rs`
+- [X] T021 Implement auth guard middleware and session extraction in `/mnt/d/projects/pet/debtor/src/auth/middleware.rs`
+- [X] T022 Implement base router with health/public/protected groups in `/mnt/d/projects/pet/debtor/src/web/router.rs`
+- [X] T023 Implement secure session-cookie defaults and policy wiring in `/mnt/d/projects/pet/debtor/src/auth/session_repo.rs` and `/mnt/d/projects/pet/debtor/src/app/config.rs`
+- [X] T024 Add foundational routing smoke tests in `/mnt/d/projects/pet/debtor/tests/integration/test_foundation_routing.rs`
 
 **Checkpoint**: Foundation complete; story phases can proceed.
 
@@ -68,25 +68,25 @@
 
 ### Tests for User Story 1 (write first, must fail first)
 
-- [ ] T025 [P] [US1] Add auth route contract tests (including no registration endpoint) in `/mnt/d/projects/pet/debtor/tests/contract/test_auth_contract.rs`
-- [ ] T026 [P] [US1] Add successful login integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_login_success.rs`
-- [ ] T027 [P] [US1] Add invalid credential integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_login_failure.rs`
-- [ ] T028 [P] [US1] Add lockout-after-five-failures integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_login_lockout.rs`
-- [ ] T029 [P] [US1] Add logout revocation integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_logout.rs`
-- [ ] T030 [P] [US1] Add sliding-session-expiry extension integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_session_sliding_expiry.rs`
-- [ ] T031 [P] [US1] Add expired-session rejection integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_session_expiry_boundary.rs`
-- [ ] T032 [P] [US1] Add login CSRF validation integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_login_csrf.rs`
+- [X] T025 [P] [US1] Add auth route contract tests (including no registration endpoint) in `/mnt/d/projects/pet/debtor/tests/contract/test_auth_contract.rs`
+- [X] T026 [P] [US1] Add successful login integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_login_success.rs`
+- [X] T027 [P] [US1] Add invalid credential integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_login_failure.rs`
+- [X] T028 [P] [US1] Add lockout-after-five-failures integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_login_lockout.rs`
+- [X] T029 [P] [US1] Add logout revocation integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_logout.rs`
+- [X] T030 [P] [US1] Add sliding-session-expiry extension integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_session_sliding_expiry.rs`
+- [X] T031 [P] [US1] Add expired-session rejection integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_session_expiry_boundary.rs`
+- [X] T032 [P] [US1] Add login CSRF validation integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_login_csrf.rs`
 
 ### Implementation for User Story 1
 
-- [ ] T033 [P] [US1] Implement Argon2 password verification helpers in `/mnt/d/projects/pet/debtor/src/auth/password.rs`
-- [ ] T034 [P] [US1] Implement failed-attempt and lockout persistence in `/mnt/d/projects/pet/debtor/src/auth/auth_state_repo.rs`
-- [ ] T035 [P] [US1] Implement session persistence with sliding expiry and immediate revocation in `/mnt/d/projects/pet/debtor/src/auth/session_repo.rs`
-- [ ] T036 [US1] Implement login/logout orchestration service in `/mnt/d/projects/pet/debtor/src/auth/login_service.rs`
-- [ ] T037 [US1] Implement login/logout HTTP handlers in `/mnt/d/projects/pet/debtor/src/web/handlers/auth_handlers.rs`
-- [ ] T038 [US1] Create login template with invalid/lockout/CSRF states in `/mnt/d/projects/pet/debtor/src/web/templates/auth/login.html`
-- [ ] T039 [US1] Wire auth handlers and dashboard landing handler in `/mnt/d/projects/pet/debtor/src/web/router.rs` and `/mnt/d/projects/pet/debtor/src/web/handlers/dashboard_handler.rs`
-- [ ] T040 [US1] Implement single-admin bootstrap flow with registration disabled in `/mnt/d/projects/pet/debtor/src/db/bootstrap.rs` and `/mnt/d/projects/pet/debtor/src/web/router.rs`
+- [X] T033 [P] [US1] Implement Argon2 password verification helpers in `/mnt/d/projects/pet/debtor/src/auth/password.rs`
+- [X] T034 [P] [US1] Implement failed-attempt and lockout persistence in `/mnt/d/projects/pet/debtor/src/auth/auth_state_repo.rs`
+- [X] T035 [P] [US1] Implement session persistence with sliding expiry and immediate revocation in `/mnt/d/projects/pet/debtor/src/auth/session_repo.rs`
+- [X] T036 [US1] Implement login/logout orchestration service in `/mnt/d/projects/pet/debtor/src/auth/login_service.rs`
+- [X] T037 [US1] Implement login/logout HTTP handlers in `/mnt/d/projects/pet/debtor/src/web/handlers/auth_handlers.rs`
+- [X] T038 [US1] Create login template with invalid/lockout/CSRF states in `/mnt/d/projects/pet/debtor/src/web/templates/auth/login.html`
+- [X] T039 [US1] Wire auth handlers and dashboard landing handler in `/mnt/d/projects/pet/debtor/src/web/router.rs` and `/mnt/d/projects/pet/debtor/src/web/handlers/dashboard_handler.rs`
+- [X] T040 [US1] Implement single-admin bootstrap flow with registration disabled in `/mnt/d/projects/pet/debtor/src/db/bootstrap.rs` and `/mnt/d/projects/pet/debtor/src/web/router.rs`
 
 **Checkpoint**: US1 is independently functional and testable (MVP candidate).
 
@@ -100,22 +100,22 @@
 
 ### Tests for User Story 2 (write first, must fail first)
 
-- [ ] T041 [P] [US2] Add group endpoint contract tests in `/mnt/d/projects/pet/debtor/tests/contract/test_groups_contract.rs`
-- [ ] T042 [P] [US2] Add member endpoint contract tests in `/mnt/d/projects/pet/debtor/tests/contract/test_members_contract.rs`
-- [ ] T043 [P] [US2] Add create/list group integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_groups_create.rs`
-- [ ] T044 [P] [US2] Add member CRUD + inactive-history integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_members_crud.rs`
-- [ ] T045 [P] [US2] Add currency-change same-response debt-refresh integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_groups_currency_recalc.rs`
-- [ ] T046 [P] [US2] Add group-delete flow integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_groups_update_delete.rs`
+- [X] T041 [P] [US2] Add group endpoint contract tests in `/mnt/d/projects/pet/debtor/tests/contract/test_groups_contract.rs`
+- [X] T042 [P] [US2] Add member endpoint contract tests in `/mnt/d/projects/pet/debtor/tests/contract/test_members_contract.rs`
+- [X] T043 [P] [US2] Add create/list group integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_groups_create.rs`
+- [X] T044 [P] [US2] Add member CRUD + inactive-history integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_members_crud.rs`
+- [X] T045 [P] [US2] Add currency-change same-response debt-refresh integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_groups_currency_recalc.rs`
+- [X] T046 [P] [US2] Add group-delete flow integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_groups_update_delete.rs`
 
 ### Implementation for User Story 2
 
-- [ ] T047 [P] [US2] Implement group repository operations in `/mnt/d/projects/pet/debtor/src/groups/group_repo.rs`
-- [ ] T048 [P] [US2] Implement member repository with soft-delete in `/mnt/d/projects/pet/debtor/src/groups/member_repo.rs`
-- [ ] T049 [US2] Implement group validation/service logic in `/mnt/d/projects/pet/debtor/src/groups/group_service.rs`
-- [ ] T050 [US2] Implement member validation/service logic in `/mnt/d/projects/pet/debtor/src/groups/member_service.rs`
-- [ ] T051 [US2] Implement group/member handlers in `/mnt/d/projects/pet/debtor/src/web/handlers/group_handlers.rs`
-- [ ] T052 [US2] Create group/member templates and fragments in `/mnt/d/projects/pet/debtor/src/web/templates/groups/detail.html` and `/mnt/d/projects/pet/debtor/src/web/templates/groups/partials/member_list.html`
-- [ ] T053 [US2] Wire group/member routes and currency-change debt refresh trigger in `/mnt/d/projects/pet/debtor/src/web/router.rs` and `/mnt/d/projects/pet/debtor/src/web/templates/groups/detail.html`
+- [X] T047 [P] [US2] Implement group repository operations in `/mnt/d/projects/pet/debtor/src/groups/group_repo.rs`
+- [X] T048 [P] [US2] Implement member repository with soft-delete in `/mnt/d/projects/pet/debtor/src/groups/member_repo.rs`
+- [X] T049 [US2] Implement group validation/service logic in `/mnt/d/projects/pet/debtor/src/groups/group_service.rs`
+- [X] T050 [US2] Implement member validation/service logic in `/mnt/d/projects/pet/debtor/src/groups/member_service.rs`
+- [X] T051 [US2] Implement group/member handlers in `/mnt/d/projects/pet/debtor/src/web/handlers/group_handlers.rs`
+- [X] T052 [US2] Create group/member templates and fragments in `/mnt/d/projects/pet/debtor/src/web/templates/groups/detail.html` and `/mnt/d/projects/pet/debtor/src/web/templates/groups/partials/member_list.html`
+- [X] T053 [US2] Wire group/member routes and currency-change debt refresh trigger in `/mnt/d/projects/pet/debtor/src/web/router.rs` and `/mnt/d/projects/pet/debtor/src/web/templates/groups/detail.html`
 
 **Checkpoint**: US2 works independently with authentication and no expense dependencies.
 
@@ -129,23 +129,23 @@
 
 ### Tests for User Story 3 (write first, must fail first)
 
-- [ ] T054 [P] [US3] Add unit tests for share normalization modes in `/mnt/d/projects/pet/debtor/tests/unit/test_share_splitter.rs`
-- [ ] T055 [P] [US3] Add expense endpoint contract tests in `/mnt/d/projects/pet/debtor/tests/contract/test_expenses_contract.rs`
-- [ ] T056 [P] [US3] Add expense creation integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_expenses_create.rs`
-- [ ] T057 [P] [US3] Add expense edit integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_expenses_update.rs`
-- [ ] T058 [P] [US3] Add expense delete integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_expenses_delete.rs`
-- [ ] T059 [P] [US3] Add no-settlement behavior regression test (no pay/settle route or action) in `/mnt/d/projects/pet/debtor/tests/contract/test_no_settlement_contract.rs`
-- [ ] T060 [P] [US3] Add expense-entry duration budget integration test for SC-002 in `/mnt/d/projects/pet/debtor/tests/integration/test_expense_entry_performance.rs`
+- [X] T054 [P] [US3] Add unit tests for share normalization modes in `/mnt/d/projects/pet/debtor/tests/unit/test_share_splitter.rs`
+- [X] T055 [P] [US3] Add expense endpoint contract tests in `/mnt/d/projects/pet/debtor/tests/contract/test_expenses_contract.rs`
+- [X] T056 [P] [US3] Add expense creation integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_expenses_create.rs`
+- [X] T057 [P] [US3] Add expense edit integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_expenses_update.rs`
+- [X] T058 [P] [US3] Add expense delete integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_expenses_delete.rs`
+- [X] T059 [P] [US3] Add no-settlement behavior regression test (no pay/settle route or action) in `/mnt/d/projects/pet/debtor/tests/contract/test_no_settlement_contract.rs`
+- [X] T060 [P] [US3] Add expense-entry duration budget integration test for SC-002 in `/mnt/d/projects/pet/debtor/tests/integration/test_expense_entry_performance.rs`
 
 ### Implementation for User Story 3
 
-- [ ] T061 [P] [US3] Implement expense repository with payer/group checks in `/mnt/d/projects/pet/debtor/src/expenses/expense_repo.rs`
-- [ ] T062 [P] [US3] Implement expense share repository in `/mnt/d/projects/pet/debtor/src/expenses/share_repo.rs`
-- [ ] T063 [US3] Implement share splitting/validation engine in `/mnt/d/projects/pet/debtor/src/expenses/share_splitter.rs`
-- [ ] T064 [US3] Implement expense service orchestration in `/mnt/d/projects/pet/debtor/src/expenses/expense_service.rs`
-- [ ] T065 [US3] Implement expense handlers in `/mnt/d/projects/pet/debtor/src/web/handlers/expense_handlers.rs`
-- [ ] T066 [US3] Create expense forms/list templates and fragments in `/mnt/d/projects/pet/debtor/src/web/templates/expenses/list.html` and `/mnt/d/projects/pet/debtor/src/web/templates/expenses/partials/expense_form.html`
-- [ ] T067 [US3] Enforce no-settlement route/action surface in `/mnt/d/projects/pet/debtor/src/web/router.rs` and `/mnt/d/projects/pet/debtor/src/web/templates/expenses/list.html`
+- [X] T061 [P] [US3] Implement expense repository with payer/group checks in `/mnt/d/projects/pet/debtor/src/expenses/expense_repo.rs`
+- [X] T062 [P] [US3] Implement expense share repository in `/mnt/d/projects/pet/debtor/src/expenses/share_repo.rs`
+- [X] T063 [US3] Implement share splitting/validation engine in `/mnt/d/projects/pet/debtor/src/expenses/share_splitter.rs`
+- [X] T064 [US3] Implement expense service orchestration in `/mnt/d/projects/pet/debtor/src/expenses/expense_service.rs`
+- [X] T065 [US3] Implement expense handlers in `/mnt/d/projects/pet/debtor/src/web/handlers/expense_handlers.rs`
+- [X] T066 [US3] Create expense forms/list templates and fragments in `/mnt/d/projects/pet/debtor/src/web/templates/expenses/list.html` and `/mnt/d/projects/pet/debtor/src/web/templates/expenses/partials/expense_form.html`
+- [X] T067 [US3] Enforce no-settlement route/action surface in `/mnt/d/projects/pet/debtor/src/web/router.rs` and `/mnt/d/projects/pet/debtor/src/web/templates/expenses/list.html`
 
 **Checkpoint**: US3 is independently functional for complete expense lifecycle flows.
 
@@ -159,21 +159,21 @@
 
 ### Tests for User Story 4 (write first, must fail first)
 
-- [ ] T068 [P] [US4] Add unit tests for balance aggregation in `/mnt/d/projects/pet/debtor/tests/unit/test_balance_calculator.rs`
-- [ ] T069 [P] [US4] Add unit tests proving minimal subset-DP simplification in `/mnt/d/projects/pet/debtor/tests/unit/test_debt_simplify.rs`
-- [ ] T070 [P] [US4] Add debt summary contract test in `/mnt/d/projects/pet/debtor/tests/contract/test_debts_contract.rs`
-- [ ] T071 [P] [US4] Add debt summary integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_debt_summary.rs`
-- [ ] T072 [P] [US4] Add zero-balance "no outstanding debts" integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_debt_summary_zero_balances.rs`
-- [ ] T073 [P] [US4] Add deterministic ordering and rounding integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_debt_summary_rounding_order.rs`
+- [X] T068 [P] [US4] Add unit tests for balance aggregation in `/mnt/d/projects/pet/debtor/tests/unit/test_balance_calculator.rs`
+- [X] T069 [P] [US4] Add unit tests proving minimal subset-DP simplification in `/mnt/d/projects/pet/debtor/tests/unit/test_debt_simplify.rs`
+- [X] T070 [P] [US4] Add debt summary contract test in `/mnt/d/projects/pet/debtor/tests/contract/test_debts_contract.rs`
+- [X] T071 [P] [US4] Add debt summary integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_debt_summary.rs`
+- [X] T072 [P] [US4] Add zero-balance "no outstanding debts" integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_debt_summary_zero_balances.rs`
+- [X] T073 [P] [US4] Add deterministic ordering and rounding integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_debt_summary_rounding_order.rs`
 
 ### Implementation for User Story 4
 
-- [ ] T074 [P] [US4] Implement balance aggregation logic in `/mnt/d/projects/pet/debtor/src/debts/balance_calculator.rs`
-- [ ] T075 [P] [US4] Implement exact subset-DP simplification algorithm in `/mnt/d/projects/pet/debtor/src/debts/simplify.rs`
-- [ ] T076 [US4] Implement debt summary service (rounding + deterministic ordering) in `/mnt/d/projects/pet/debtor/src/debts/debt_summary_service.rs`
-- [ ] T077 [US4] Implement debt summary handler and response models in `/mnt/d/projects/pet/debtor/src/web/handlers/debt_handlers.rs`
-- [ ] T078 [US4] Create debt summary templates/fragments in `/mnt/d/projects/pet/debtor/src/web/templates/debts/summary.html`
-- [ ] T079 [US4] Wire debt summary route and refresh integration points in `/mnt/d/projects/pet/debtor/src/web/router.rs` and `/mnt/d/projects/pet/debtor/src/web/handlers/expense_handlers.rs`
+- [X] T074 [P] [US4] Implement balance aggregation logic in `/mnt/d/projects/pet/debtor/src/debts/balance_calculator.rs`
+- [X] T075 [P] [US4] Implement exact subset-DP simplification algorithm in `/mnt/d/projects/pet/debtor/src/debts/simplify.rs`
+- [X] T076 [US4] Implement debt summary service (rounding + deterministic ordering) in `/mnt/d/projects/pet/debtor/src/debts/debt_summary_service.rs`
+- [X] T077 [US4] Implement debt summary handler and response models in `/mnt/d/projects/pet/debtor/src/web/handlers/debt_handlers.rs`
+- [X] T078 [US4] Create debt summary templates/fragments in `/mnt/d/projects/pet/debtor/src/web/templates/debts/summary.html`
+- [X] T079 [US4] Wire debt summary route and refresh integration points in `/mnt/d/projects/pet/debtor/src/web/router.rs` and `/mnt/d/projects/pet/debtor/src/web/handlers/expense_handlers.rs`
 
 **Checkpoint**: US4 produces minimal debt transactions from existing stored data.
 
@@ -187,21 +187,21 @@
 
 ### Tests for User Story 5 (write first, must fail first)
 
-- [ ] T080 [P] [US5] Add Frankfurter provider contract tests in `/mnt/d/projects/pet/debtor/tests/contract/test_exchange_provider_contract.rs`
-- [ ] T081 [P] [US5] Add stale-or-missing cache fetch integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_exchange_fetch_on_demand.rs`
-- [ ] T082 [P] [US5] Add same-day cache reuse integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_exchange_cache_reuse.rs`
-- [ ] T083 [P] [US5] Add fallback warning with existing cache integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_exchange_fallback.rs`
-- [ ] T084 [P] [US5] Add no-cache provider-failure hard-error integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_exchange_no_cache_failure.rs`
-- [ ] T085 [P] [US5] Add exchange-cache day-rollover boundary test in `/mnt/d/projects/pet/debtor/tests/integration/test_exchange_cache_day_rollover.rs`
+- [X] T080 [P] [US5] Add Frankfurter provider contract tests in `/mnt/d/projects/pet/debtor/tests/contract/test_exchange_provider_contract.rs`
+- [X] T081 [P] [US5] Add stale-or-missing cache fetch integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_exchange_fetch_on_demand.rs`
+- [X] T082 [P] [US5] Add same-day cache reuse integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_exchange_cache_reuse.rs`
+- [X] T083 [P] [US5] Add fallback warning with existing cache integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_exchange_fallback.rs`
+- [X] T084 [P] [US5] Add no-cache provider-failure hard-error integration test in `/mnt/d/projects/pet/debtor/tests/integration/test_exchange_no_cache_failure.rs`
+- [X] T085 [P] [US5] Add exchange-cache day-rollover boundary test in `/mnt/d/projects/pet/debtor/tests/integration/test_exchange_cache_day_rollover.rs`
 
 ### Implementation for User Story 5
 
-- [ ] T086 [P] [US5] Implement async Frankfurter client adapter in `/mnt/d/projects/pet/debtor/src/exchange_rates/frankfurter_client.rs`
-- [ ] T087 [P] [US5] Implement exchange-rate repository and cache lookups in `/mnt/d/projects/pet/debtor/src/exchange_rates/rate_repo.rs`
-- [ ] T088 [US5] Implement exchange-rate service (lazy refresh, reuse, fallback) in `/mnt/d/projects/pet/debtor/src/exchange_rates/rate_service.rs`
-- [ ] T089 [US5] Integrate conversion workflow into debt summary service in `/mnt/d/projects/pet/debtor/src/debts/debt_summary_service.rs`
-- [ ] T090 [US5] Surface stale warnings and conversion errors in `/mnt/d/projects/pet/debtor/src/web/handlers/debt_handlers.rs` and `/mnt/d/projects/pet/debtor/src/web/templates/debts/summary.html`
-- [ ] T091 [US5] Wire exchange-rate configuration/provider registration in `/mnt/d/projects/pet/debtor/src/app/config.rs` and `/mnt/d/projects/pet/debtor/src/app/state.rs`
+- [X] T086 [P] [US5] Implement async Frankfurter client adapter in `/mnt/d/projects/pet/debtor/src/exchange_rates/frankfurter_client.rs`
+- [X] T087 [P] [US5] Implement exchange-rate repository and cache lookups in `/mnt/d/projects/pet/debtor/src/exchange_rates/rate_repo.rs`
+- [X] T088 [US5] Implement exchange-rate service (lazy refresh, reuse, fallback) in `/mnt/d/projects/pet/debtor/src/exchange_rates/rate_service.rs`
+- [X] T089 [US5] Integrate conversion workflow into debt summary service in `/mnt/d/projects/pet/debtor/src/debts/debt_summary_service.rs`
+- [X] T090 [US5] Surface stale warnings and conversion errors in `/mnt/d/projects/pet/debtor/src/web/handlers/debt_handlers.rs` and `/mnt/d/projects/pet/debtor/src/web/templates/debts/summary.html`
+- [X] T091 [US5] Wire exchange-rate configuration/provider registration in `/mnt/d/projects/pet/debtor/src/app/config.rs` and `/mnt/d/projects/pet/debtor/src/app/state.rs`
 
 **Checkpoint**: US5 delivers complete multi-currency behavior with robust fallback semantics.
 
@@ -211,17 +211,17 @@
 
 **Purpose**: Harden quality, performance, and documentation across all stories.
 
-- [ ] T092 [P] Add login-to-dashboard performance integration test for SC-001 in `/mnt/d/projects/pet/debtor/tests/integration/test_login_performance.rs`
-- [ ] T093 [P] Add performance integration test for 20 members/200 expenses summary budget (SC-003) in `/mnt/d/projects/pet/debtor/tests/integration/test_summary_performance.rs`
-- [ ] T094 [P] Add end-to-end regression test (login -> group -> expense -> debt summary) in `/mnt/d/projects/pet/debtor/tests/integration/test_end_to_end_journey.rs`
-- [ ] T095 [P] Add HTMX-only frontend compliance test in `/mnt/d/projects/pet/debtor/tests/integration/test_no_custom_js.rs`
-- [ ] T096 [P] Add semantic HTML smoke checks for key templates in `/mnt/d/projects/pet/debtor/tests/integration/test_semantic_html.rs`
-- [ ] T097 [P] Add authenticated-route redirect completeness test for SC-006 in `/mnt/d/projects/pet/debtor/tests/integration/test_auth_redirect_matrix.rs`
-- [ ] T098 [P] Add exchange fetch-frequency integration test for SC-004 in `/mnt/d/projects/pet/debtor/tests/integration/test_exchange_fetch_frequency.rs`
-- [ ] T099 [P] Add cookie-security and CSRF-rotation regression tests in `/mnt/d/projects/pet/debtor/tests/integration/test_security_headers_and_csrf.rs`
-- [ ] T100 [P] Optimize debt summary hot path for SC-003 target in `/mnt/d/projects/pet/debtor/src/debts/debt_summary_service.rs` and `/mnt/d/projects/pet/debtor/src/expenses/expense_repo.rs`
-- [ ] T101 Update executable runbook for local setup/test in `/mnt/d/projects/pet/debtor/specs/001-shared-expenses/quickstart.md`
-- [ ] T102 Record final cross-story validation checklist updates in `/mnt/d/projects/pet/debtor/specs/001-shared-expenses/checklists/requirements.md`
+- [X] T092 [P] Add login-to-dashboard performance integration test for SC-001 in `/mnt/d/projects/pet/debtor/tests/integration/test_login_performance.rs`
+- [X] T093 [P] Add performance integration test for 20 members/200 expenses summary budget (SC-003) in `/mnt/d/projects/pet/debtor/tests/integration/test_summary_performance.rs`
+- [X] T094 [P] Add end-to-end regression test (login -> group -> expense -> debt summary) in `/mnt/d/projects/pet/debtor/tests/integration/test_end_to_end_journey.rs`
+- [X] T095 [P] Add HTMX-only frontend compliance test in `/mnt/d/projects/pet/debtor/tests/integration/test_no_custom_js.rs`
+- [X] T096 [P] Add semantic HTML smoke checks for key templates in `/mnt/d/projects/pet/debtor/tests/integration/test_semantic_html.rs`
+- [X] T097 [P] Add authenticated-route redirect completeness test for SC-006 in `/mnt/d/projects/pet/debtor/tests/integration/test_auth_redirect_matrix.rs`
+- [X] T098 [P] Add exchange fetch-frequency integration test for SC-004 in `/mnt/d/projects/pet/debtor/tests/integration/test_exchange_fetch_frequency.rs`
+- [X] T099 [P] Add cookie-security and CSRF-rotation regression tests in `/mnt/d/projects/pet/debtor/tests/integration/test_security_headers_and_csrf.rs`
+- [X] T100 [P] Optimize debt summary hot path for SC-003 target in `/mnt/d/projects/pet/debtor/src/debts/debt_summary_service.rs` and `/mnt/d/projects/pet/debtor/src/expenses/expense_repo.rs`
+- [X] T101 Update executable runbook for local setup/test in `/mnt/d/projects/pet/debtor/specs/001-shared-expenses/quickstart.md`
+- [X] T102 Record final cross-story validation checklist updates in `/mnt/d/projects/pet/debtor/specs/001-shared-expenses/checklists/requirements.md`
 
 ---
 

@@ -19,7 +19,7 @@ strictly test-first (Red-Green-Refactor).
 
 ## Technical Context
 
-**Language/Version**: Rust stable 1.78+ (Edition 2021)  
+**Language/Version**: Rust stable 1.78+ (Edition 2024)  
 **Primary Dependencies**: `acton-htmx`, `tokio`, `sea-orm`, `sea-orm-migration`, `argon2`, `rust_decimal`, `time`, `uuid`, browser `htmx`  
 **Storage**: SQLite (WAL mode) via SeaORM entities and migrations  
 **Testing**: `cargo test`, `tokio::test`, integration/contract tests for routes and exchange-rate adapter  

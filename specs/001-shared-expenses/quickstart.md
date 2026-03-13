@@ -33,6 +33,7 @@ export APP_DATABASE_URL="sqlite://debtor.db?mode=rwc"
 export APP_SESSION_COOKIE_NAME="debtor_session"
 export APP_ADMIN_USERNAME="owner"
 export APP_ADMIN_PASSWORD_HASH="<argon2id hash>"
+export APP_EXCHANGE_BASE_URL="https://api.frankfurter.app"
 ```
 
 ## 4. TDD-first implementation flow (mandatory)

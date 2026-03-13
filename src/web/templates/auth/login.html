@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Debtor Login</title>
+  </head>
+  <body>
+    <main class="auth-shell">
+      <header>
+        <h1>Sign in</h1>
+        <p>Use the owner credentials to access the dashboard.</p>
+      </header>
+
+      <section class="auth-status" aria-live="polite">
+        <!-- Render when credentials are invalid -->
+        <div class="auth-error" data-state="invalid" hidden>
+          Invalid username or password. Try again.
+        </div>
+        <!-- Render when lockout is active -->
+        <div class="auth-error" data-state="lockout" hidden>
+          Too many attempts. Please wait until <strong>{{lockout_until}}</strong>.
+        </div>
+        <!-- Render when CSRF validation fails -->
+        <div class="auth-error" data-state="csrf" hidden>
+          Security check failed. Refresh and try again.
+        </div>
+      </section>
+
+      <form method="post" action="/login" class="auth-form">
+        <input type="hidden" name="csrf_token" value="{{csrf_token}}" />
+
+        <label for="username">Username</label>
+        <input id="username" name="username" type="text" autocomplete="username" required />
+
+        <label for="password">Password</label>
+        <input
+          id="password"
+          name="password"
+          type="password"
+          autocomplete="current-password"
+          required
+        />
+
+        <button type="submit">Sign in</button>
+      </form>
+    </main>
+  </body>
+</html>
