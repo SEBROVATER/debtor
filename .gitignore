@@ -8,6 +8,7 @@ release/
 *.log
 
 .env*
+!.env.example
 .vscode/
 .idea/
 
@@ -15,3 +16,5 @@ release/
 Thumbs.db
 *.tmp
 *.swp
+
+.kilocode

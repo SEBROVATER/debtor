@@ -40,7 +40,9 @@ async fn reuses_same_day_cache_without_fetching() {
     .expect("insert");
 
     let calls = Arc::new(Mutex::new(0));
-    let provider = FakeProvider { calls: calls.clone() };
+    let provider = FakeProvider {
+        calls: calls.clone(),
+    };
     let service = RateService::new(repo, Arc::new(provider));
 
     let result = service.get_rate("USD", "EUR", now).await.expect("rate");

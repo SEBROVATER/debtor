@@ -1,4 +1,4 @@
-use debtor::web::router::{route_specs, RouteMethod};
+use debtor::web::router::{RouteMethod, route_specs};
 
 #[test]
 fn groups_routes_match_contract() {

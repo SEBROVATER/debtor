@@ -27,10 +27,16 @@ fn key_templates_have_semantic_structure() {
     assert!(group.contains("<section"), "group detail missing sections");
     assert!(group.contains("<header"), "group detail missing header");
 
-    assert!(expenses.contains("<section"), "expenses list missing section");
+    assert!(
+        expenses.contains("<section"),
+        "expenses list missing section"
+    );
     assert!(expenses.contains("<header"), "expenses list missing header");
     assert!(expenses.contains("<ul"), "expenses list missing list");
 
     assert!(debts.contains("<section"), "debts summary missing section");
-    assert!(debts.contains("debt-summary"), "debts summary missing class");
+    assert!(
+        debts.contains("debt-summary"),
+        "debts summary missing class"
+    );
 }

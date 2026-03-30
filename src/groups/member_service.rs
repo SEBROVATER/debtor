@@ -41,7 +41,8 @@ impl MemberService {
     ) -> Result<members::Model, MemberError> {
         self.ensure_group_exists(group_id).await?;
         let display_name = normalize_name(display_name)?;
-        self.ensure_unique_active_name(group_id, &display_name).await?;
+        self.ensure_unique_active_name(group_id, &display_name)
+            .await?;
 
         let id = Uuid::new_v4().to_string();
         let member = self
@@ -60,7 +61,8 @@ impl MemberService {
     ) -> Result<members::Model, MemberError> {
         self.ensure_group_exists(group_id).await?;
         let display_name = normalize_name(display_name)?;
-        self.ensure_unique_active_name(group_id, &display_name).await?;
+        self.ensure_unique_active_name(group_id, &display_name)
+            .await?;
 
         let existing = self.member_repo.find(member_id).await?;
         let Some(existing) = existing else {

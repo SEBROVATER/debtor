@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 
-use debtor::debts::balance_calculator::{compute_balances, ExpenseShareSummary, MemberShare};
+use debtor::debts::balance_calculator::{ExpenseShareSummary, MemberShare, compute_balances};
 use rust_decimal::Decimal;
 
 #[test]

@@ -1,4 +1,4 @@
-use debtor::web::router::{route_specs, RouteMethod};
+use debtor::web::router::{RouteMethod, route_specs};
 
 #[test]
 fn protected_routes_require_auth_and_state_changes_have_csrf() {
@@ -16,13 +16,16 @@ fn protected_routes_require_auth_and_state_changes_have_csrf() {
             assert!(
                 route.csrf_protected,
                 "{:?} {} should be csrf protected",
-                route.method,
-                route.path
+                route.method, route.path
             );
         }
 
         if matches!(route.method, RouteMethod::Get) {
-            assert!(!route.csrf_protected, "GET {} should not require csrf", route.path);
+            assert!(
+                !route.csrf_protected,
+                "GET {} should not require csrf",
+                route.path
+            );
         }
     }
 }

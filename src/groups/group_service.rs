@@ -50,10 +50,7 @@ impl GroupService {
         let target_currency = normalize_currency(target_currency)?;
         let id = Uuid::new_v4().to_string();
 
-        let group = self
-            .repo
-            .create(id, name, target_currency, now)
-            .await?;
+        let group = self.repo.create(id, name, target_currency, now).await?;
         Ok(group)
     }
 
@@ -112,7 +109,9 @@ impl GroupService {
 fn normalize_name(input: &str) -> Result<String, GroupError> {
     let trimmed = input.trim();
     if trimmed.is_empty() || trimmed.len() > 80 {
-        return Err(GroupError::Validation("name must be 1..80 chars".to_string()));
+        return Err(GroupError::Validation(
+            "name must be 1..80 chars".to_string(),
+        ));
     }
     Ok(trimmed.to_string())
 }

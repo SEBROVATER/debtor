@@ -31,8 +31,8 @@ impl FrankfurterClient {
         body: &str,
         fetched_at: NaiveDateTime,
     ) -> Result<Vec<RateQuote>, RateError> {
-        let response: FrankfurterResponse = serde_json::from_str(body)
-            .map_err(|err| RateError::ProviderFailed(err.to_string()))?;
+        let response: FrankfurterResponse =
+            serde_json::from_str(body).map_err(|err| RateError::ProviderFailed(err.to_string()))?;
         response.to_quotes(fetched_at)
     }
 

@@ -26,7 +26,11 @@ impl ExchangeProvider for FakeProvider {
                 from_currency: from.to_string(),
                 to_currency: currency.clone(),
                 rate: self.rate,
-                fetched_at: NaiveDateTime::parse_from_str("2026-03-02 08:00:00", "%Y-%m-%d %H:%M:%S").unwrap(),
+                fetched_at: NaiveDateTime::parse_from_str(
+                    "2026-03-02 08:00:00",
+                    "%Y-%m-%d %H:%M:%S",
+                )
+                .unwrap(),
                 rate_date: self.rate_date,
                 provider: "fake".to_string(),
             })
@@ -40,7 +44,8 @@ async fn refreshes_on_day_rollover() {
     let repo = RateRepo::new(state.db.clone());
 
     let yesterday = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
-    let fetched_at = NaiveDateTime::parse_from_str("2026-03-01 08:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
+    let fetched_at =
+        NaiveDateTime::parse_from_str("2026-03-01 08:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
     repo.insert_manual(
         "USD",
         "EUR",

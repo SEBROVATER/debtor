@@ -1,4 +1,4 @@
-use argon2::{password_hash::Error as PasswordHashError, Argon2, PasswordHash, PasswordVerifier};
+use argon2::{Argon2, PasswordHash, PasswordVerifier, password_hash::Error as PasswordHashError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum PasswordError {

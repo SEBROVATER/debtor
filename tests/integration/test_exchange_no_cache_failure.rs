@@ -26,7 +26,9 @@ async fn provider_failure_without_cache_errors() {
     let repo = RateRepo::new(state.db.clone());
 
     let calls = Arc::new(Mutex::new(0));
-    let provider = FailingProvider { calls: calls.clone() };
+    let provider = FailingProvider {
+        calls: calls.clone(),
+    };
     let service = RateService::new(repo, Arc::new(provider));
 
     let now = NaiveDateTime::parse_from_str("2026-03-01 12:00:00", "%Y-%m-%d %H:%M:%S").unwrap();

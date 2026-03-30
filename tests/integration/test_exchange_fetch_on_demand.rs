@@ -30,7 +30,11 @@ impl ExchangeProvider for FakeProvider {
                 from_currency: from.to_string(),
                 to_currency: currency.clone(),
                 rate: self.rate,
-                fetched_at: NaiveDateTime::parse_from_str("2026-03-01 10:00:00", "%Y-%m-%d %H:%M:%S").unwrap(),
+                fetched_at: NaiveDateTime::parse_from_str(
+                    "2026-03-01 10:00:00",
+                    "%Y-%m-%d %H:%M:%S",
+                )
+                .unwrap(),
                 rate_date: self.rate_date,
                 provider: "fake".to_string(),
             })

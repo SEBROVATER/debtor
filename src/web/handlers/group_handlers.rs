@@ -59,12 +59,12 @@ pub async fn handle_update_group(
         .map_err(map_group_error)
 }
 
-pub async fn handle_delete_group(
-    state: &AppState,
-    group_id: &str,
-) -> Result<bool, AppError> {
+pub async fn handle_delete_group(state: &AppState, group_id: &str) -> Result<bool, AppError> {
     let service = GroupService::new(state.db.clone());
-    service.delete_group(group_id).await.map_err(map_group_error)
+    service
+        .delete_group(group_id)
+        .await
+        .map_err(map_group_error)
 }
 
 pub async fn handle_add_member(

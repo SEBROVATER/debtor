@@ -1,4 +1,4 @@
-use debtor::web::router::{route_specs, RouteMethod};
+use debtor::web::router::{RouteMethod, route_specs};
 
 #[test]
 fn member_routes_match_contract() {
@@ -7,7 +7,10 @@ fn member_routes_match_contract() {
     let expected = [
         (RouteMethod::Post, "/groups/{group_id}/members"),
         (RouteMethod::Patch, "/groups/{group_id}/members/{member_id}"),
-        (RouteMethod::Delete, "/groups/{group_id}/members/{member_id}"),
+        (
+            RouteMethod::Delete,
+            "/groups/{group_id}/members/{member_id}",
+        ),
     ];
 
     for (method, path) in expected {

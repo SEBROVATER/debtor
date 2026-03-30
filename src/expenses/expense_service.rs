@@ -5,7 +5,7 @@ use thiserror::Error;
 use crate::db::entities::expense_shares;
 use crate::expenses::expense_repo::ExpenseRepo;
 use crate::expenses::share_repo::ShareRepo;
-use crate::expenses::share_splitter::{normalize_shares, ShareInput, ShareSplitError};
+use crate::expenses::share_splitter::{ShareInput, ShareSplitError, normalize_shares};
 use crate::groups::group_repo::GroupRepo;
 use crate::groups::member_repo::MemberRepo;
 use sea_orm::DbErr;

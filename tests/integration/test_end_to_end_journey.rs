@@ -69,5 +69,8 @@ async fn end_to_end_journey_from_login_to_summary() {
     assert_eq!(summary.transfers.len(), 1);
     assert_eq!(summary.transfers[0].from_member_id, bob.id);
     assert_eq!(summary.transfers[0].to_member_id, alice.id);
-    assert_eq!(summary.transfers[0].amount, Decimal::from_str("30.00").unwrap());
+    assert_eq!(
+        summary.transfers[0].amount,
+        Decimal::from_str("30.00").unwrap()
+    );
 }

@@ -1,4 +1,4 @@
-use debtor::web::csrf::{validate_csrf, CsrfError, CsrfToken};
+use debtor::web::csrf::{CsrfError, CsrfToken, validate_csrf};
 use debtor::web::router::RouteMethod;
 
 #[test]

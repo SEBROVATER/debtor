@@ -28,7 +28,8 @@ async fn falls_back_to_stale_cache_on_provider_failure() {
     let repo = RateRepo::new(state.db.clone());
 
     let yesterday = NaiveDate::from_ymd_opt(2026, 2, 28).unwrap();
-    let fetched_at = NaiveDateTime::parse_from_str("2026-02-28 08:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
+    let fetched_at =
+        NaiveDateTime::parse_from_str("2026-02-28 08:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
     repo.insert_manual(
         "USD",
         "EUR",
@@ -41,7 +42,9 @@ async fn falls_back_to_stale_cache_on_provider_failure() {
     .expect("insert");
 
     let calls = Arc::new(Mutex::new(0));
-    let provider = FailingProvider { calls: calls.clone() };
+    let provider = FailingProvider {
+        calls: calls.clone(),
+    };
     let service = RateService::new(repo, Arc::new(provider));
 
     let now = NaiveDateTime::parse_from_str("2026-03-01 12:00:00", "%Y-%m-%d %H:%M:%S").unwrap();

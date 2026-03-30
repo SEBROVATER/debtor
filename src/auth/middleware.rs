@@ -27,17 +27,14 @@ pub fn enforce_auth(route: &RouteSpec, is_authenticated: bool) -> AuthOutcome {
 
 pub fn extract_session_cookie(cookie_header: Option<&str>, cookie_name: &str) -> Option<String> {
     let header = cookie_header?;
-    header
-        .split(';')
-        .map(|pair| pair.trim())
-        .find_map(|pair| {
-            let mut parts = pair.splitn(2, '=');
-            let name = parts.next()?.trim();
-            let value = parts.next()?.trim();
-            if name == cookie_name && !value.is_empty() {
-                Some(value.to_string())
-            } else {
-                None
-            }
-        })
+    header.split(';').map(|pair| pair.trim()).find_map(|pair| {
+        let mut parts = pair.splitn(2, '=');
+        let name = parts.next()?.trim();
+        let value = parts.next()?.trim();
+        if name == cookie_name && !value.is_empty() {
+            Some(value.to_string())
+        } else {
+            None
+        }
+    })
 }

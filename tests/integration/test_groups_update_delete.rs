@@ -15,10 +15,7 @@ async fn group_delete_removes_group() {
         .await
         .expect("create group");
 
-    let deleted = service
-        .delete_group(&group.id)
-        .await
-        .expect("delete group");
+    let deleted = service.delete_group(&group.id).await.expect("delete group");
     assert!(deleted);
 
     let groups = service.list_groups().await.expect("list groups");
