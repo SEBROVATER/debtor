@@ -1,20 +1,8 @@
-target/
-debug/
-release/
+.kilocode/
+.env
+CLAUDE.md
 
-*.rs.bk
-*.rlib
-*.prof*
-*.log
 
-.env*
-!.env.example
-.vscode/
-.idea/
+# Added by cargo
 
-.DS_Store
-Thumbs.db
-*.tmp
-*.swp
-
-.kilocode
+/target
