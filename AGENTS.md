@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-**debtor** is a personal, single-owner expense-sharing web application built with a Rust backend, HTMX-driven frontend, SQLite database, and zero custom JavaScript. All development must comply with the [project constitution](.specify/memory/constitution.md).
+**debtor** is a personal, single-owner expense-sharing web application built as a Rust Cargo workspace with an Axum backend, HTMX-driven frontend, SQLite database, and zero custom JavaScript.
 
 ---
 
@@ -10,27 +10,47 @@
 
 ```
 debtor/
-├── src/                  # Application source code
-│   ├── main.rs           # Entry point
-│   ├── lib.rs            # Library root (re-exports modules)
-│   ├── app/              # Config and shared application state
-│   ├── auth/             # Session management, login, password hashing
-│   ├── db/               # Database connection, bootstrap, ORM entities
-│   ├── debts/            # Balance calculation and debt simplification
-│   ├── exchange_rates/   # Frankfurter API client and caching
-│   ├── expenses/         # Expense CRUD, share splitting
-│   ├── groups/           # Group and member management
-│   └── web/              # HTTP router, handlers, CSRF, HTML templates
-├── migrations/           # sea-orm-migration crate (schema migrations)
-├── tests/
-│   ├── unit/             # Pure logic tests (no I/O)
-│   ├── integration/      # Full-stack tests against an in-memory SQLite DB
-│   ├── contract/         # Behavioural contract tests for services
-│   └── support/mod.rs    # Shared test helpers (setup_test_state, etc.)
-├── static/css/           # Vanilla CSS — no frameworks
-├── specs/                # Feature specs and plans (speckit workflow)
-└── .env.example          # Environment variable reference
+├── Cargo.toml                  # Workspace root — shared dependencies, lints
+├── migrations/                 # SQLx migration files (workspace-level)
+├── debtor-domain/              # Pure domain logic — zero I/O dependencies
+│   └── src/
+│       ├── lib.rs
+│       ├── traits.rs           # Repository/service trait definitions
+│       ├── debts/              # Balance calculation, debt simplification
+│       ├── expenses/           # Share splitting logic
+│       └── groups/             # Group membership rules
+├── debtor-infra/               # Infrastructure adapters
+│   └── src/
+│       ├── lib.rs
+│       ├── db/repos/           # SQLx repository implementations
+│       ├── exchange_rates/     # Frankfurter HTTP client, caching
+│       └── auth/               # Argon2id password hashing
+├── debtor-web/                 # HTTP layer
+│   └── src/
+│       ├── lib.rs
+│       ├── router.rs           # Axum route definitions
+│       ├── state.rs            # AppState (shared handler context)
+│       ├── handlers/           # Request handlers (auth, expenses, groups, debts)
+│       ├── middleware/         # Auth, CSRF middleware
+│       └── templates/          # Askama template types
+│           └── partials/
+├── debtor-app/                 # Binary crate — composition root
+│   └── src/
+│       └── main.rs
+├── static/css/                 # Vanilla CSS — no frameworks
+├── specs/                      # Feature specs and plans (speckit workflow)
+└── .env.example                # Environment variable reference
 ```
+
+### Dependency Flow
+
+```
+debtor-app → debtor-web → debtor-domain ← debtor-infra
+```
+
+- `debtor-domain` defines traits; `debtor-infra` implements them.
+- `debtor-web` depends on domain traits, not infrastructure.
+- `debtor-app` wires concrete implementations at startup.
 
 ---
 
@@ -40,23 +60,19 @@ debtor/
 # Check compilation without producing binaries (fast feedback)
 cargo check
 
-# Run all tests (unit, integration, contract)
-cargo test
+# Run all tests across all workspace crates
+cargo test --workspace
 
-# Run only unit tests
-cargo test --test unit
-
-# Run only integration tests
-cargo test --test integration
-
-# Run only contract tests
-cargo test --test contract
+# Run tests for a specific crate
+cargo test -p debtor-domain
+cargo test -p debtor-infra
+cargo test -p debtor-web
 
 # Build a release binary
 cargo build --release
 
 # Run the application (requires .env or environment variables)
-cargo run
+cargo run -p debtor-app
 ```
 
 Copy `.env.example` to `.env` and populate `APP_ADMIN_PASSWORD_HASH` before running. Generate a hash with:
@@ -67,16 +83,100 @@ echo -n "yourpassword" | argon2 somesalt -e
 
 ---
 
+## Core Principles
+
+### I. JavaScript-Free Frontend
+
+The frontend MUST be implemented without JavaScript except for the single permitted library: [htmx](https://htmx.org). No JavaScript frameworks, bundlers, build steps, or custom JS scripts are allowed. All interactivity MUST be expressed through hypermedia (HTMX attributes, HTML forms, server responses). Browser-native behaviour is preferred over any programmatic workaround.
+
+### II. Rust Backend (Axum)
+
+The backend MUST be implemented in Rust using [Axum](https://github.com/tokio-rs/axum) as the HTTP framework, composed with mature, independently-maintained crates:
+
+- **axum-htmx**: HTMX request extractors and response helpers.
+- **Askama**: compile-time type-safe HTML templates.
+- **tower-sessions**: cookie-based server-side session management.
+- **SQLx**: compile-time verified SQL queries against SQLite.
+- **argon2**: password hashing (Argon2id).
+
+External crates MAY be used freely provided they are reliable, actively maintained, and have a meaningful user base. New technology additions SHOULD be documented in the relevant feature plan and validated against the Simplicity principle before adoption.
+
+### III. Vanilla CSS & Semantic HTML
+
+Styling MUST use modern, vanilla CSS only. CSS frameworks (Bootstrap, Tailwind, Bulma, etc.) are NOT permitted. HTML MUST be semantic — use the correct element for the correct purpose (`<nav>`, `<main>`, `<section>`, `<article>`, `<time>`, etc.). CSS custom properties MUST be used for design tokens (colours, spacing, typography). Layouts MUST use CSS Grid or Flexbox.
+
+### IV. Single-User Secured Access
+
+Authentication MUST be implemented. The system MUST support exactly one user account (the owner). There MUST be no self-registration flow. All expense-related routes MUST be behind authentication. Credentials MUST be stored securely (hashed with a modern algorithm, e.g., Argon2). Sessions MUST be managed server-side with secure, HTTP-only cookies.
+
+### V. Simplicity & Personal-First
+
+This project is for personal use by a single owner. MUST NOT introduce premature abstractions, over-engineered patterns, or unnecessary complexity. Apply YAGNI: build what is needed now. Complexity additions MUST be justified against a concrete current need.
+
+### VI. Workspace Architecture
+
+The project MUST be organised as a [Cargo workspace] with exactly four crates:
+
+| Crate | Responsibility |
+|---|---|
+| `debtor-domain` | Pure domain logic (zero I/O deps); defines repository and service traits |
+| `debtor-infra` | Infrastructure adapters; implements domain traits with SQLx, reqwest, argon2 |
+| `debtor-web` | HTTP layer; Axum handlers, Askama templates, middleware, routing |
+| `debtor-app` | Binary crate; composition root that wires everything together |
+
+Dependency flow MUST be unidirectional:
+
+```
+debtor-app → debtor-web → debtor-domain ← debtor-infra
+```
+
+`debtor-domain` defines traits for external dependencies (repositories, providers). Infrastructure implements them. Dependency inversion uses `Arc<dyn Trait>` to keep handlers testable.
+
+---
+
 ## Coding Style & Naming Conventions
 
 - **Language**: Rust, edition 2024. Follow idiomatic Rust patterns throughout.
 - **Formatting**: `cargo fmt` — all code must be formatted before committing.
-- **Linting**: `cargo clippy` — resolve all warnings; treat new warnings as errors.
+- **Linting**: `cargo clippy --workspace` — workspace uses pedantic + nursery lints. Resolve all warnings; treat new warnings as errors.
 - **Naming**: `snake_case` for functions, variables, and modules; `PascalCase` for types and traits.
-- **Modules**: one domain concept per directory (e.g., `expenses/`, `groups/`). Expose the public API through `mod.rs`.
-- **Error handling**: use `thiserror`-derived error types; avoid `.unwrap()` in production code paths.
+- **Modules**: one domain concept per directory. Expose the public API through `mod.rs`.
+- **Error handling**: use `thiserror`-derived error types; avoid `.unwrap()` and `.expect()` in production code paths.
 - **`unsafe`**: must include a comment justifying its use.
-- **Frontend**: HTMX attributes only — no custom JavaScript, no CSS frameworks.
+- **Documentation**: all public items must have doc comments (`#![warn(missing_docs)]` enforced per crate).
+
+---
+
+## Planning Protocol
+
+Before creating any plan, the agent MUST ask comprehensive clarifying questions to resolve undefined spots. At minimum, cover:
+
+- **Scope boundaries**: What exactly is in-scope vs out-of-scope?
+- **Error handling**: How should errors be surfaced to users? Redirect? Flash message? Error page?
+- **Edge cases**: Empty states, zero amounts, single-member groups, duplicate entries, concurrent modifications.
+- **Data model specifics**: Field names, types, constraints, defaults, nullable columns.
+- **UI/UX expectations**: Which pages need what content? Navigation flow? Form validation UX?
+- **Naming conventions**: Preferred names for domain concepts, database columns, routes.
+- **Testing strategy**: Which test suite(s) are relevant? What behaviours need test coverage?
+- **Integration points**: Does this feature touch external APIs, existing services, or other features?
+
+No plan should be created until all undefined spots are clarified. This prevents rework and ensures the plan is actionable.
+
+---
+
+## Documentation-First Development
+
+Before using any Rust crate or framework, the agent MUST consult its documentation via the Context7 MCP tool. This ensures:
+
+- Code follows the current API patterns (not outdated examples).
+- Feature flags and configuration options are used correctly.
+- Deprecations and breaking changes are avoided.
+- Recommended idioms and best practices from the crate authors are followed.
+
+**Workflow**:
+1. Use `context7_resolve-library-id` to find the correct library ID.
+2. Use `context7_query-docs` to fetch relevant documentation for the specific use case.
+3. Write code based on the fetched documentation, not from memory or assumptions.
 
 ---
 
@@ -84,18 +184,26 @@ echo -n "yourpassword" | argon2 somesalt -e
 
 Tests are written using Rust's built-in test framework (`#[test]`, `#[tokio::test]`).
 
-**TDD is mandatory.** Follow Red → Green → Refactor strictly. Tests must be written before implementation; no feature is complete without prior-written tests.
+**TDD is mandatory.** Follow Red → Green → Refactor strictly:
 
-| Suite | Location | Purpose |
+1. **Red**: Write a failing test that defines the desired behaviour.
+2. **Green**: Write the minimal implementation to make the test pass.
+3. **Refactor**: Clean up code while keeping all tests passing.
+
+Tests must be written before implementation; no feature is complete without prior-written tests. Skipping the Red phase (writing tests after implementation) is NOT permitted.
+
+### Per-Crate Test Suites
+
+| Crate | Test Location | Purpose |
 |---|---|---|
-| Unit | `tests/unit/` | Pure logic, no I/O |
-| Integration | `tests/integration/` | Full stack against a temporary SQLite DB |
-| Contract | `tests/contract/` | Behavioural contracts for service interfaces |
+| `debtor-domain` | `debtor-domain/tests/` | Pure logic, no I/O — `#[test]` only (no async) |
+| `debtor-infra` | `debtor-infra/tests/` | Repository and adapter tests with real or mock I/O |
+| `debtor-web` | `debtor-web/tests/` | Handler and integration tests against test doubles |
+| Workspace-level | `tests/` (if needed) | Cross-crate integration tests |
 
 **Conventions:**
 - Test files are named `test_<subject>.rs` (e.g., `test_balance_calculator.rs`).
 - Test functions use descriptive `snake_case` names that read as sentences (e.g., `aggregates_balances_across_expenses`).
-- Use helpers from `tests/support/mod.rs` (`setup_test_state`, `temp_sqlite_url`, `hash_password`) to avoid boilerplate.
 - Each test must be independent — no shared mutable state between tests.
 
 ---
@@ -107,10 +215,9 @@ Commits follow [Conventional Commits](https://www.conventionalcommits.org/):
 ```
 feat: add expense deletion endpoint
 fix: correct rounding in share splitter
-docs: amend constitution to v2.3.0 (add TDD principle)
-refactor: extract balance calculator into separate module
+refactor: extract balance calculator into domain crate
 test: add contract tests for group member service
-chore: update sea-orm to 1.1
+chore: update sqlx to 0.8
 ```
 
 - Use the **imperative mood** in the subject line.
@@ -119,7 +226,7 @@ chore: update sea-orm to 1.1
 
 Pull requests must:
 - Include a clear description of what changed and why.
-- Pass `cargo fmt --check`, `cargo clippy`, and `cargo test` without errors.
+- Pass `cargo fmt --check`, `cargo clippy --workspace`, and `cargo test --workspace` without errors.
 - Contain tests written before the implementation (TDD — no after-the-fact test additions).
 
 ---

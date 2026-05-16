@@ -1,8 +1,6 @@
 .kilocode/
+.kilo/
 .env
 CLAUDE.md
-
-
-# Added by cargo
 
 /target

@@ -1,6 +1,46 @@
-[package]
-name = "debtor"
+[workspace]
+resolver = "3"
+members = [
+    "debtor-domain",
+    "debtor-infra",
+    "debtor-web",
+    "debtor-app",
+]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.85"
 
-[dependencies]
+[workspace.dependencies]
+axum = "0.8"
+axum-htmx = "0.8"
+tower-sessions = "0.14"
+tower-http = { version = "0.6", features = ["trace"] }
+tokio = { version = "1", features = ["full"] }
+askama = "0.12"
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+argon2 = "0.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dotenvy = "0.15"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+multiple_crate_versions = "allow"
+unwrap_used = "warn"
+expect_used = "warn"
+
+[workspace.lints.rust]
+missing_docs = "warn"

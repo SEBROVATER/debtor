@@ -1,0 +1,22 @@
+[package]
+name = "debtor-web"
+description = "HTTP layer — Axum handlers, Askama templates, routing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+debtor-domain = { path = "../debtor-domain" }
+axum = { workspace = true }
+axum-htmx = { workspace = true }
+tower-sessions = { workspace = true }
+tower-http = { workspace = true }
+askama = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true
