@@ -1,7 +1,5 @@
 use chrono::Utc;
 use debtor::auth::login_service::{LoginResult, LoginService};
-use debtor::db::entities::auth_state;
-use sea_orm::EntityTrait;
 
 #[path = "../support/mod.rs"]
 mod support;
@@ -19,10 +17,9 @@ async fn invalid_credentials_increment_failure_count() {
 
     assert!(matches!(result, LoginResult::InvalidCredentials));
 
-    let stored = auth_state::Entity::find_by_id(1)
-        .one(&state.db)
+    let stored = sqlx::query!("SELECT failed_attempt_count FROM auth_state WHERE id = 1")
+        .fetch_one(&state.db)
         .await
-        .expect("auth_state")
         .expect("auth_state row");
     assert_eq!(stored.failed_attempt_count, 1);
 }

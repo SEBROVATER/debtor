@@ -1,21 +1,29 @@
 use chrono::{NaiveDate, NaiveDateTime};
-use sea_orm::{
-    ActiveModelTrait, ColumnTrait, DatabaseConnection, DbErr, EntityTrait, QueryFilter, QueryOrder,
-    Set,
-};
+use rust_decimal::Decimal;
+use sqlx::SqlitePool;
 use uuid::Uuid;
 
-use crate::db::entities::exchange_rates;
 use crate::exchange_rates::rate_service::RateQuote;
+
+#[derive(Debug, Clone)]
+pub struct ExchangeRateRow {
+    pub id: String,
+    pub from_currency: String,
+    pub to_currency: String,
+    pub rate: Decimal,
+    pub fetched_at: NaiveDateTime,
+    pub rate_date: NaiveDate,
+    pub provider: String,
+}
 
 #[derive(Clone)]
 pub struct RateRepo {
-    conn: DatabaseConnection,
+    pool: SqlitePool,
 }
 
 impl RateRepo {
-    pub fn new(conn: DatabaseConnection) -> Self {
-        Self { conn }
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
     }
 
     pub async fn find_rate_on_date(
@@ -23,90 +31,116 @@ impl RateRepo {
         from_currency: &str,
         to_currency: &str,
         rate_date: NaiveDate,
-    ) -> Result<Option<exchange_rates::Model>, DbErr> {
-        exchange_rates::Entity::find()
-            .filter(exchange_rates::Column::FromCurrency.eq(from_currency))
-            .filter(exchange_rates::Column::ToCurrency.eq(to_currency))
-            .filter(exchange_rates::Column::RateDate.eq(rate_date))
-            .one(&self.conn)
-            .await
+    ) -> Result<Option<ExchangeRateRow>, sqlx::Error> {
+        sqlx::query_as!(
+            ExchangeRateRow,
+            r#"SELECT id, from_currency, to_currency,
+               rate as "rate: Decimal",
+               fetched_at as "fetched_at: NaiveDateTime",
+               rate_date as "rate_date: NaiveDate",
+               provider
+               FROM exchange_rates
+               WHERE from_currency = ? AND to_currency = ? AND rate_date = ?"#,
+            from_currency,
+            to_currency,
+            rate_date
+        )
+        .fetch_optional(&self.pool)
+        .await
     }
 
     pub async fn find_latest_rate(
         &self,
         from_currency: &str,
         to_currency: &str,
-    ) -> Result<Option<exchange_rates::Model>, DbErr> {
-        exchange_rates::Entity::find()
-            .filter(exchange_rates::Column::FromCurrency.eq(from_currency))
-            .filter(exchange_rates::Column::ToCurrency.eq(to_currency))
-            .order_by_desc(exchange_rates::Column::RateDate)
-            .order_by_desc(exchange_rates::Column::FetchedAt)
-            .one(&self.conn)
-            .await
+    ) -> Result<Option<ExchangeRateRow>, sqlx::Error> {
+        sqlx::query_as!(
+            ExchangeRateRow,
+            r#"SELECT id, from_currency, to_currency,
+               rate as "rate: Decimal",
+               fetched_at as "fetched_at: NaiveDateTime",
+               rate_date as "rate_date: NaiveDate",
+               provider
+               FROM exchange_rates
+               WHERE from_currency = ? AND to_currency = ?
+               ORDER BY rate_date DESC, fetched_at DESC
+               LIMIT 1"#,
+            from_currency,
+            to_currency
+        )
+        .fetch_optional(&self.pool)
+        .await
     }
 
-    pub async fn upsert_rate(&self, quote: RateQuote) -> Result<exchange_rates::Model, DbErr> {
+    pub async fn upsert_rate(&self, quote: RateQuote) -> Result<ExchangeRateRow, sqlx::Error> {
         if let Some(existing) = self
             .find_rate_on_date(&quote.from_currency, &quote.to_currency, quote.rate_date)
             .await?
         {
-            let updated = exchange_rates::ActiveModel {
-                id: Set(existing.id),
-                rate: Set(quote.rate),
-                fetched_at: Set(quote.fetched_at),
-                provider: Set(quote.provider),
-                ..Default::default()
-            }
-            .update(&self.conn)
+            sqlx::query!(
+                "UPDATE exchange_rates SET rate = ?, fetched_at = ?, provider = ? WHERE id = ?",
+                quote.rate,
+                quote.fetched_at,
+                quote.provider,
+                existing.id
+            )
+            .execute(&self.pool)
             .await?;
-            return Ok(updated);
+
+            return self
+                .find_rate_on_date(&quote.from_currency, &quote.to_currency, quote.rate_date)
+                .await?
+                .ok_or_else(|| {
+                    sqlx::Error::RowNotFound
+                });
         }
 
         let id = Uuid::new_v4().to_string();
-        let model = exchange_rates::ActiveModel {
-            id: Set(id.clone()),
-            from_currency: Set(quote.from_currency),
-            to_currency: Set(quote.to_currency),
-            rate: Set(quote.rate),
-            fetched_at: Set(quote.fetched_at),
-            rate_date: Set(quote.rate_date),
-            provider: Set(quote.provider),
-        };
-        exchange_rates::Entity::insert(model)
-            .exec(&self.conn)
-            .await?;
-        exchange_rates::Entity::find_by_id(id)
-            .one(&self.conn)
+        sqlx::query!(
+            "INSERT INTO exchange_rates (id, from_currency, to_currency, rate, fetched_at, rate_date, provider)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            id,
+            quote.from_currency,
+            quote.to_currency,
+            quote.rate,
+            quote.fetched_at,
+            quote.rate_date,
+            quote.provider
+        )
+        .execute(&self.pool)
+        .await?;
+
+        self.find_rate_on_date(&quote.from_currency, &quote.to_currency, quote.rate_date)
             .await?
-            .ok_or_else(|| DbErr::RecordNotFound("inserted exchange rate missing".to_string()))
+            .ok_or(sqlx::Error::RowNotFound)
     }
 
     pub async fn insert_manual(
         &self,
         from_currency: &str,
         to_currency: &str,
-        rate: rust_decimal::Decimal,
+        rate: Decimal,
         fetched_at: NaiveDateTime,
         rate_date: NaiveDate,
         provider: &str,
-    ) -> Result<exchange_rates::Model, DbErr> {
+    ) -> Result<ExchangeRateRow, sqlx::Error> {
         let id = Uuid::new_v4().to_string();
-        let model = exchange_rates::ActiveModel {
-            id: Set(id.clone()),
-            from_currency: Set(from_currency.to_string()),
-            to_currency: Set(to_currency.to_string()),
-            rate: Set(rate),
-            fetched_at: Set(fetched_at),
-            rate_date: Set(rate_date),
-            provider: Set(provider.to_string()),
-        };
-        exchange_rates::Entity::insert(model)
-            .exec(&self.conn)
-            .await?;
-        exchange_rates::Entity::find_by_id(id)
-            .one(&self.conn)
+        sqlx::query!(
+            "INSERT INTO exchange_rates (id, from_currency, to_currency, rate, fetched_at, rate_date, provider)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            id,
+            from_currency,
+            to_currency,
+            rate,
+            fetched_at,
+            rate_date,
+            provider
+        )
+        .execute(&self.pool)
+        .await?;
+
+        self.find_rate_on_date(from_currency, to_currency, rate_date)
             .await?
-            .ok_or_else(|| DbErr::RecordNotFound("inserted exchange rate missing".to_string()))
+            .ok_or(sqlx::Error::RowNotFound)
     }
 }

@@ -31,7 +31,7 @@ pub async fn handle_create_group(
     state: &AppState,
     request: CreateGroupRequest,
     now: NaiveDateTime,
-) -> Result<crate::db::entities::groups::Model, AppError> {
+) -> Result<crate::groups::group_repo::GroupRow, AppError> {
     let service = GroupService::new(state.db.clone());
     service
         .create_group(&request.name, &request.target_currency, now)
@@ -72,7 +72,7 @@ pub async fn handle_add_member(
     group_id: &str,
     request: CreateMemberRequest,
     now: NaiveDateTime,
-) -> Result<crate::db::entities::members::Model, AppError> {
+) -> Result<crate::groups::member_repo::MemberRow, AppError> {
     let service = MemberService::new(state.db.clone());
     service
         .add_member(group_id, &request.display_name, now)
@@ -86,7 +86,7 @@ pub async fn handle_rename_member(
     member_id: &str,
     request: RenameMemberRequest,
     now: NaiveDateTime,
-) -> Result<crate::db::entities::members::Model, AppError> {
+) -> Result<crate::groups::member_repo::MemberRow, AppError> {
     let service = MemberService::new(state.db.clone());
     service
         .rename_member(group_id, member_id, &request.display_name, now)
@@ -99,7 +99,7 @@ pub async fn handle_remove_member(
     group_id: &str,
     member_id: &str,
     now: NaiveDateTime,
-) -> Result<crate::db::entities::members::Model, AppError> {
+) -> Result<crate::groups::member_repo::MemberRow, AppError> {
     let service = MemberService::new(state.db.clone());
     service
         .remove_member(group_id, member_id, now)
@@ -111,7 +111,7 @@ pub async fn handle_list_members(
     state: &AppState,
     group_id: &str,
     include_inactive: bool,
-) -> Result<Vec<crate::db::entities::members::Model>, AppError> {
+) -> Result<Vec<crate::groups::member_repo::MemberRow>, AppError> {
     let service = MemberService::new(state.db.clone());
     service
         .list_members(group_id, include_inactive)

@@ -1,16 +1,23 @@
 use chrono::NaiveDateTime;
-use sea_orm::{ActiveModelTrait, DatabaseConnection, DbErr, EntityTrait, Set};
+use sqlx::SqlitePool;
 
-use crate::db::entities::groups;
+#[derive(Debug, Clone)]
+pub struct GroupRow {
+    pub id: String,
+    pub name: String,
+    pub target_currency: String,
+    pub created_at: NaiveDateTime,
+    pub updated_at: NaiveDateTime,
+}
 
 #[derive(Clone)]
 pub struct GroupRepo {
-    conn: DatabaseConnection,
+    pool: SqlitePool,
 }
 
 impl GroupRepo {
-    pub fn new(conn: DatabaseConnection) -> Self {
-        Self { conn }
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
     }
 
     pub async fn create(
@@ -19,16 +26,20 @@ impl GroupRepo {
         name: String,
         target_currency: String,
         now: NaiveDateTime,
-    ) -> Result<groups::Model, DbErr> {
-        let model = groups::ActiveModel {
-            id: Set(id.clone()),
-            name: Set(name.clone()),
-            target_currency: Set(target_currency.clone()),
-            created_at: Set(now),
-            updated_at: Set(now),
-        };
-        groups::Entity::insert(model).exec(&self.conn).await?;
-        Ok(groups::Model {
+    ) -> Result<GroupRow, sqlx::Error> {
+        sqlx::query!(
+            "INSERT INTO groups (id, name, target_currency, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?)",
+            id,
+            name,
+            target_currency,
+            now,
+            now
+        )
+        .execute(&self.pool)
+        .await?;
+
+        Ok(GroupRow {
             id,
             name,
             target_currency,
@@ -37,14 +48,27 @@ impl GroupRepo {
         })
     }
 
-    pub async fn list(&self) -> Result<Vec<groups::Model>, DbErr> {
-        groups::Entity::find().all(&self.conn).await
+    pub async fn list(&self) -> Result<Vec<GroupRow>, sqlx::Error> {
+        sqlx::query_as!(GroupRow,
+            r#"SELECT id, name, target_currency,
+               created_at as "created_at: NaiveDateTime",
+               updated_at as "updated_at: NaiveDateTime"
+               FROM groups"#)
+            .fetch_all(&self.pool)
+            .await
     }
 
-    pub async fn find(&self, id: &str) -> Result<Option<groups::Model>, DbErr> {
-        groups::Entity::find_by_id(id.to_string())
-            .one(&self.conn)
-            .await
+    pub async fn find(&self, id: &str) -> Result<Option<GroupRow>, sqlx::Error> {
+        sqlx::query_as!(
+            GroupRow,
+            r#"SELECT id, name, target_currency,
+               created_at as "created_at: NaiveDateTime",
+               updated_at as "updated_at: NaiveDateTime"
+               FROM groups WHERE id = ?"#,
+            id
+        )
+        .fetch_optional(&self.pool)
+        .await
     }
 
     pub async fn update(
@@ -53,30 +77,34 @@ impl GroupRepo {
         name: Option<String>,
         target_currency: Option<String>,
         now: NaiveDateTime,
-    ) -> Result<Option<groups::Model>, DbErr> {
+    ) -> Result<Option<GroupRow>, sqlx::Error> {
         let Some(existing) = self.find(id).await? else {
             return Ok(None);
         };
 
-        let updated = groups::ActiveModel {
-            id: Set(existing.id),
-            name: name.map(Set).unwrap_or_else(|| Set(existing.name)),
-            target_currency: target_currency
-                .map(Set)
-                .unwrap_or_else(|| Set(existing.target_currency)),
-            updated_at: Set(now),
-            ..Default::default()
-        }
-        .update(&self.conn)
+        let new_name = name.unwrap_or(existing.name);
+        let new_currency = target_currency.unwrap_or(existing.target_currency);
+
+        sqlx::query!(
+            "UPDATE groups SET name = ?, target_currency = ?, updated_at = ? WHERE id = ?",
+            new_name,
+            new_currency,
+            now,
+            id
+        )
+        .execute(&self.pool)
         .await?;
 
-        Ok(Some(updated))
+        self.find(id).await
     }
 
-    pub async fn delete(&self, id: &str) -> Result<bool, DbErr> {
-        let result = groups::Entity::delete_by_id(id.to_string())
-            .exec(&self.conn)
-            .await?;
-        Ok(result.rows_affected > 0)
+    pub async fn delete(&self, id: &str) -> Result<bool, sqlx::Error> {
+        Ok(
+            sqlx::query!("DELETE FROM groups WHERE id = ?", id)
+                .execute(&self.pool)
+                .await?
+                .rows_affected()
+                > 0,
+        )
     }
 }

@@ -2,29 +2,42 @@
 =============================================================================
 SYNC IMPACT REPORT
 =============================================================================
-Version change: 2.2.0 → 2.3.0
-  Bump rationale: MINOR — New principle added: VI. Test-Driven Development.
+Version change: 2.3.0 → 3.0.0
+  Bump rationale: MAJOR — Data access layer redefined: Sea-ORM replaced
+  with SQLx. This is a backward-incompatible change that invalidates all
+  existing SeaORM-based entities, repositories, and migrations.
 
 Modified principles:
-  - (none)
+  - (none — principle text unchanged)
+
+Modified sections:
+  - Technology Stack: "Data access" row changed from "Sea-ORM (primary ORM)"
+    to "SQLx (compile-time verified queries)".
 
 Added sections/principles:
-  - VI. Test-Driven Development (TDD as primary paradigm)
+  - (none)
 
 Removed principles:
   - (none)
 
 Templates checked:
-  ✅ .specify/templates/plan-template.md  — Constitution Check gate is generic;
-     aligns with TDD principle.
-  ✅ .specify/templates/spec-template.md  — Technology-agnostic; no changes.
-  ⚠ .specify/templates/tasks-template.md — Test tasks are currently labelled
-     OPTIONAL. With TDD now mandatory, the agent generating tasks.md MUST
-     include test tasks by default. Template wording updated to reflect this.
+  ✅ .specify/templates/plan-template.md  — Technology-agnostic; no changes
+     needed.
+  ✅ .specify/templates/spec-template.md  — Technology-agnostic; no changes
+     needed.
+  ✅ .specify/templates/tasks-template.md — Technology-agnostic; no changes
+     needed.
   ✅ .specify/templates/constitution-template.md — Source template; unchanged.
 
 Deferred TODOs:
-  - (none)
+  - specs/003-complete-main-http-server/ artifacts (plan.md, research.md,
+    data-model.md, quickstart.md, contracts/) reference SeaORM and must be
+    regenerated after this constitution amendment takes effect.
+  - AGENTS.md references "sea-orm-migration crate" in project structure and
+    "sea-orm" in commit examples — should be updated to reflect SQLx.
+  - .kilocode/rules/specify-rules.md contains auto-generated SeaORM
+    references from prior features — will be overwritten on next
+    update-agent-context.sh run.
 =============================================================================
 -->
 
@@ -117,12 +130,12 @@ valuable for a long-lived personal project maintained by a single developer.
 |-------------|-------------------------------------------------|
 | Framework   | acton-htmx (acton-dx)                           |
 | Backend     | Rust                                            |
-| Frontend    | HTMX + server-rendered HTML                    |
+| Frontend    | HTMX + server-rendered HTML                     |
 | Styling     | Vanilla CSS (no frameworks)                     |
 | Database    | SQLite (primary)                                |
-| Data access | Sea-ORM (primary ORM)                           |
+| Data access | SQLx (compile-time verified queries)            |
 | Auth        | Single-user; server-side sessions; secure hash  |
-| Testing     | TDD (mandatory); Rust built-in test framework  |
+| Testing     | TDD (mandatory); Rust built-in test framework   |
 | Deployment  | Docker Compose (allowed; decision per feature)  |
 
 Technology additions SHOULD be documented in the relevant feature plan and
@@ -149,4 +162,4 @@ All feature specifications, plans, and task lists produced by the speckit
 workflows MUST reference and comply with the active version of this
 constitution.
 
-**Version**: 2.3.0 | **Ratified**: 2026-02-23 | **Last Amended**: 2026-02-23
+**Version**: 3.0.0 | **Ratified**: 2026-02-23 | **Last Amended**: 2026-04-12

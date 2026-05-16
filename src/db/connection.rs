@@ -1,22 +1,16 @@
-use sea_orm::{
-    ConnectOptions, ConnectionTrait, Database, DatabaseConnection, DbBackend, DbErr, Statement,
+use sqlx::{
+    SqlitePool,
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
 };
+use std::str::FromStr;
 
-pub async fn connect_sqlite(database_url: &str) -> Result<DatabaseConnection, DbErr> {
-    let mut options = ConnectOptions::new(database_url.to_string());
-    options.sqlx_logging(false);
+pub async fn connect_sqlite(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
+    let options = SqliteConnectOptions::from_str(database_url)?
+        .journal_mode(SqliteJournalMode::Wal)
+        .foreign_keys(true)
+        .create_if_missing(true);
 
-    let conn = Database::connect(options).await?;
-    conn.execute(Statement::from_string(
-        DbBackend::Sqlite,
-        "PRAGMA journal_mode = WAL;",
-    ))
-    .await?;
-    conn.execute(Statement::from_string(
-        DbBackend::Sqlite,
-        "PRAGMA foreign_keys = ON;",
-    ))
-    .await?;
-
-    Ok(conn)
+    SqlitePoolOptions::new()
+        .connect_with(options)
+        .await
 }

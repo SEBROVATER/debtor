@@ -89,7 +89,7 @@ pub async fn handle_delete_expense(state: &AppState, expense_id: &str) -> Result
 pub async fn handle_list_expenses(
     state: &AppState,
     group_id: &str,
-) -> Result<Vec<crate::db::entities::expenses::Model>, AppError> {
+) -> Result<Vec<crate::expenses::expense_repo::ExpenseRow>, AppError> {
     let service = ExpenseService::new(state.db.clone());
     service
         .list_expenses(group_id)

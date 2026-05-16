@@ -1,11 +1,9 @@
-use sea_orm::DbErr;
-
 use crate::web::csrf::CsrfError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
     #[error("database error: {0}")]
-    Database(#[from] DbErr),
+    Database(#[from] sqlx::Error),
     #[error("validation error: {0}")]
     Validation(String),
     #[error("unauthorized")]

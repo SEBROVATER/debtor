@@ -1,28 +1,48 @@
 use chrono::NaiveDateTime;
-use sea_orm::{ColumnTrait, DatabaseConnection, DbErr, EntityTrait, QueryFilter, Set};
+use rust_decimal::Decimal;
+use sqlx::SqlitePool;
 use uuid::Uuid;
 
-use crate::db::entities::expense_shares;
 use crate::expenses::share_splitter::{ShareAllocation, ShareMode};
+
+#[derive(Debug, Clone)]
+pub struct ExpenseShareRow {
+    pub id: String,
+    pub expense_id: String,
+    pub member_id: String,
+    pub share_mode: String,
+    pub share_value: Decimal,
+    pub computed_amount: Decimal,
+    pub created_at: NaiveDateTime,
+    pub updated_at: NaiveDateTime,
+}
 
 #[derive(Clone)]
 pub struct ShareRepo {
-    conn: DatabaseConnection,
+    pool: SqlitePool,
 }
 
 impl ShareRepo {
-    pub fn new(conn: DatabaseConnection) -> Self {
-        Self { conn }
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
     }
 
     pub async fn list_by_expense(
         &self,
         expense_id: &str,
-    ) -> Result<Vec<expense_shares::Model>, DbErr> {
-        expense_shares::Entity::find()
-            .filter(expense_shares::Column::ExpenseId.eq(expense_id))
-            .all(&self.conn)
-            .await
+    ) -> Result<Vec<ExpenseShareRow>, sqlx::Error> {
+        sqlx::query_as!(
+            ExpenseShareRow,
+            r#"SELECT id, expense_id, member_id, share_mode,
+               share_value as "share_value: Decimal",
+               computed_amount as "computed_amount: Decimal",
+               created_at as "created_at: NaiveDateTime",
+               updated_at as "updated_at: NaiveDateTime"
+               FROM expense_shares WHERE expense_id = ?"#,
+            expense_id
+        )
+        .fetch_all(&self.pool)
+        .await
     }
 
     pub async fn replace_shares(
@@ -30,33 +50,33 @@ impl ShareRepo {
         expense_id: &str,
         shares: Vec<ShareAllocation>,
         now: NaiveDateTime,
-    ) -> Result<Vec<expense_shares::Model>, DbErr> {
-        expense_shares::Entity::delete_many()
-            .filter(expense_shares::Column::ExpenseId.eq(expense_id))
-            .exec(&self.conn)
+    ) -> Result<Vec<ExpenseShareRow>, sqlx::Error> {
+        sqlx::query!("DELETE FROM expense_shares WHERE expense_id = ?", expense_id)
+            .execute(&self.pool)
             .await?;
 
         if shares.is_empty() {
             return Ok(Vec::new());
         }
 
-        let models = shares
-            .into_iter()
-            .map(|share| expense_shares::ActiveModel {
-                id: Set(Uuid::new_v4().to_string()),
-                expense_id: Set(expense_id.to_string()),
-                member_id: Set(share.member_id),
-                share_mode: Set(mode_to_string(share.mode)),
-                share_value: Set(share.share_value),
-                computed_amount: Set(share.computed_amount),
-                created_at: Set(now),
-                updated_at: Set(now),
-            })
-            .collect::<Vec<_>>();
-
-        expense_shares::Entity::insert_many(models)
-            .exec(&self.conn)
+        for share in shares {
+            let id = Uuid::new_v4().to_string();
+            let mode = mode_to_string(share.mode);
+            sqlx::query!(
+                "INSERT INTO expense_shares (id, expense_id, member_id, share_mode, share_value, computed_amount, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                id,
+                expense_id,
+                share.member_id,
+                mode,
+                share.share_value,
+                share.computed_amount,
+                now,
+                now
+            )
+            .execute(&self.pool)
             .await?;
+        }
 
         self.list_by_expense(expense_id).await
     }

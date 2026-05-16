@@ -1,10 +1,9 @@
 use chrono::NaiveDateTime;
+use sqlx::SqlitePool;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::db::entities::groups;
-use crate::groups::group_repo::GroupRepo;
-use sea_orm::DbErr;
+use crate::groups::group_repo::{GroupRepo, GroupRow};
 
 #[derive(Debug, Error)]
 pub enum GroupError {
@@ -13,7 +12,7 @@ pub enum GroupError {
     #[error("validation error: {0}")]
     Validation(String),
     #[error(transparent)]
-    Database(#[from] DbErr),
+    Database(#[from] sqlx::Error),
 }
 
 #[derive(Debug, Clone)]
@@ -24,7 +23,7 @@ pub struct GroupUpdate {
 
 #[derive(Debug, Clone)]
 pub struct GroupUpdateOutcome {
-    pub group: groups::Model,
+    pub group: GroupRow,
     pub currency_changed: bool,
 }
 
@@ -34,9 +33,9 @@ pub struct GroupService {
 }
 
 impl GroupService {
-    pub fn new(conn: sea_orm::DatabaseConnection) -> Self {
+    pub fn new(pool: SqlitePool) -> Self {
         Self {
-            repo: GroupRepo::new(conn),
+            repo: GroupRepo::new(pool),
         }
     }
 
@@ -45,7 +44,7 @@ impl GroupService {
         name: &str,
         target_currency: &str,
         now: NaiveDateTime,
-    ) -> Result<groups::Model, GroupError> {
+    ) -> Result<GroupRow, GroupError> {
         let name = normalize_name(name)?;
         let target_currency = normalize_currency(target_currency)?;
         let id = Uuid::new_v4().to_string();
@@ -54,7 +53,7 @@ impl GroupService {
         Ok(group)
     }
 
-    pub async fn list_groups(&self) -> Result<Vec<groups::Model>, GroupError> {
+    pub async fn list_groups(&self) -> Result<Vec<GroupRow>, GroupError> {
         Ok(self.repo.list().await?)
     }
 

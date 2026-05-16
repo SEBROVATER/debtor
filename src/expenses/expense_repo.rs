@@ -1,19 +1,30 @@
 use chrono::{NaiveDate, NaiveDateTime};
 use rust_decimal::Decimal;
-use sea_orm::{
-    ActiveModelTrait, ColumnTrait, DatabaseConnection, DbErr, EntityTrait, QueryFilter, Set,
-};
+use sqlx::SqlitePool;
 
-use crate::db::entities::{expense_shares, expenses};
+use crate::expenses::share_repo::ExpenseShareRow;
+
+#[derive(Debug, Clone)]
+pub struct ExpenseRow {
+    pub id: String,
+    pub group_id: String,
+    pub payer_member_id: String,
+    pub amount: Decimal,
+    pub currency: String,
+    pub note: Option<String>,
+    pub expense_date: NaiveDate,
+    pub created_at: NaiveDateTime,
+    pub updated_at: NaiveDateTime,
+}
 
 #[derive(Clone)]
 pub struct ExpenseRepo {
-    conn: DatabaseConnection,
+    pool: SqlitePool,
 }
 
 impl ExpenseRepo {
-    pub fn new(conn: DatabaseConnection) -> Self {
-        Self { conn }
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
     }
 
     pub async fn create(
@@ -26,20 +37,24 @@ impl ExpenseRepo {
         expense_date: NaiveDate,
         note: Option<String>,
         now: NaiveDateTime,
-    ) -> Result<expenses::Model, DbErr> {
-        let model = expenses::ActiveModel {
-            id: Set(id.clone()),
-            group_id: Set(group_id.clone()),
-            payer_member_id: Set(payer_member_id.clone()),
-            amount: Set(amount),
-            currency: Set(currency.clone()),
-            note: Set(note.clone()),
-            expense_date: Set(expense_date),
-            created_at: Set(now),
-            updated_at: Set(now),
-        };
-        expenses::Entity::insert(model).exec(&self.conn).await?;
-        Ok(expenses::Model {
+    ) -> Result<ExpenseRow, sqlx::Error> {
+        sqlx::query!(
+            "INSERT INTO expenses (id, group_id, payer_member_id, amount, currency, note, expense_date, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            id,
+            group_id,
+            payer_member_id,
+            amount,
+            currency,
+            note,
+            expense_date,
+            now,
+            now
+        )
+        .execute(&self.pool)
+        .await?;
+
+        Ok(ExpenseRow {
             id,
             group_id,
             payer_member_id,
@@ -52,28 +67,61 @@ impl ExpenseRepo {
         })
     }
 
-    pub async fn find(&self, expense_id: &str) -> Result<Option<expenses::Model>, DbErr> {
-        expenses::Entity::find_by_id(expense_id.to_string())
-            .one(&self.conn)
-            .await
+    pub async fn find(&self, expense_id: &str) -> Result<Option<ExpenseRow>, sqlx::Error> {
+        sqlx::query_as!(
+            ExpenseRow,
+            r#"SELECT id, group_id, payer_member_id,
+               amount as "amount: Decimal", currency, note,
+               expense_date as "expense_date: NaiveDate",
+               created_at as "created_at: NaiveDateTime",
+               updated_at as "updated_at: NaiveDateTime"
+               FROM expenses WHERE id = ?"#,
+            expense_id
+        )
+        .fetch_optional(&self.pool)
+        .await
     }
 
-    pub async fn list_by_group(&self, group_id: &str) -> Result<Vec<expenses::Model>, DbErr> {
-        expenses::Entity::find()
-            .filter(expenses::Column::GroupId.eq(group_id))
-            .all(&self.conn)
-            .await
+    pub async fn list_by_group(&self, group_id: &str) -> Result<Vec<ExpenseRow>, sqlx::Error> {
+        sqlx::query_as!(
+            ExpenseRow,
+            r#"SELECT id, group_id, payer_member_id,
+               amount as "amount: Decimal", currency, note,
+               expense_date as "expense_date: NaiveDate",
+               created_at as "created_at: NaiveDateTime",
+               updated_at as "updated_at: NaiveDateTime"
+               FROM expenses WHERE group_id = ?"#,
+            group_id
+        )
+        .fetch_all(&self.pool)
+        .await
     }
 
     pub async fn list_with_shares_by_group(
         &self,
         group_id: &str,
-    ) -> Result<Vec<(expenses::Model, Vec<expense_shares::Model>)>, DbErr> {
-        expenses::Entity::find()
-            .filter(expenses::Column::GroupId.eq(group_id))
-            .find_with_related(expense_shares::Entity)
-            .all(&self.conn)
-            .await
+    ) -> Result<Vec<(ExpenseRow, Vec<ExpenseShareRow>)>, sqlx::Error> {
+        let expenses = self.list_by_group(group_id).await?;
+        let mut result = Vec::with_capacity(expenses.len());
+
+        for expense in expenses {
+            let shares = sqlx::query_as!(
+                ExpenseShareRow,
+                r#"SELECT id, expense_id, member_id, share_mode,
+                   share_value as "share_value: Decimal",
+                   computed_amount as "computed_amount: Decimal",
+                   created_at as "created_at: NaiveDateTime",
+                   updated_at as "updated_at: NaiveDateTime"
+                   FROM expense_shares WHERE expense_id = ?"#,
+                expense.id
+            )
+            .fetch_all(&self.pool)
+            .await?;
+
+            result.push((expense, shares));
+        }
+
+        Ok(result)
     }
 
     pub async fn update(
@@ -85,31 +133,35 @@ impl ExpenseRepo {
         expense_date: NaiveDate,
         note: Option<String>,
         now: NaiveDateTime,
-    ) -> Result<Option<expenses::Model>, DbErr> {
-        let Some(existing) = self.find(expense_id).await? else {
+    ) -> Result<Option<ExpenseRow>, sqlx::Error> {
+        let Some(_existing) = self.find(expense_id).await? else {
             return Ok(None);
         };
 
-        let updated = expenses::ActiveModel {
-            id: Set(existing.id),
-            payer_member_id: Set(payer_member_id),
-            amount: Set(amount),
-            currency: Set(currency),
-            note: Set(note),
-            expense_date: Set(expense_date),
-            updated_at: Set(now),
-            ..Default::default()
-        }
-        .update(&self.conn)
+        sqlx::query!(
+            "UPDATE expenses SET payer_member_id = ?, amount = ?, currency = ?, expense_date = ?, note = ?, updated_at = ?
+             WHERE id = ?",
+            payer_member_id,
+            amount,
+            currency,
+            expense_date,
+            note,
+            now,
+            expense_id
+        )
+        .execute(&self.pool)
         .await?;
 
-        Ok(Some(updated))
+        self.find(expense_id).await
     }
 
-    pub async fn delete(&self, expense_id: &str) -> Result<bool, DbErr> {
-        let result = expenses::Entity::delete_by_id(expense_id.to_string())
-            .exec(&self.conn)
-            .await?;
-        Ok(result.rows_affected > 0)
+    pub async fn delete(&self, expense_id: &str) -> Result<bool, sqlx::Error> {
+        Ok(
+            sqlx::query!("DELETE FROM expenses WHERE id = ?", expense_id)
+                .execute(&self.pool)
+                .await?
+                .rows_affected()
+                > 0,
+        )
     }
 }

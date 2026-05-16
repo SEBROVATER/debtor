@@ -1,11 +1,10 @@
 use chrono::NaiveDateTime;
+use sqlx::SqlitePool;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::db::entities::members;
 use crate::groups::group_repo::GroupRepo;
-use crate::groups::member_repo::MemberRepo;
-use sea_orm::DbErr;
+use crate::groups::member_repo::{MemberRepo, MemberRow};
 
 #[derive(Debug, Error)]
 pub enum MemberError {
@@ -16,7 +15,7 @@ pub enum MemberError {
     #[error("validation error: {0}")]
     Validation(String),
     #[error(transparent)]
-    Database(#[from] DbErr),
+    Database(#[from] sqlx::Error),
 }
 
 #[derive(Clone)]
@@ -26,10 +25,10 @@ pub struct MemberService {
 }
 
 impl MemberService {
-    pub fn new(conn: sea_orm::DatabaseConnection) -> Self {
+    pub fn new(pool: SqlitePool) -> Self {
         Self {
-            member_repo: MemberRepo::new(conn.clone()),
-            group_repo: GroupRepo::new(conn),
+            member_repo: MemberRepo::new(pool.clone()),
+            group_repo: GroupRepo::new(pool),
         }
     }
 
@@ -38,7 +37,7 @@ impl MemberService {
         group_id: &str,
         display_name: &str,
         now: NaiveDateTime,
-    ) -> Result<members::Model, MemberError> {
+    ) -> Result<MemberRow, MemberError> {
         self.ensure_group_exists(group_id).await?;
         let display_name = normalize_name(display_name)?;
         self.ensure_unique_active_name(group_id, &display_name)
@@ -58,7 +57,7 @@ impl MemberService {
         member_id: &str,
         display_name: &str,
         now: NaiveDateTime,
-    ) -> Result<members::Model, MemberError> {
+    ) -> Result<MemberRow, MemberError> {
         self.ensure_group_exists(group_id).await?;
         let display_name = normalize_name(display_name)?;
         self.ensure_unique_active_name(group_id, &display_name)
@@ -84,7 +83,7 @@ impl MemberService {
         group_id: &str,
         member_id: &str,
         now: NaiveDateTime,
-    ) -> Result<members::Model, MemberError> {
+    ) -> Result<MemberRow, MemberError> {
         self.ensure_group_exists(group_id).await?;
         let existing = self.member_repo.find(member_id).await?;
         let Some(existing) = existing else {
@@ -102,7 +101,7 @@ impl MemberService {
         &self,
         group_id: &str,
         include_inactive: bool,
-    ) -> Result<Vec<members::Model>, MemberError> {
+    ) -> Result<Vec<MemberRow>, MemberError> {
         self.ensure_group_exists(group_id).await?;
         Ok(self.member_repo.list(group_id, include_inactive).await?)
     }

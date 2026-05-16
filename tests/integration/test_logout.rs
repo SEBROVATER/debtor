@@ -1,8 +1,6 @@
 use chrono::Utc;
 use debtor::auth::login_service::{LoginResult, LoginService};
 use debtor::auth::session_repo::SessionRepo;
-use debtor::db::entities::sessions;
-use sea_orm::EntityTrait;
 
 #[path = "../support/mod.rs"]
 mod support;
@@ -32,10 +30,12 @@ async fn logout_revokes_session() {
         .expect("session lookup");
     assert!(active.is_none(), "session should not be active");
 
-    let stored = sessions::Entity::find()
-        .one(&state.db)
-        .await
-        .expect("session row")
-        .expect("session row exists");
+    let stored = sqlx::query!(
+        "SELECT revoked_at FROM sessions WHERE token_hash = ?",
+        token.hash
+    )
+    .fetch_one(&state.db)
+    .await
+    .expect("session row");
     assert!(stored.revoked_at.is_some(), "revoked_at should be set");
 }

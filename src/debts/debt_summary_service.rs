@@ -2,14 +2,14 @@ use chrono::NaiveDateTime;
 use rust_decimal::Decimal;
 use rust_decimal::RoundingStrategy;
 
-use crate::db::entities::{expense_shares, expenses, groups};
 use crate::debts::balance_calculator::{ExpenseShareSummary, MemberShare, compute_balances};
 use crate::debts::simplify::{DebtTransfer, minimal_transfers};
 use crate::exchange_rates::rate_repo::RateRepo;
 use crate::exchange_rates::rate_service::{RateError, RateService};
-use crate::expenses::expense_repo::ExpenseRepo;
-use crate::groups::group_repo::GroupRepo;
-use sea_orm::DatabaseConnection;
+use crate::expenses::expense_repo::{ExpenseRepo, ExpenseRow};
+use crate::expenses::share_repo::ExpenseShareRow;
+use crate::groups::group_repo::{GroupRepo, GroupRow};
+use sqlx::SqlitePool;
 use thiserror::Error;
 
 #[derive(Debug, Clone)]
@@ -27,7 +27,7 @@ pub enum DebtSummaryError {
     #[error("conversion blocked")]
     ConversionBlocked,
     #[error(transparent)]
-    Database(#[from] sea_orm::DbErr),
+    Database(#[from] sqlx::Error),
 }
 
 #[derive(Clone)]
@@ -38,29 +38,29 @@ pub struct DebtSummaryService {
 }
 
 impl DebtSummaryService {
-    pub fn new(conn: DatabaseConnection) -> Self {
+    pub fn new(pool: SqlitePool) -> Self {
         Self {
-            expense_repo: ExpenseRepo::new(conn.clone()),
-            group_repo: GroupRepo::new(conn),
+            expense_repo: ExpenseRepo::new(pool.clone()),
+            group_repo: GroupRepo::new(pool),
             rate_service: None,
         }
     }
 
-    pub fn with_rate_service(conn: DatabaseConnection, rate_service: RateService) -> Self {
+    pub fn with_rate_service(pool: SqlitePool, rate_service: RateService) -> Self {
         Self {
-            expense_repo: ExpenseRepo::new(conn.clone()),
-            group_repo: GroupRepo::new(conn),
+            expense_repo: ExpenseRepo::new(pool.clone()),
+            group_repo: GroupRepo::new(pool),
             rate_service: Some(rate_service),
         }
     }
 
     pub fn with_provider(
-        conn: DatabaseConnection,
+        pool: SqlitePool,
         provider: std::sync::Arc<dyn crate::exchange_rates::rate_service::ExchangeProvider>,
     ) -> Self {
-        let repo = RateRepo::new(conn.clone());
+        let repo = RateRepo::new(pool.clone());
         let rate_service = RateService::new(repo, provider);
-        Self::with_rate_service(conn, rate_service)
+        Self::with_rate_service(pool, rate_service)
     }
 
     pub async fn summarize_group(
@@ -106,8 +106,8 @@ impl DebtSummaryService {
 
     async fn collect_expense_summaries(
         &self,
-        expenses_with_shares: &[(expenses::Model, Vec<expense_shares::Model>)],
-        group: &groups::Model,
+        expenses_with_shares: &[(ExpenseRow, Vec<ExpenseShareRow>)],
+        group: &GroupRow,
         now: NaiveDateTime,
     ) -> Result<(Vec<ExpenseShareSummary>, bool), DebtSummaryError> {
         let mut summaries = Vec::with_capacity(expenses_with_shares.len());
@@ -153,7 +153,7 @@ impl DebtSummaryService {
     }
 }
 
-fn map_share(share: expense_shares::Model, rate: Decimal) -> MemberShare {
+fn map_share(share: ExpenseShareRow, rate: Decimal) -> MemberShare {
     MemberShare {
         member_id: share.member_id,
         amount: share.computed_amount * rate,

@@ -1,7 +1,6 @@
 use std::collections::HashSet;
 
 use debtor::db::bootstrap::initialize_database;
-use sea_orm::{ConnectionTrait, DbBackend, Statement};
 use tempfile::tempdir;
 
 #[tokio::test]
@@ -11,23 +10,16 @@ async fn bootstrap_runs_migrations_and_creates_tables() {
     let db_path_str = db_path.to_string_lossy().replace("\\", "/");
     let database_url = format!("sqlite://{}?mode=rwc", db_path_str);
 
-    let conn = initialize_database(&database_url)
+    let pool = initialize_database(&database_url)
         .await
         .expect("bootstrap should succeed");
 
-    let rows = conn
-        .query_all(Statement::from_string(
-            DbBackend::Sqlite,
-            "SELECT name FROM sqlite_master WHERE type='table'",
-        ))
+    let rows = sqlx::query!("SELECT name FROM sqlite_master WHERE type='table'")
+        .fetch_all(&pool)
         .await
         .expect("query sqlite_master");
 
-    let mut names = HashSet::new();
-    for row in rows {
-        let name: String = row.try_get::<String>("", "name").expect("table name");
-        names.insert(name);
-    }
+    let names: HashSet<String> = rows.into_iter().map(|r| r.name.unwrap_or_default()).collect();
 
     let required = [
         "admin_users",
@@ -45,7 +37,7 @@ async fn bootstrap_runs_migrations_and_creates_tables() {
     }
 
     assert!(
-        names.contains("seaql_migrations"),
-        "missing migration table"
+        names.contains("_sqlx_migrations"),
+        "missing sqlx migration tracking table"
     );
 }

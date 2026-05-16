@@ -1,44 +1,64 @@
 use chrono::{Duration, NaiveDateTime};
-use sea_orm::{ActiveModelTrait, DatabaseConnection, DbErr, EntityTrait, Set};
+use sqlx::SqlitePool;
 
-use crate::db::entities::auth_state;
-
-const AUTH_STATE_ID: i32 = 1;
-const LOCKOUT_THRESHOLD: i32 = 5;
+const AUTH_STATE_ID: i64 = 1;
+const LOCKOUT_THRESHOLD: i64 = 5;
 const LOCKOUT_MINUTES: i64 = 15;
+
+#[derive(Debug, Clone)]
+pub struct AuthStateRow {
+    pub id: i64,
+    pub failed_attempt_count: i64,
+    pub lockout_until: Option<NaiveDateTime>,
+    pub last_failed_at: Option<NaiveDateTime>,
+    pub updated_at: NaiveDateTime,
+}
 
 #[derive(Clone)]
 pub struct AuthStateRepo {
-    conn: DatabaseConnection,
+    pool: SqlitePool,
 }
 
 impl AuthStateRepo {
-    pub fn new(conn: DatabaseConnection) -> Self {
-        Self { conn }
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
     }
 
-    pub async fn load_or_create(&self, now: NaiveDateTime) -> Result<auth_state::Model, DbErr> {
-        if let Some(model) = auth_state::Entity::find_by_id(AUTH_STATE_ID)
-            .one(&self.conn)
-            .await?
+    pub async fn load_or_create(&self, now: NaiveDateTime) -> Result<AuthStateRow, sqlx::Error> {
+        if let Some(row) = sqlx::query_as!(
+            AuthStateRow,
+            r#"SELECT id, failed_attempt_count,
+               lockout_until as "lockout_until: Option<NaiveDateTime>",
+               last_failed_at as "last_failed_at: Option<NaiveDateTime>",
+               updated_at as "updated_at: NaiveDateTime"
+               FROM auth_state WHERE id = ?"#,
+            AUTH_STATE_ID
+        )
+        .fetch_optional(&self.pool)
+        .await?
         {
-            return Ok(model);
+            return Ok(row);
         }
 
-        let model = auth_state::ActiveModel {
-            id: Set(AUTH_STATE_ID),
-            failed_attempt_count: Set(0),
-            lockout_until: Set(None),
-            last_failed_at: Set(None),
-            updated_at: Set(now),
-        }
-        .insert(&self.conn)
+        sqlx::query!(
+            "INSERT INTO auth_state (id, failed_attempt_count, lockout_until, last_failed_at, updated_at)
+             VALUES (?, 0, NULL, NULL, ?)",
+            AUTH_STATE_ID,
+            now
+        )
+        .execute(&self.pool)
         .await?;
 
-        Ok(model)
+        Ok(AuthStateRow {
+            id: AUTH_STATE_ID,
+            failed_attempt_count: 0,
+            lockout_until: None,
+            last_failed_at: None,
+            updated_at: now,
+        })
     }
 
-    pub fn is_locked_out(state: &auth_state::Model, now: NaiveDateTime) -> bool {
+    pub fn is_locked_out(state: &AuthStateRow, now: NaiveDateTime) -> bool {
         state
             .lockout_until
             .map(|until| until > now)
@@ -47,9 +67,9 @@ impl AuthStateRepo {
 
     pub async fn record_failure(
         &self,
-        mut state: auth_state::Model,
+        mut state: AuthStateRow,
         now: NaiveDateTime,
-    ) -> Result<auth_state::Model, DbErr> {
+    ) -> Result<AuthStateRow, sqlx::Error> {
         state.failed_attempt_count += 1;
         state.last_failed_at = Some(now);
 
@@ -57,34 +77,44 @@ impl AuthStateRepo {
             state.lockout_until = Some(now + Duration::minutes(LOCKOUT_MINUTES));
         }
 
-        let updated = auth_state::ActiveModel {
-            id: Set(state.id),
-            failed_attempt_count: Set(state.failed_attempt_count),
-            lockout_until: Set(state.lockout_until),
-            last_failed_at: Set(state.last_failed_at),
-            updated_at: Set(now),
-        }
-        .update(&self.conn)
+        sqlx::query!(
+            "UPDATE auth_state
+             SET failed_attempt_count = ?, lockout_until = ?, last_failed_at = ?, updated_at = ?
+             WHERE id = ?",
+            state.failed_attempt_count,
+            state.lockout_until,
+            state.last_failed_at,
+            now,
+            state.id
+        )
+        .execute(&self.pool)
         .await?;
 
-        Ok(updated)
+        state.updated_at = now;
+        Ok(state)
     }
 
     pub async fn reset_failures(
         &self,
-        state: auth_state::Model,
+        state: AuthStateRow,
         now: NaiveDateTime,
-    ) -> Result<auth_state::Model, DbErr> {
-        let updated = auth_state::ActiveModel {
-            id: Set(state.id),
-            failed_attempt_count: Set(0),
-            lockout_until: Set(None),
-            last_failed_at: Set(None),
-            updated_at: Set(now),
-        }
-        .update(&self.conn)
+    ) -> Result<AuthStateRow, sqlx::Error> {
+        sqlx::query!(
+            "UPDATE auth_state
+             SET failed_attempt_count = 0, lockout_until = NULL, last_failed_at = NULL, updated_at = ?
+             WHERE id = ?",
+            now,
+            state.id
+        )
+        .execute(&self.pool)
         .await?;
 
-        Ok(updated)
+        Ok(AuthStateRow {
+            id: state.id,
+            failed_attempt_count: 0,
+            lockout_until: None,
+            last_failed_at: None,
+            updated_at: now,
+        })
     }
 }

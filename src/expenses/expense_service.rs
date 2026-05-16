@@ -1,14 +1,13 @@
 use chrono::{NaiveDate, NaiveDateTime};
 use rust_decimal::Decimal;
+use sqlx::SqlitePool;
 use thiserror::Error;
 
-use crate::db::entities::expense_shares;
-use crate::expenses::expense_repo::ExpenseRepo;
-use crate::expenses::share_repo::ShareRepo;
+use crate::expenses::expense_repo::{ExpenseRepo, ExpenseRow};
+use crate::expenses::share_repo::{ExpenseShareRow, ShareRepo};
 use crate::expenses::share_splitter::{ShareInput, ShareSplitError, normalize_shares};
 use crate::groups::group_repo::GroupRepo;
 use crate::groups::member_repo::MemberRepo;
-use sea_orm::DbErr;
 
 #[derive(Debug, Error)]
 pub enum ExpenseError {
@@ -17,7 +16,7 @@ pub enum ExpenseError {
     #[error("validation error: {0}")]
     Validation(String),
     #[error(transparent)]
-    Database(#[from] DbErr),
+    Database(#[from] sqlx::Error),
     #[error(transparent)]
     ShareSplit(#[from] ShareSplitError),
 }
@@ -45,8 +44,8 @@ pub struct UpdateExpense {
 
 #[derive(Debug, Clone)]
 pub struct ExpenseWithShares {
-    pub expense: crate::db::entities::expenses::Model,
-    pub shares: Vec<expense_shares::Model>,
+    pub expense: ExpenseRow,
+    pub shares: Vec<ExpenseShareRow>,
 }
 
 #[derive(Clone)]
@@ -58,12 +57,12 @@ pub struct ExpenseService {
 }
 
 impl ExpenseService {
-    pub fn new(conn: sea_orm::DatabaseConnection) -> Self {
+    pub fn new(pool: SqlitePool) -> Self {
         Self {
-            expense_repo: ExpenseRepo::new(conn.clone()),
-            share_repo: ShareRepo::new(conn.clone()),
-            group_repo: GroupRepo::new(conn.clone()),
-            member_repo: MemberRepo::new(conn),
+            expense_repo: ExpenseRepo::new(pool.clone()),
+            share_repo: ShareRepo::new(pool.clone()),
+            group_repo: GroupRepo::new(pool.clone()),
+            member_repo: MemberRepo::new(pool),
         }
     }
 
@@ -158,7 +157,7 @@ impl ExpenseService {
     pub async fn list_expenses(
         &self,
         group_id: &str,
-    ) -> Result<Vec<crate::db::entities::expenses::Model>, ExpenseError> {
+    ) -> Result<Vec<ExpenseRow>, ExpenseError> {
         Ok(self.expense_repo.list_by_group(group_id).await?)
     }
 

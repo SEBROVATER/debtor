@@ -1,13 +1,9 @@
 use chrono::{Duration, NaiveDateTime};
 use sha2::{Digest, Sha256};
+use sqlx::SqlitePool;
 use uuid::Uuid;
 
-use sea_orm::{
-    ActiveModelTrait, ColumnTrait, DatabaseConnection, DbErr, EntityTrait, QueryFilter, Set,
-};
-
 use crate::app::config::AppConfig;
-use crate::db::entities::sessions;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SameSitePolicy {
@@ -44,35 +40,49 @@ pub struct SessionToken {
     pub expires_at: NaiveDateTime,
 }
 
+#[derive(Debug, Clone)]
+pub struct SessionRow {
+    pub id: String,
+    pub user_id: i64,
+    pub token_hash: String,
+    pub created_at: NaiveDateTime,
+    pub last_seen_at: NaiveDateTime,
+    pub expires_at: NaiveDateTime,
+    pub revoked_at: Option<NaiveDateTime>,
+}
+
 #[derive(Clone)]
 pub struct SessionRepo {
-    conn: DatabaseConnection,
+    pool: SqlitePool,
 }
 
 impl SessionRepo {
-    pub fn new(conn: DatabaseConnection) -> Self {
-        Self { conn }
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
     }
 
     pub async fn create_session(
         &self,
-        user_id: i32,
+        user_id: i64,
         now: NaiveDateTime,
-    ) -> Result<SessionToken, DbErr> {
+    ) -> Result<SessionToken, sqlx::Error> {
         let raw = Uuid::new_v4().to_string();
         let hash = hash_token(&raw);
         let expires_at = now + Duration::days(30);
+        let session_id = Uuid::new_v4().to_string();
 
-        let model = sessions::ActiveModel {
-            id: Set(Uuid::new_v4().to_string()),
-            user_id: Set(user_id),
-            token_hash: Set(hash.clone()),
-            created_at: Set(now),
-            last_seen_at: Set(now),
-            expires_at: Set(expires_at),
-            revoked_at: Set(None),
-        };
-        sessions::Entity::insert(model).exec(&self.conn).await?;
+        sqlx::query!(
+            "INSERT INTO sessions (id, user_id, token_hash, created_at, last_seen_at, expires_at, revoked_at)
+             VALUES (?, ?, ?, ?, ?, ?, NULL)",
+            session_id,
+            user_id,
+            hash,
+            now,
+            now,
+            expires_at
+        )
+        .execute(&self.pool)
+        .await?;
 
         Ok(SessionToken {
             raw,
@@ -85,60 +95,68 @@ impl SessionRepo {
         &self,
         raw_token: &str,
         now: NaiveDateTime,
-    ) -> Result<Option<sessions::Model>, DbErr> {
+    ) -> Result<Option<SessionRow>, sqlx::Error> {
         let hash = hash_token(raw_token);
-        let session = sessions::Entity::find()
-            .filter(sessions::Column::TokenHash.eq(hash))
-            .filter(sessions::Column::RevokedAt.is_null())
-            .one(&self.conn)
-            .await?;
+        let row = sqlx::query_as!(
+            SessionRow,
+            r#"SELECT id, user_id,
+               token_hash,
+               created_at as "created_at: NaiveDateTime",
+               last_seen_at as "last_seen_at: NaiveDateTime",
+               expires_at as "expires_at: NaiveDateTime",
+               revoked_at as "revoked_at: Option<NaiveDateTime>"
+               FROM sessions
+               WHERE token_hash = ? AND revoked_at IS NULL"#,
+            hash
+        )
+        .fetch_optional(&self.pool)
+        .await?;
 
-        Ok(session.filter(|s| s.expires_at > now))
+        Ok(row.filter(|s| s.expires_at > now))
     }
 
     pub async fn touch_session(
         &self,
         raw_token: &str,
         now: NaiveDateTime,
-    ) -> Result<Option<sessions::Model>, DbErr> {
+    ) -> Result<Option<SessionRow>, sqlx::Error> {
         let session = self.find_active_session(raw_token, now).await?;
         let Some(session) = session else {
             return Ok(None);
         };
 
         let new_expires_at = now + Duration::days(30);
-        let updated = sessions::ActiveModel {
-            id: Set(session.id.clone()),
-            last_seen_at: Set(now),
-            expires_at: Set(new_expires_at),
-            ..Default::default()
-        }
-        .update(&self.conn)
+        sqlx::query!(
+            "UPDATE sessions SET last_seen_at = ?, expires_at = ? WHERE id = ?",
+            now,
+            new_expires_at,
+            session.id
+        )
+        .execute(&self.pool)
         .await?;
 
-        Ok(Some(updated))
+        Ok(Some(SessionRow {
+            last_seen_at: now,
+            expires_at: new_expires_at,
+            ..session
+        }))
     }
 
-    pub async fn revoke_session(&self, raw_token: &str, now: NaiveDateTime) -> Result<bool, DbErr> {
+    pub async fn revoke_session(
+        &self,
+        raw_token: &str,
+        now: NaiveDateTime,
+    ) -> Result<bool, sqlx::Error> {
         let hash = hash_token(raw_token);
-        let session = sessions::Entity::find()
-            .filter(sessions::Column::TokenHash.eq(hash))
-            .one(&self.conn)
-            .await?;
-
-        let Some(session) = session else {
-            return Ok(false);
-        };
-
-        let _ = sessions::ActiveModel {
-            id: Set(session.id),
-            revoked_at: Set(Some(now)),
-            ..Default::default()
-        }
-        .update(&self.conn)
-        .await?;
-
-        Ok(true)
+        Ok(sqlx::query!(
+            "UPDATE sessions SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL",
+            now,
+            hash
+        )
+        .execute(&self.pool)
+        .await?
+        .rows_affected()
+            > 0)
     }
 }
 

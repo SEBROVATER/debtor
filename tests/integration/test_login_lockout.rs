@@ -1,7 +1,5 @@
 use chrono::Utc;
 use debtor::auth::login_service::{LoginResult, LoginService};
-use debtor::db::entities::auth_state;
-use sea_orm::EntityTrait;
 
 #[path = "../support/mod.rs"]
 mod support;
@@ -26,10 +24,9 @@ async fn lockout_triggers_after_five_failures() {
         .expect("login");
     assert!(matches!(result, LoginResult::LockedOut { .. }));
 
-    let stored = auth_state::Entity::find_by_id(1)
-        .one(&state.db)
+    let stored = sqlx::query!("SELECT lockout_until FROM auth_state WHERE id = 1")
+        .fetch_one(&state.db)
         .await
-        .expect("auth_state")
         .expect("auth_state row");
     assert!(stored.lockout_until.is_some(), "lockout should be set");
 }

@@ -27,7 +27,7 @@ pub enum RateError {
     #[error("provider failed: {0}")]
     ProviderFailed(String),
     #[error(transparent)]
-    Database(#[from] sea_orm::DbErr),
+    Database(#[from] sqlx::Error),
     #[error("missing rate")]
     MissingRate,
 }

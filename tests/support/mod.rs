@@ -3,9 +3,8 @@ use chrono::Utc;
 use debtor::app::config::AppConfig;
 use debtor::app::state::AppState;
 use debtor::db::bootstrap::initialize_database;
-use debtor::db::entities::admin_users;
 use debtor::exchange_rates::rate_service::{ExchangeProvider, RateError, RateQuote};
-use sea_orm::{ActiveModelTrait, DatabaseConnection, Set};
+use sqlx::SqlitePool;
 use std::sync::Arc;
 use tempfile::TempDir;
 
@@ -25,29 +24,26 @@ pub fn hash_password(password: &str) -> String {
         .to_string()
 }
 
-pub async fn seed_admin_user(
-    conn: &DatabaseConnection,
-    username: &str,
-    password_hash: &str,
-) -> admin_users::Model {
+pub async fn seed_admin_user(pool: &SqlitePool, username: &str, password_hash: &str) {
     let now = Utc::now().naive_utc();
-    admin_users::ActiveModel {
-        id: Set(1),
-        username: Set(username.to_string()),
-        password_hash: Set(password_hash.to_string()),
-        created_at: Set(now),
-        updated_at: Set(now),
-    }
-    .insert(conn)
+    sqlx::query!(
+        "INSERT INTO admin_users (id, username, password_hash, created_at, updated_at)
+         VALUES (1, ?, ?, ?, ?)",
+        username,
+        password_hash,
+        now,
+        now
+    )
+    .execute(pool)
     .await
-    .expect("insert admin user")
+    .expect("insert admin user");
 }
 
 pub async fn setup_test_state() -> (TempDir, Arc<AppState>, String) {
     let (dir, url) = temp_sqlite_url();
-    let conn = initialize_database(&url).await.expect("init db");
+    let pool = initialize_database(&url).await.expect("init db");
     let password_hash = hash_password("correct_password");
-    seed_admin_user(&conn, "owner", &password_hash).await;
+    seed_admin_user(&pool, "owner", &password_hash).await;
 
     let config = AppConfig {
         database_url: url.clone(),
@@ -59,7 +55,7 @@ pub async fn setup_test_state() -> (TempDir, Arc<AppState>, String) {
     };
 
     let provider = Arc::new(NoopProvider);
-    let state = AppState::new(config, conn, Some(provider));
+    let state = AppState::new(config, pool, Some(provider));
     (dir, state, password_hash)
 }
 
