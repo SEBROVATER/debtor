@@ -59,7 +59,7 @@ debtor (root) → debtor-web → debtor-domain ← debtor-infra
 cargo check              # Fast compilation check
 cargo test               # Run all tests (workspace-wide)
 cargo test -p <crate>    # Run tests for a specific crate
-cargo clippy             # Lint (pedantic + nursery, workspace-wide)
+cargo clippy --fix --allow-dirty  # Lint and auto-fix (pedantic + nursery, workspace-wide)
 cargo fmt                # Format code
 cargo build --release    # Production build
 cargo run                # Run the application (requires .env)
@@ -130,7 +130,7 @@ debtor (root) → debtor-web → debtor-domain ← debtor-infra
 
 - **Language**: Rust, edition 2024. Follow idiomatic Rust patterns throughout.
 - **Formatting**: `cargo fmt` — all code must be formatted before committing.
-- **Linting**: `cargo clippy --workspace` — workspace uses pedantic + nursery lints. Resolve all warnings; treat new warnings as errors.
+- **Linting**: `cargo clippy --fix --allow-dirty --workspace` — workspace uses pedantic + nursery lints. Resolve all warnings; treat new warnings as errors.
 - **Naming**: `snake_case` for functions, variables, and modules; `PascalCase` for types and traits.
 - **Modules**: one domain concept per directory. Expose the public API through `mod.rs`.
 - **Error handling**: use `thiserror`-derived error types; avoid `.unwrap()` and `.expect()` in production code paths.
@@ -149,7 +149,6 @@ Before creating any plan, the agent MUST ask comprehensive clarifying questions 
 - **Data model specifics**: Field names, types, constraints, defaults, nullable columns.
 - **UI/UX expectations**: Which pages need what content? Navigation flow? Form validation UX?
 - **Naming conventions**: Preferred names for domain concepts, database columns, routes.
-- **Testing strategy**: Which test suite(s) are relevant? What behaviours need test coverage?
 - **Integration points**: Does this feature touch external APIs, existing services, or other features?
 
 No plan should be created until all undefined spots are clarified. This prevents rework and ensures the plan is actionable.
@@ -169,57 +168,6 @@ Before using any Rust crate or framework, the agent MUST consult its documentati
 1. Use `context7_resolve-library-id` to find the correct library ID.
 2. Use `context7_query-docs` to fetch relevant documentation for the specific use case.
 3. Write code based on the fetched documentation, not from memory or assumptions.
-
----
-
-## Testing Guidelines
-
-Tests are written using Rust's built-in test framework (`#[test]`, `#[tokio::test]`).
-
-**TDD is mandatory.** Follow Red → Green → Refactor strictly:
-
-1. **Red**: Write a failing test that defines the desired behaviour.
-2. **Green**: Write the minimal implementation to make the test pass.
-3. **Refactor**: Clean up code while keeping all tests passing.
-
-Tests must be written before implementation; no feature is complete without prior-written tests. Skipping the Red phase (writing tests after implementation) is NOT permitted.
-
-### Per-Crate Test Suites
-
-| Crate | Test Location | Purpose |
-|---|---|---|
-| `debtor-domain` | `debtor-domain/tests/` | Pure logic, no I/O — `#[test]` only (no async) |
-| `debtor-infra` | `debtor-infra/tests/` | Repository and adapter tests with real or mock I/O |
-| `debtor-web` | `debtor-web/tests/` | Handler and integration tests against test doubles |
-| Workspace-level | `tests/` (if needed) | Cross-crate integration tests |
-
-**Conventions:**
-- Test files are named `test_<subject>.rs` (e.g., `test_balance_calculator.rs`).
-- Test functions use descriptive `snake_case` names that read as sentences (e.g., `aggregates_balances_across_expenses`).
-- Each test must be independent — no shared mutable state between tests.
-
----
-
-## Commit & Pull Request Guidelines
-
-Commits follow [Conventional Commits](https://www.conventionalcommits.org/):
-
-```
-feat: add expense deletion endpoint
-fix: correct rounding in share splitter
-refactor: extract balance calculator into domain crate
-test: add contract tests for group member service
-chore: update sqlx to 0.8
-```
-
-- Use the **imperative mood** in the subject line.
-- Keep the subject line under 72 characters.
-- Reference a spec when relevant (e.g., `feat(specs/001): implement expense creation`).
-
-Pull requests must:
-- Include a clear description of what changed and why.
-- Pass `cargo fmt --check`, `cargo clippy`, and `cargo test` without errors.
-- Contain tests written before the implementation (TDD — no after-the-fact test additions).
 
 ---
 

@@ -38,9 +38,6 @@ debtor (root) → debtor-web → debtor-domain ← debtor-infra
 ## Quick Start
 
 ```bash
-# Clone and enter the project
-git clone <repo-url> && cd debtor
-
 # Copy environment config
 cp .env.example .env
 
@@ -62,11 +59,8 @@ Visit `http://localhost:3000` (default).
 # Fast compile check
 cargo check
 
-# Run all tests
-cargo test
-
-# Lint (pedantic + nursery clippy)
-cargo clippy
+# Lint and auto-fix (pedantic + nursery clippy)
+cargo clippy --fix --allow-dirty
 
 # Format
 cargo fmt
@@ -94,7 +88,6 @@ debtor/
 - **Modern HTML & CSS** — prefer modern web platform features over deprecated patterns (e.g., CSS logical properties, `:has()`, container queries, `<dialog>`, `popover`, `inert` attribute); avoid legacy workarounds when native solutions exist
 - **Vanilla CSS & semantic HTML** — no CSS frameworks; CSS custom properties for design tokens; Grid/Flexbox layouts; correct semantic elements (`<nav>`, `<main>`, `<time>`, etc.)
 - **Single-user auth** — one owner account, no self-registration, Argon2-hashed password, HTTP-only server-side sessions
-- **TDD mandatory** — Red → Green → Refactor; tests before implementation
 - **Workspace architecture** — 4-crate Cargo workspace with unidirectional dependency flow and `Arc<dyn Trait>` dependency inversion
 
 ## License
