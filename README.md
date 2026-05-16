@@ -4,18 +4,18 @@ A personal, single-owner expense-sharing web application built with Rust.
 
 ## Architecture
 
-`debtor` is a [Cargo workspace] with four crates that enforce clean dependency boundaries:
+`debtor` is a [Cargo workspace] with the binary crate at the root and three library crates:
 
 ```
-debtor-app → debtor-web → debtor-domain ← debtor-infra
+debtor (root) → debtor-web → debtor-domain ← debtor-infra
 ```
 
 | Crate | Purpose |
 |---|---|
+| Root (`debtor`) | Binary — composition root that wires concrete implementations and starts the server. |
 | **debtor-domain** | Pure business logic — balance calculation, debt simplification, share splitting. Zero I/O dependencies; fully unit-testable without async runtimes. |
 | **debtor-infra** | Infrastructure adapters — `SQLx` repositories, `reqwest` HTTP clients, `argon2` password hashing. Implements traits defined in `debtor-domain`. |
 | **debtor-web** | HTTP layer — Axum handlers, `Askama` templates, `axum-htmx` response helpers, middleware (auth, CSRF). |
-| **debtor-app** | Binary crate — composition root that wires concrete implementations and starts the server. |
 
 ### Dependency Inversion
 
@@ -51,7 +51,7 @@ echo -n "yourpassword" | argon2 somesalt -e
 $EDITOR .env
 
 # Build and run
-cargo run -p debtor-app
+cargo run
 ```
 
 Visit `http://localhost:3000` (default).
@@ -62,14 +62,11 @@ Visit `http://localhost:3000` (default).
 # Fast compile check
 cargo check
 
-# Run all tests across workspace
-cargo test --workspace
-
-# Run tests for a specific crate
-cargo test -p debtor-domain
+# Run all tests
+cargo test
 
 # Lint (pedantic + nursery clippy)
-cargo clippy --workspace
+cargo clippy
 
 # Format
 cargo fmt
@@ -79,12 +76,13 @@ cargo fmt
 
 ```
 debtor/
-├── Cargo.toml                  # Workspace root
+├── Cargo.toml                  # Workspace root + binary crate
+├── src/
+│   └── main.rs                 # Application entry point (composition root)
 ├── migrations/                 # SQLx migrations (workspace-level)
 ├── debtor-domain/              # Pure domain logic
 ├── debtor-infra/               # Infrastructure adapters
 ├── debtor-web/                 # HTTP layer
-├── debtor-app/                 # Binary — composition root
 ├── static/css/                 # Vanilla CSS
 └── specs/                      # Feature specs (speckit workflow)
 ```
@@ -93,10 +91,10 @@ debtor/
 
 - **No custom JavaScript** — HTMX attributes only; no JS frameworks, bundlers, or scripts
 - **Axum + composable crates** — mature, independently-maintained components (axum-htmx, Askama, SQLx, tower-sessions, argon2)
+- **Modern HTML & CSS** — prefer modern web platform features over deprecated patterns (e.g., CSS logical properties, `:has()`, container queries, `<dialog>`, `popover`, `inert` attribute); avoid legacy workarounds when native solutions exist
 - **Vanilla CSS & semantic HTML** — no CSS frameworks; CSS custom properties for design tokens; Grid/Flexbox layouts; correct semantic elements (`<nav>`, `<main>`, `<time>`, etc.)
 - **Single-user auth** — one owner account, no self-registration, Argon2-hashed password, HTTP-only server-side sessions
 - **TDD mandatory** — Red → Green → Refactor; tests before implementation
-- **YAGNI** — no premature abstractions; build what is needed now
 - **Workspace architecture** — 4-crate Cargo workspace with unidirectional dependency flow and `Arc<dyn Trait>` dependency inversion
 
 ## License

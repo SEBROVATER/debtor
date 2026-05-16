@@ -1,10 +1,17 @@
+[package]
+name = "debtor"
+description = "Application binary — composition root"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
 [workspace]
 resolver = "3"
 members = [
     "debtor-domain",
     "debtor-infra",
     "debtor-web",
-    "debtor-app",
 ]
 
 [workspace.package]
@@ -14,6 +21,9 @@ license = "MIT OR Apache-2.0"
 rust-version = "1.85"
 
 [workspace.dependencies]
+debtor-domain = { path = "debtor-domain" }
+debtor-infra = { path = "debtor-infra" }
+debtor-web = { path = "debtor-web" }
 axum = "0.8"
 axum-htmx = "0.8"
 tower-sessions = "0.14"
@@ -32,6 +42,22 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dotenvy = "0.15"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }
+
+[dependencies]
+debtor-domain = { workspace = true }
+debtor-infra = { workspace = true }
+debtor-web = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tower-sessions = { workspace = true }
+sqlx = { workspace = true }
+dotenvy = { workspace = true }
+anyhow = { workspace = true }
+
+[lints]
+workspace = true
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }

@@ -10,7 +10,9 @@
 
 ```
 debtor/
-├── Cargo.toml                  # Workspace root — shared dependencies, lints
+├── Cargo.toml                  # Workspace root + binary crate
+├── src/
+│   └── main.rs                 # Application entry point (composition root)
 ├── migrations/                 # SQLx migration files (workspace-level)
 ├── debtor-domain/              # Pure domain logic — zero I/O dependencies
 │   └── src/
@@ -34,9 +36,6 @@ debtor/
 │       ├── middleware/         # Auth, CSRF middleware
 │       └── templates/          # Askama template types
 │           └── partials/
-├── debtor-app/                 # Binary crate — composition root
-│   └── src/
-│       └── main.rs
 ├── static/css/                 # Vanilla CSS — no frameworks
 ├── specs/                      # Feature specs and plans (speckit workflow)
 └── .env.example                # Environment variable reference
@@ -45,34 +44,25 @@ debtor/
 ### Dependency Flow
 
 ```
-debtor-app → debtor-web → debtor-domain ← debtor-infra
+debtor (root) → debtor-web → debtor-domain ← debtor-infra
 ```
 
 - `debtor-domain` defines traits; `debtor-infra` implements them.
 - `debtor-web` depends on domain traits, not infrastructure.
-- `debtor-app` wires concrete implementations at startup.
+- Root crate wires concrete implementations at startup.
 
 ---
 
 ## Build, Test, and Development Commands
 
 ```bash
-# Check compilation without producing binaries (fast feedback)
-cargo check
-
-# Run all tests across all workspace crates
-cargo test --workspace
-
-# Run tests for a specific crate
-cargo test -p debtor-domain
-cargo test -p debtor-infra
-cargo test -p debtor-web
-
-# Build a release binary
-cargo build --release
-
-# Run the application (requires .env or environment variables)
-cargo run -p debtor-app
+cargo check              # Fast compilation check
+cargo test               # Run all tests (workspace-wide)
+cargo test -p <crate>    # Run tests for a specific crate
+cargo clippy             # Lint (pedantic + nursery, workspace-wide)
+cargo fmt                # Format code
+cargo build --release    # Production build
+cargo run                # Run the application (requires .env)
 ```
 
 Copy `.env.example` to `.env` and populate `APP_ADMIN_PASSWORD_HASH` before running. Generate a hash with:
@@ -99,35 +89,37 @@ The backend MUST be implemented in Rust using [Axum](https://github.com/tokio-rs
 - **SQLx**: compile-time verified SQL queries against SQLite.
 - **argon2**: password hashing (Argon2id).
 
-External crates MAY be used freely provided they are reliable, actively maintained, and have a meaningful user base. New technology additions SHOULD be documented in the relevant feature plan and validated against the Simplicity principle before adoption.
+External crates MAY be used freely provided they are reliable, actively maintained, and have a meaningful user base. New technology additions SHOULD be documented in the relevant feature plan.
 
-### III. Vanilla CSS & Semantic HTML
+### III. Vanilla CSS & Modern HTML
 
 Styling MUST use modern, vanilla CSS only. CSS frameworks (Bootstrap, Tailwind, Bulma, etc.) are NOT permitted. HTML MUST be semantic — use the correct element for the correct purpose (`<nav>`, `<main>`, `<section>`, `<article>`, `<time>`, etc.). CSS custom properties MUST be used for design tokens (colours, spacing, typography). Layouts MUST use CSS Grid or Flexbox.
+
+Modern web platform features MUST be preferred over deprecated patterns:
+- Use CSS logical properties (`margin-block`, `padding-inline`) over physical ones.
+- Use `<dialog>`, `popover`, and `inert` instead of custom modal/tab implementations.
+- Use `:has()`, container queries, and cascade layers where appropriate.
+- Avoid legacy workarounds (e.g., clearfix hacks, float-based layouts) when native solutions exist.
 
 ### IV. Single-User Secured Access
 
 Authentication MUST be implemented. The system MUST support exactly one user account (the owner). There MUST be no self-registration flow. All expense-related routes MUST be behind authentication. Credentials MUST be stored securely (hashed with a modern algorithm, e.g., Argon2). Sessions MUST be managed server-side with secure, HTTP-only cookies.
 
-### V. Simplicity & Personal-First
+### V. Workspace Architecture
 
-This project is for personal use by a single owner. MUST NOT introduce premature abstractions, over-engineered patterns, or unnecessary complexity. Apply YAGNI: build what is needed now. Complexity additions MUST be justified against a concrete current need.
-
-### VI. Workspace Architecture
-
-The project MUST be organised as a [Cargo workspace] with exactly four crates:
+The project MUST be organised as a [Cargo workspace] with the binary crate at the root and three library crates:
 
 | Crate | Responsibility |
 |---|---|
+| Root (`debtor`) | Binary crate; composition root that wires everything together |
 | `debtor-domain` | Pure domain logic (zero I/O deps); defines repository and service traits |
 | `debtor-infra` | Infrastructure adapters; implements domain traits with SQLx, reqwest, argon2 |
 | `debtor-web` | HTTP layer; Axum handlers, Askama templates, middleware, routing |
-| `debtor-app` | Binary crate; composition root that wires everything together |
 
 Dependency flow MUST be unidirectional:
 
 ```
-debtor-app → debtor-web → debtor-domain ← debtor-infra
+debtor (root) → debtor-web → debtor-domain ← debtor-infra
 ```
 
 `debtor-domain` defines traits for external dependencies (repositories, providers). Infrastructure implements them. Dependency inversion uses `Arc<dyn Trait>` to keep handlers testable.
@@ -226,7 +218,7 @@ chore: update sqlx to 0.8
 
 Pull requests must:
 - Include a clear description of what changed and why.
-- Pass `cargo fmt --check`, `cargo clippy --workspace`, and `cargo test --workspace` without errors.
+- Pass `cargo fmt --check`, `cargo clippy`, and `cargo test` without errors.
 - Contain tests written before the implementation (TDD — no after-the-fact test additions).
 
 ---
