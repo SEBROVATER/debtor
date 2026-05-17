@@ -18,5 +18,8 @@ tracing = { workspace = true }
 tokio = { workspace = true }
 chrono = { workspace = true }
 
+[dev-dependencies]
+sqlx = { workspace = true, features = ["migrate"] }
+
 [lints]
 workspace = true
