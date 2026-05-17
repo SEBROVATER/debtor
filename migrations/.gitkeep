@@ -1,3 +1,0 @@
--- debtor schema migrations
--- This file is a placeholder; actual migrations will be added
--- during feature implementation using `sqlx migrate add`.
