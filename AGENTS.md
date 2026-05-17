@@ -177,3 +177,206 @@ Before using any Rust crate or framework, the agent MUST consult its documentati
 - `APP_ADMIN_PASSWORD_HASH` is **required** — the app will not authenticate without it.
 - Session cookies are HTTP-only and server-side managed. Set `APP_SESSION_COOKIE_SECURE=true` in production.
 - See `.env.example` for all available variables and their defaults.
+
+---
+
+## Domain Model
+
+### Entities
+
+| Entity | Table | Description |
+|---|---|---|
+| Group | `groups` | A "room" — has a name and a target currency for debt display |
+| Participant | `participants` | A person — reusable across groups; has a name and a color |
+| GroupMember | `group_members` | Junction table linking participants to groups; supports soft-delete via `is_active` |
+| Spending | `spendings` | An expense within a group — has description, type, amount, currency, user-chosen date |
+| SpendingPayer | `spending_payers` | Records how much a participant paid toward a spending (multiple payers per spending) |
+| SpendingShare | `spending_shares` | Records how much a participant owes for a spending (flexible split) |
+
+### Relationships
+
+```
+participants 1───N group_members N───1 groups
+groups        1───N spendings
+spendings     1───N spending_payers   N───1 participants
+spendings     1───N spending_shares   N───1 participants
+```
+
+- A participant can belong to many groups (via `group_members`).
+- A group can have many participants.
+- `group_members.is_active` enables soft-delete (inactive mark, reversible) or full deletion.
+- A spending has one or more payers (`spending_payers`) and one or more shares (`spending_shares`).
+- All payers and sharers MUST be active members of the spending's group.
+
+### Key Constraints
+
+- `sum(spending_payers.paid_amount) == spendings.total_amount` — payers cover the full amount.
+- `sum(spending_shares.share_amount) == spendings.total_amount` — shares cover the full amount.
+- `spendings.total_amount > 0` — positive amounts only.
+- All monetary amounts are validated in the application layer (Rust).
+
+---
+
+## Spending Types
+
+Fixed enum of 8 categories. Stored as `TEXT` in SQLite, represented as a Rust enum in application code.
+
+| Value | Display Name |
+|---|---|
+| `food` | Food & Dining |
+| `transport` | Transport |
+| `housing` | Housing |
+| `fun` | Fun & Entertainment |
+| `shopping` | Shopping |
+| `bills` | Bills & Utilities |
+| `health` | Health |
+| `other` | Other |
+
+The Rust enum MUST implement `Display` and `FromStr` for template rendering and form parsing. Default value is `other`.
+
+---
+
+## Supported Currencies
+
+Fixed set of 12 currencies. Stored as ISO 4217 code (TEXT) in SQLite, represented as a Rust enum in application code.
+
+| Code | Name |
+|---|---|
+| USD | US Dollar |
+| EUR | Euro |
+| RUB | Russian Ruble |
+| KGS | Kyrgyz Som |
+| TRY | Turkish Lira |
+| KZT | Kazakh Tenge |
+| UZS | Uzbekistan Som |
+| CNY | Chinese Yuan |
+| KRW | South Korean Won |
+| JPY | Japanese Yen |
+| OMR | Omani Rial |
+| TJS | Tajikistani Somoni |
+
+- Each group has a `currency` field — this is the target currency for debt display.
+- Each spending has its own `currency` — the currency in which the expense was made.
+- Exchange rates are fetched from the [Frankfurter API](https://www.frankfurter.app) and cached.
+- The Rust enum MUST implement `Display` and `FromStr`.
+
+---
+
+## Database Conventions
+
+### Naming
+
+- **Tables**: plural `snake_case` (`groups`, `participants`, `spendings`).
+- **Junction tables**: named by the two entities in alphabetical order or domain order (`group_members`, `spending_payers`, `spending_shares`).
+- **Columns**: `snake_case`. Foreign keys use `{referenced_table}_id` (e.g., `group_id`, `participant_id`, `spending_id`).
+
+### Types in SQLite
+
+| Concept | SQLite Type | Rust Type | Notes |
+|---|---|---|---|
+| Primary key | `INTEGER PRIMARY KEY AUTOINCREMENT` | `i64` | |
+| Foreign key | `INTEGER REFERENCES ...` | `i64` | |
+| Monetary amount | `TEXT` | `rust_decimal::Decimal` | SQLite has no native DECIMAL; store as string, parse in Rust |
+| Boolean | `INTEGER` (0 or 1) | `bool` | SQLite has no native boolean |
+| Timestamp | `TEXT` | `String` or `chrono::NaiveDateTime` | ISO 8601 format via `datetime('now')` |
+| Date | `TEXT` | `String` or `chrono::NaiveDate` | YYYY-MM-DD format (user-chosen, no time component) |
+| Enum/varchar | `TEXT` | Rust enum | Validated in application layer |
+
+### Decimal Handling
+
+All monetary amounts (`total_amount`, `paid_amount`, `share_amount`) are stored as `TEXT` in SQLite because SQLite has no native `DECIMAL`/`NUMERIC` type with exact precision. They MUST be parsed to `rust_decimal::Decimal` in Rust to avoid floating-point arithmetic errors.
+
+**Aggregation strategy:** All numeric aggregations (SUM, AVG, MIN, MAX) on monetary amounts MUST be performed in Rust using `Decimal`, NOT in SQL. SQLite's `SUM()` over TEXT columns coerces values to `REAL` (IEEE 754 float64), which reintroduces the floating-point precision errors that TEXT storage is designed to prevent. The correct flow is: SQL fetches raw TEXT rows → Rust parses to `Decimal` → application code groups and aggregates.
+
+**Date-based aggregation** (e.g., `GROUP BY spent_date`, `BETWEEN` on date ranges) is safe in SQL because `spent_date` uses ISO 8601 format (`YYYY-MM-DD`), which sorts correctly as plain text.
+
+### Timestamps
+
+Every table has `created_at` and `updated_at` columns (except junction tables):
+- `created_at`: set once on insert via `DEFAULT (datetime('now'))`.
+- `updated_at`: set on insert via `DEFAULT (datetime('now'))`, MUST be updated on every modification via application code (or a SQLite trigger).
+
+### Foreign Keys
+
+- `PRAGMA foreign_keys = ON` MUST be set on every connection (via connection string `?foreign_keys=on` or a startup query).
+- All foreign keys use `ON DELETE CASCADE` to maintain referential integrity.
+
+---
+
+## Validation Rules
+
+### Application-Layer Validations (enforced in Rust)
+
+These MUST be validated in `debtor-domain` before any database write:
+
+- `total_amount > 0` — spending amounts must be positive.
+- `sum(payers.paid_amount) == spendings.total_amount` — payers must cover the full spending amount.
+- `sum(shares.share_amount) == spendings.total_amount` — shares must cover the full spending amount.
+- `paid_amount > 0` and `share_amount >= 0` — individual amounts must be non-negative.
+- `currency` is a valid supported currency (checked against the enum).
+- `spending_type` is a valid enum variant.
+- All payers and sharers are active members (`is_active = 1`) of the spending's group.
+- `spent_date` is a valid date in YYYY-MM-DD format.
+- `color` is a valid hex color code.
+
+### DB-Layer Validations (CHECK / NOT NULL constraints)
+
+- All `NOT NULL` columns are enforced by SQLite.
+- Composite primary keys prevent duplicate junction table entries.
+
+---
+
+## Debt Calculation Model
+
+Debts are **never stored in the database**. They are computed on demand in `debtor-domain`:
+
+1. Fetch all spendings for the group (optionally filtered by date range).
+2. For each spending, convert amounts from `spending.currency` to `group.currency` using exchange rates from the Frankfurter API (cached).
+3. For each participant: `net_balance = sum(paid_amount, converted) - sum(share_amount, converted)`.
+4. Simplify the net balances into the minimum number of debt transfers using a min-flow / graph simplification algorithm.
+5. Return the simplified debts (who owes whom, how much).
+
+### Recalculation Triggers
+
+Debts MUST be recalculated whenever:
+- A spending is added, edited, or deleted.
+- A participant is added, removed, reactivated, or fully deleted from a group.
+- A group's target currency is changed.
+- The user explicitly requests a refresh (e.g., to get updated exchange rates).
+
+---
+
+## Route Structure
+
+All expense-related routes are behind authentication. The route hierarchy is:
+
+```
+/groups                               GET    — list all groups
+/groups                               POST   — create a new group
+/groups/new                           GET    — create group form
+/groups/{id}                          GET    — group detail (spendings list)
+/groups/{id}                          DELETE — delete group
+/groups/{id}/edit                     GET    — edit group form
+/groups/{id}                          PATCH  — update group (name, currency)
+/groups/{id}/members                  POST   — add participant to group
+/groups/{id}/members/{pid}            PATCH  — toggle active/inactive (soft delete)
+/groups/{id}/members/{pid}            DELETE — fully remove participant from group
+/groups/{id}/spendings                POST   — create spending (with payers + shares)
+/groups/{id}/spendings/new            GET    — add spending form
+/groups/{id}/spendings/{sid}          GET    — spending detail
+/groups/{id}/spendings/{sid}/edit     GET    — edit spending form
+/groups/{id}/spendings/{sid}          PATCH  — update spending
+/groups/{id}/spendings/{sid}          DELETE — delete spending
+/groups/{id}/debts                    GET    — calculated debts view
+/groups/{id}/statistics               GET    — statistics dashboard (date range filter)
+/participants                         GET    — list all participants
+/participants                         POST   — create participant
+/participants/new                     GET    — create participant form
+/participants/{id}                    GET    — participant detail
+/participants/{id}/edit               GET    — edit participant form
+/participants/{id}                    PATCH  — update participant
+/participants/{id}                    DELETE — delete participant
+/login                                GET    — login form
+/login                                POST   — authenticate
+/logout                               POST   — end session
+```
