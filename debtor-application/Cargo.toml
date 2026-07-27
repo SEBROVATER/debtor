@@ -1,0 +1,20 @@
+[package]
+name = "debtor-application"
+description = "Application use cases and ports for debtor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+test-support = []
+
+[dependencies]
+async-trait = { workspace = true }
+chrono = { workspace = true }
+debtor-domain = { workspace = true }
+rust_decimal = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

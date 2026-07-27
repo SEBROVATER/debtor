@@ -2,9 +2,8 @@
 
 //! Pure domain logic for the debtor application.
 //!
-//! This crate contains business rules, domain types, and trait definitions
-//! for external dependencies. It has zero I/O dependencies — all logic is
-//! pure and can be tested without async runtimes or databases.
+//! This crate contains business rules and domain types. It has zero I/O
+//! dependencies, so all logic can be tested without async runtimes or databases.
 
 /// Supported currencies as ISO 4217 codes.
 pub mod currency;
@@ -14,5 +13,5 @@ pub mod debts;
 pub mod expenses;
 /// Group domain logic and membership rules.
 pub mod groups;
-/// Repository and service trait definitions.
-pub mod traits;
+/// Core entities and validated value objects.
+pub mod model;

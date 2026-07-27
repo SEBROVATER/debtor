@@ -3,6 +3,8 @@
 use std::fmt;
 use std::str::FromStr;
 
+use rust_decimal::Decimal;
+
 /// A supported currency.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Currency {
@@ -65,6 +67,20 @@ impl Currency {
             Self::Omr => "OMR",
             Self::Tjs => "TJS",
         }
+    }
+
+    /// Returns the number of minor-unit decimal places supported by this currency.
+    pub const fn minor_unit_scale(self) -> u32 {
+        match self {
+            Self::Jpy | Self::Krw => 0,
+            Self::Omr => 3,
+            _ => 2,
+        }
+    }
+
+    /// Returns whether an amount uses only supported minor units.
+    pub const fn accepts_precision(self, amount: Decimal) -> bool {
+        amount.scale() <= self.minor_unit_scale()
     }
 }
 

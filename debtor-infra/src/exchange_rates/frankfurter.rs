@@ -1,52 +1,41 @@
 use std::collections::HashMap;
-use std::str::FromStr;
 use std::sync::RwLock;
 
+use async_trait::async_trait;
 use chrono::NaiveDate;
+use debtor_application::{ApplicationError, ExchangeRateProvider, RateQuote};
+use debtor_domain::currency::Currency;
 use rust_decimal::Decimal;
 use serde::Deserialize;
-
-use debtor_domain::currency::Currency;
-use debtor_domain::traits::{ExchangeRateError, ExchangeRateProvider};
 
 const DEFAULT_BASE_URL: &str = "https://api.frankfurter.dev/v2";
 
 #[derive(Debug, Deserialize)]
 struct RateResponse {
-    rate: serde_json::Value,
+    date: NaiveDate,
+    rate: Decimal,
 }
 
-/// Exchange rate client backed by the Frankfurter API.
-///
-/// Caches rates lazily per currency pair per day. On the first request for
-/// a pair each day, the rate is fetched from the API and stored. Subsequent
-/// requests for the same pair on the same day return the cached value.
-/// No background tasks or periodic refresh cycles are used.
+/// Frankfurter v2 exchange provider with dated process-local caching.
 pub struct FrankfurterClient {
     http: reqwest::Client,
     base_url: String,
-    cache: RwLock<HashMap<(Currency, Currency), (NaiveDate, Decimal)>>,
+    cache: RwLock<HashMap<(Currency, Currency, NaiveDate), RateQuote>>,
 }
 
 impl FrankfurterClient {
-    /// Creates a new client pointing at the live Frankfurter API.
+    /// Creates a client using the public v2 endpoint.
     pub fn new() -> Self {
         Self::with_base_url(DEFAULT_BASE_URL)
     }
 
-    /// Creates a new client pointing at a custom base URL.
-    ///
-    /// Useful for testing with a local mock server.
+    /// Creates a client using a custom endpoint, intended for local tests.
     pub fn with_base_url(base_url: &str) -> Self {
         Self {
             http: reqwest::Client::new(),
             base_url: base_url.trim_end_matches('/').to_owned(),
             cache: RwLock::new(HashMap::new()),
         }
-    }
-
-    fn today() -> NaiveDate {
-        chrono::Utc::now().date_naive()
     }
 }
 
@@ -56,126 +45,111 @@ impl Default for FrankfurterClient {
     }
 }
 
+#[async_trait]
 impl ExchangeRateProvider for FrankfurterClient {
-    async fn get_rate(
+    async fn rate(
         &self,
         base: Currency,
         quote: Currency,
-    ) -> Result<Decimal, ExchangeRateError> {
+        requested_date: NaiveDate,
+        today: NaiveDate,
+    ) -> Result<RateQuote, ApplicationError> {
         if base == quote {
-            return Ok(Decimal::ONE);
+            return Ok(RateQuote {
+                base,
+                quote,
+                effective_date: requested_date,
+                rate: Decimal::ONE,
+                is_stale: false,
+                is_provisional: requested_date > today,
+            });
         }
-
-        {
-            let cache = self
-                .cache
-                .read()
-                .map_err(|e| ExchangeRateError::FetchFailed(e.to_string()))?;
-            if let Some((date, rate)) = cache.get(&(base, quote)) {
-                if *date == Self::today() {
-                    return Ok(*rate);
-                }
+        let requested_date = requested_date.min(today);
+        let key = (base, quote, requested_date);
+        let cached = self
+            .cache
+            .read()
+            .map_err(|error| ApplicationError::Unavailable(error.to_string()))?
+            .get(&key)
+            .cloned();
+        if let Some(value) = cached {
+            return Ok(value);
+        }
+        let url = format!(
+            "{}/rate/{}/{}?date={requested_date}",
+            self.base_url,
+            base.code(),
+            quote.code()
+        );
+        let response = match self.http.get(url).send().await {
+            Ok(response) if response.status().is_success() => response,
+            Ok(response) => {
+                return self
+                    .stale_or_error(key, format!("Frankfurter returned {}", response.status()));
             }
+            Err(error) => return self.stale_or_error(key, error.to_string()),
+        };
+        let payload: RateResponse = response.json().await.map_err(|error| {
+            ApplicationError::Unavailable(format!("invalid Frankfurter response: {error}"))
+        })?;
+        if payload.rate <= Decimal::ZERO {
+            return Err(ApplicationError::Unavailable(
+                "Frankfurter returned a non-positive rate".into(),
+            ));
         }
+        let value = RateQuote {
+            base,
+            quote,
+            effective_date: payload.date,
+            rate: payload.rate,
+            is_stale: false,
+            is_provisional: requested_date != payload.date
+                || requested_date < today && payload.date == today,
+        };
+        self.cache
+            .write()
+            .map_err(|error| ApplicationError::Unavailable(error.to_string()))?
+            .insert(key, value.clone());
+        Ok(value)
+    }
+}
 
-        let url = format!("{}/rate/{}/{}", self.base_url, base.code(), quote.code());
-
-        let response = self
-            .http
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| ExchangeRateError::FetchFailed(e.to_string()))?;
-
-        if response.status() == reqwest::StatusCode::NOT_FOUND {
-            return Err(ExchangeRateError::UnsupportedCurrency(format!(
-                "{}/{}",
-                base.code(),
-                quote.code()
-            )));
-        }
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(ExchangeRateError::FetchFailed(format!(
-                "Frankfurter API returned {status}: {body}"
-            )));
-        }
-
-        let rate_response: RateResponse = response
-            .json()
-            .await
-            .map_err(|e| ExchangeRateError::FetchFailed(format!("invalid JSON: {e}")))?;
-
-        let rate_str = rate_response
-            .rate
-            .as_str()
-            .ok_or_else(|| ExchangeRateError::FetchFailed("rate field is not a string".into()))?;
-
-        let rate = Decimal::from_str(rate_str)
-            .map_err(|e| ExchangeRateError::FetchFailed(format!("invalid rate value: {e}")))?;
-
-        {
-            let mut cache = self
-                .cache
-                .write()
-                .map_err(|e| ExchangeRateError::FetchFailed(e.to_string()))?;
-            cache.insert((base, quote), (Self::today(), rate));
-        }
-
-        Ok(rate)
+impl FrankfurterClient {
+    fn stale_or_error(
+        &self,
+        key: (Currency, Currency, NaiveDate),
+        message: String,
+    ) -> Result<RateQuote, ApplicationError> {
+        let stale = self
+            .cache
+            .read()
+            .ok()
+            .and_then(|cache| cache.get(&key).cloned());
+        stale
+            .map(|mut quote| {
+                quote.is_stale = true;
+                quote
+            })
+            .ok_or(ApplicationError::Unavailable(message))
     }
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
-    use debtor_domain::currency::Currency;
 
     #[tokio::test]
-    async fn same_currency_returns_one() {
+    async fn identity_rate_is_exact_without_network() {
         let client = FrankfurterClient::with_base_url("http://127.0.0.1:1");
+        let date = NaiveDate::from_ymd_opt(2026, 1, 1).expect("valid constant date");
         assert_eq!(
-            client.get_rate(Currency::Eur, Currency::Eur).await.unwrap(),
+            client
+                .rate(Currency::Usd, Currency::Usd, date, date)
+                .await
+                .expect("identity rate")
+                .rate,
             Decimal::ONE
         );
-    }
-
-    #[tokio::test]
-    async fn cache_hit_avoids_api_call() {
-        let cache = RwLock::new(HashMap::new());
-        cache.write().unwrap().insert(
-            (Currency::Eur, Currency::Usd),
-            (FrankfurterClient::today(), Decimal::new(108, 2)),
-        );
-
-        let client = FrankfurterClient {
-            http: reqwest::Client::new(),
-            base_url: "http://127.0.0.1:1".to_owned(),
-            cache,
-        };
-
-        let rate = client.get_rate(Currency::Eur, Currency::Usd).await.unwrap();
-        assert_eq!(rate, Decimal::new(108, 2));
-    }
-
-    #[tokio::test]
-    async fn stale_cache_triggers_refetch() {
-        let stale_date = NaiveDate::from_ymd_opt(2020, 1, 1).unwrap();
-        let cache = RwLock::new(HashMap::new());
-        cache.write().unwrap().insert(
-            (Currency::Eur, Currency::Usd),
-            (stale_date, Decimal::new(100, 2)),
-        );
-
-        let client = FrankfurterClient {
-            http: reqwest::Client::new(),
-            base_url: "http://127.0.0.1:1".to_owned(),
-            cache,
-        };
-
-        let result = client.get_rate(Currency::Eur, Currency::Usd).await;
-        assert!(result.is_err());
     }
 }

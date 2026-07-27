@@ -2,7 +2,7 @@
 
 //! Infrastructure adapters for the debtor application.
 //!
-//! Implements domain traits using concrete I/O libraries:
+//! Implements application ports using concrete I/O libraries:
 //! - `SQLx` for database access
 //! - reqwest for HTTP clients (exchange rates)
 //! - argon2 for password hashing

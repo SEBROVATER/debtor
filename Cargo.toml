@@ -9,10 +9,12 @@ rust-version.workspace = true
 [workspace]
 resolver = "3"
 members = [
+    "debtor-application",
     "debtor-domain",
     "debtor-infra",
     "debtor-web",
 ]
+default-members = ["."]
 
 [workspace.package]
 version = "0.1.0"
@@ -22,12 +24,13 @@ rust-version = "1.85"
 
 [workspace.dependencies]
 debtor-domain = { path = "debtor-domain" }
+debtor-application = { path = "debtor-application" }
 debtor-infra = { path = "debtor-infra" }
 debtor-web = { path = "debtor-web" }
 axum = "0.8"
 axum-htmx = "0.8"
 tower-sessions = "0.14"
-tower-http = { version = "0.6", features = ["trace"] }
+tower-http = { version = "0.6", features = ["trace", "fs"] }
 tokio = { version = "1", features = ["full"] }
 askama = "0.12"
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate"] }
@@ -43,9 +46,12 @@ dotenvy = "0.15"
 chrono = { version = "0.4", features = ["serde"] }
 rust_decimal = "1"
 uuid = { version = "1", features = ["v4"] }
+async-trait = "0.1"
+time = "0.3"
 
 [dependencies]
 debtor-domain = { workspace = true }
+debtor-application = { workspace = true }
 debtor-infra = { workspace = true }
 debtor-web = { workspace = true }
 axum = { workspace = true }
@@ -53,6 +59,8 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tower-sessions = { workspace = true }
+time = { workspace = true }
+tower-http = { workspace = true }
 sqlx = { workspace = true }
 dotenvy = { workspace = true }
 anyhow = { workspace = true }

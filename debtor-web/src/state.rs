@@ -1,6 +1,16 @@
-//! Application state shared across handlers.
-//!
-//! `AppState` carries references to all domain services (as trait objects)
-//! and is injected into the Axum router via `.with_state()`.
-//!
-//! Will be populated during feature implementation (TDD).
+//! Application-facing state shared by handlers.
+
+use std::sync::Arc;
+
+use debtor_application::{DebtUseCases, GroupUseCases, PasswordVerifier};
+
+/// Dependencies exposed to the HTTP layer as application interfaces.
+#[derive(Clone)]
+pub struct AppState {
+    /// Group workflows.
+    pub groups: Arc<dyn GroupUseCases>,
+    /// Debt workflows.
+    pub debts: Arc<dyn DebtUseCases>,
+    /// Password gate verifier.
+    pub password: Arc<dyn PasswordVerifier>,
+}

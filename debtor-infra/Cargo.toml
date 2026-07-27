@@ -7,7 +7,9 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+async-trait = { workspace = true }
 debtor-domain = { path = "../debtor-domain" }
+debtor-application = { path = "../debtor-application" }
 rust_decimal = { workspace = true }
 sqlx = { workspace = true }
 argon2 = { workspace = true }
@@ -21,6 +23,7 @@ chrono = { workspace = true }
 
 [dev-dependencies]
 sqlx = { workspace = true, features = ["migrate"] }
+tokio = { workspace = true }
 
 [lints]
 workspace = true

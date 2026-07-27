@@ -2,6 +2,12 @@
 //!
 //! Verifies schema creation, table structure, constraints, default values, and reversibility.
 
+#![allow(
+    clippy::expect_used,
+    clippy::explicit_auto_deref,
+    clippy::used_underscore_binding
+)]
+
 use sqlx::Row;
 use sqlx::migrate::Migrator;
 use sqlx::sqlite::SqlitePool;
@@ -131,6 +137,7 @@ async fn groups_table_has_expected_columns(pool: SqlitePool) {
         ("id", "INTEGER", false),
         ("name", "TEXT", true),
         ("currency", "TEXT", true),
+        ("is_archived", "INTEGER", true),
         ("created_at", "TEXT", true),
         ("updated_at", "TEXT", true),
     ];
@@ -151,7 +158,14 @@ async fn participants_table_has_expected_columns(pool: SqlitePool) {
 
     let columns: Vec<&str> = rows.iter().map(|r| r.get("name")).collect();
 
-    let expected = ["id", "name", "color", "created_at", "updated_at"];
+    let expected = [
+        "id",
+        "name",
+        "color",
+        "is_archived",
+        "created_at",
+        "updated_at",
+    ];
     assert_eq!(columns, expected);
 }
 

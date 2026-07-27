@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 debtor-domain = { path = "../debtor-domain" }
+debtor-application = { path = "../debtor-application" }
 axum = { workspace = true }
 axum-htmx = { workspace = true }
 tower-sessions = { workspace = true }
@@ -17,6 +18,7 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+uuid = { workspace = true }
 
 [lints]
 workspace = true
