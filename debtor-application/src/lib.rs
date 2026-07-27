@@ -9,8 +9,10 @@ use async_trait::async_trait;
 use chrono::{NaiveDate, Utc};
 use debtor_domain::currency::Currency;
 use debtor_domain::debts::{Transfer, add_converted_spending, simplify};
+use debtor_domain::expenses::splitting::equal_split;
 use debtor_domain::model::{
-    Color, EntityId, Group, GroupMember, Name, Participant, Spending, ValidationError,
+    Color, Description, EntityId, Group, GroupMember, Name, Participant, Spending, SpendingType,
+    ValidationError,
 };
 use rust_decimal::prelude::Signed;
 use rust_decimal::{Decimal, RoundingStrategy};
@@ -193,6 +195,8 @@ pub trait LedgerStore: Send + Sync {
 pub trait GroupUseCases: Send + Sync {
     /// Lists groups.
     async fn list_groups(&self, archived: bool) -> Result<Vec<Group>, ApplicationError>;
+    /// Loads one group.
+    async fn group(&self, id: EntityId) -> Result<Group, ApplicationError>;
     /// Creates a group.
     async fn create_group(
         &self,
@@ -217,6 +221,102 @@ pub struct GroupService {
     store: Arc<dyn LedgerStore>,
 }
 
+/// Inbound participant and membership operations.
+#[async_trait]
+pub trait ParticipantUseCases: Send + Sync {
+    /// Lists globally active or archived participants.
+    async fn list_participants(&self, archived: bool)
+    -> Result<Vec<Participant>, ApplicationError>;
+    /// Creates a reusable participant.
+    async fn create_participant(
+        &self,
+        name: String,
+        color: String,
+    ) -> Result<Participant, ApplicationError>;
+    /// Archives or restores a participant.
+    async fn set_archived(&self, id: EntityId, archived: bool) -> Result<(), ApplicationError>;
+    /// Lists memberships with participant data.
+    async fn members(
+        &self,
+        group_id: EntityId,
+    ) -> Result<Vec<(Participant, GroupMember)>, ApplicationError>;
+    /// Adds a participant to a group.
+    async fn add_member(
+        &self,
+        group_id: EntityId,
+        participant_id: EntityId,
+    ) -> Result<(), ApplicationError>;
+    /// Activates or deactivates a membership.
+    async fn set_member_active(
+        &self,
+        group_id: EntityId,
+        participant_id: EntityId,
+        active: bool,
+    ) -> Result<(), ApplicationError>;
+}
+
+/// Participant and membership workflow implementation.
+pub struct ParticipantService {
+    store: Arc<dyn LedgerStore>,
+}
+
+impl ParticipantService {
+    /// Creates a service with injected persistence.
+    pub fn new(store: Arc<dyn LedgerStore>) -> Self {
+        Self { store }
+    }
+}
+
+#[async_trait]
+impl ParticipantUseCases for ParticipantService {
+    async fn list_participants(
+        &self,
+        archived: bool,
+    ) -> Result<Vec<Participant>, ApplicationError> {
+        self.store.list_participants(archived).await
+    }
+
+    async fn create_participant(
+        &self,
+        name: String,
+        color: String,
+    ) -> Result<Participant, ApplicationError> {
+        self.store
+            .create_participant(Name::new(name)?, Color::new(color)?)
+            .await
+    }
+
+    async fn set_archived(&self, id: EntityId, archived: bool) -> Result<(), ApplicationError> {
+        self.store.set_participant_archived(id, archived).await
+    }
+
+    async fn members(
+        &self,
+        group_id: EntityId,
+    ) -> Result<Vec<(Participant, GroupMember)>, ApplicationError> {
+        self.store.group_members(group_id).await
+    }
+
+    async fn add_member(
+        &self,
+        group_id: EntityId,
+        participant_id: EntityId,
+    ) -> Result<(), ApplicationError> {
+        self.store.add_member(group_id, participant_id).await
+    }
+
+    async fn set_member_active(
+        &self,
+        group_id: EntityId,
+        participant_id: EntityId,
+        active: bool,
+    ) -> Result<(), ApplicationError> {
+        self.store
+            .set_member_active(group_id, participant_id, active)
+            .await
+    }
+}
+
 impl GroupService {
     /// Creates a service with injected persistence.
     pub fn new(store: Arc<dyn LedgerStore>) -> Self {
@@ -228,6 +328,9 @@ impl GroupService {
 impl GroupUseCases for GroupService {
     async fn list_groups(&self, archived: bool) -> Result<Vec<Group>, ApplicationError> {
         self.store.list_groups(archived).await
+    }
+    async fn group(&self, id: EntityId) -> Result<Group, ApplicationError> {
+        self.store.group(id).await
     }
     async fn create_group(
         &self,
@@ -367,5 +470,138 @@ pub fn quantize_balances(balances: &mut BTreeMap<EntityId, Decimal>, currency: C
         if let Some((id, _)) = target {
             *balances.entry(id).or_default() += residual.signum() * unit;
         }
+    }
+}
+
+/// Input for a new equal-split spending.
+pub struct EqualSpendingCommand {
+    /// Owning group.
+    pub group_id: EntityId,
+    /// Description entered by the admin.
+    pub description: String,
+    /// Positive source-currency total.
+    pub total: Decimal,
+    /// Source currency.
+    pub currency: Currency,
+    /// Fixed category.
+    pub spending_type: SpendingType,
+    /// Spending date.
+    pub spent_date: NaiveDate,
+    /// One or more payer allocations.
+    pub payers: Vec<debtor_domain::model::Allocation>,
+    /// Selected share recipients.
+    pub share_participant_ids: Vec<EntityId>,
+}
+
+/// Input for a new exact-share spending.
+pub struct ExactSpendingCommand {
+    /// Owning group.
+    pub group_id: EntityId,
+    /// Description entered by the admin.
+    pub description: String,
+    /// Positive source-currency total.
+    pub total: Decimal,
+    /// Source currency.
+    pub currency: Currency,
+    /// Fixed category.
+    pub spending_type: SpendingType,
+    /// Spending date.
+    pub spent_date: NaiveDate,
+    /// One or more payer allocations.
+    pub payers: Vec<debtor_domain::model::Allocation>,
+    /// One or more positive exact owed-share allocations.
+    pub shares: Vec<debtor_domain::model::Allocation>,
+}
+
+/// Inbound spending operations.
+#[async_trait]
+pub trait SpendingUseCases: Send + Sync {
+    /// Lists a group's complete spending history.
+    async fn list_spendings(&self, group_id: EntityId) -> Result<Vec<Spending>, ApplicationError>;
+    /// Creates a validated equal-split spending.
+    async fn create_equal(
+        &self,
+        command: EqualSpendingCommand,
+    ) -> Result<Spending, ApplicationError>;
+    /// Creates a validated exact-share spending.
+    async fn create_exact(
+        &self,
+        command: ExactSpendingCommand,
+    ) -> Result<Spending, ApplicationError>;
+    /// Deletes a spending correction.
+    async fn delete(
+        &self,
+        group_id: EntityId,
+        spending_id: EntityId,
+    ) -> Result<(), ApplicationError>;
+}
+
+/// Spending workflow implementation.
+pub struct SpendingService {
+    store: Arc<dyn LedgerStore>,
+}
+
+impl SpendingService {
+    /// Creates a service with injected persistence.
+    pub fn new(store: Arc<dyn LedgerStore>) -> Self {
+        Self { store }
+    }
+}
+
+#[async_trait]
+impl SpendingUseCases for SpendingService {
+    async fn list_spendings(&self, group_id: EntityId) -> Result<Vec<Spending>, ApplicationError> {
+        self.store.spendings(group_id).await
+    }
+
+    async fn create_equal(
+        &self,
+        command: EqualSpendingCommand,
+    ) -> Result<Spending, ApplicationError> {
+        let shares = equal_split(
+            command.total,
+            command.currency,
+            &command.share_participant_ids,
+        )?;
+        let spending = Spending {
+            id: 0,
+            group_id: command.group_id,
+            description: Description::new(command.description)?,
+            total: command.total,
+            currency: command.currency,
+            spending_type: command.spending_type,
+            spent_date: command.spent_date,
+            payers: command.payers,
+            shares,
+        };
+        spending.validate()?;
+        self.store.create_spending(spending).await
+    }
+
+    async fn create_exact(
+        &self,
+        command: ExactSpendingCommand,
+    ) -> Result<Spending, ApplicationError> {
+        let spending = Spending {
+            id: 0,
+            group_id: command.group_id,
+            description: Description::new(command.description)?,
+            total: command.total,
+            currency: command.currency,
+            spending_type: command.spending_type,
+            spent_date: command.spent_date,
+            payers: command.payers,
+            shares: command.shares,
+        };
+        spending.validate()?;
+        self.store.create_spending(spending).await
+    }
+
+    async fn delete(
+        &self,
+        group_id: EntityId,
+        spending_id: EntityId,
+    ) -> Result<(), ApplicationError> {
+        self.store.delete_spending(group_id, spending_id).await
     }
 }

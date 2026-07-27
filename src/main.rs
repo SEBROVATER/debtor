@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use debtor_application::{
-    Clock, DebtService, DebtUseCases, GroupService, GroupUseCases, LedgerStore, PasswordVerifier,
-    UtcClock,
+    Clock, DebtService, DebtUseCases, GroupService, GroupUseCases, LedgerStore, ParticipantService,
+    ParticipantUseCases, PasswordVerifier, SpendingService, SpendingUseCases, UtcClock,
 };
 use debtor_infra::auth::ArgonPasswordGate;
 use debtor_infra::db::repos::SqliteLedgerStore;
@@ -24,6 +24,8 @@ struct Config {
     bind: SocketAddr,
     password_hash: String,
     cookie_secure: bool,
+    session_cookie_name: String,
+    exchange_base_url: String,
 }
 
 impl Config {
@@ -45,6 +47,10 @@ impl Config {
                 .unwrap_or_else(|_| "false".to_owned())
                 .parse()
                 .context("APP_SESSION_COOKIE_SECURE must be true or false")?,
+            session_cookie_name: env::var("APP_SESSION_COOKIE_NAME")
+                .unwrap_or_else(|_| "debtor_session".to_owned()),
+            exchange_base_url: env::var("APP_EXCHANGE_BASE_URL")
+                .unwrap_or_else(|_| "https://api.frankfurter.dev/v2".to_owned()),
         })
     }
 }
@@ -69,18 +75,23 @@ async fn main() -> Result<()> {
 
     let store: Arc<dyn LedgerStore> = Arc::new(SqliteLedgerStore::new(pool));
     let groups: Arc<dyn GroupUseCases> = Arc::new(GroupService::new(store.clone()));
-    let rates = Arc::new(FrankfurterClient::new());
+    let participants: Arc<dyn ParticipantUseCases> =
+        Arc::new(ParticipantService::new(store.clone()));
+    let spendings: Arc<dyn SpendingUseCases> = Arc::new(SpendingService::new(store.clone()));
+    let rates = Arc::new(FrankfurterClient::with_base_url(&config.exchange_base_url));
     let clock: Arc<dyn Clock> = Arc::new(UtcClock);
     let debts: Arc<dyn DebtUseCases> = Arc::new(DebtService::new(store, rates, clock));
     let password: Arc<dyn PasswordVerifier> =
         Arc::new(ArgonPasswordGate::new(config.password_hash)?);
     let state = AppState {
         groups,
+        participants,
+        spendings,
         debts,
         password,
     };
     let sessions = SessionManagerLayer::new(MemoryStore::default())
-        .with_name("debtor_session")
+        .with_name(config.session_cookie_name)
         .with_secure(config.cookie_secure)
         .with_expiry(Expiry::OnInactivity(time::Duration::days(30)));
     let app = debtor_web::router::router(state)

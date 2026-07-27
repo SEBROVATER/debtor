@@ -15,6 +15,7 @@ Preserve `root -> web/infra -> application -> domain`. Domain owns pure rules; a
 - Use compile-time checked SQLx queries and refresh committed `.sqlx` metadata whenever SQL or migrations change.
 - Consult current crate documentation through Context7 before changing framework or library APIs.
 - Keep use cases testable with fakes; test infrastructure adapters separately and retain a composed startup smoke test.
+- Never use `cargo build --release` for testing, validation, checks, or routine development. Use debug `cargo check`, `cargo test`, and `cargo run` only.
 - Update `specs/design.md` first when behavior changes, then synchronize README, config examples, migrations, tests, and SQLx metadata.
 - Prefer the smallest correct change. Do not overwrite unrelated worktree changes or add compatibility paths without a concrete consumer.
 
@@ -26,7 +27,6 @@ cargo test
 cargo test -p <crate>
 cargo fmt
 cargo clippy --fix --allow-dirty --workspace
-cargo build --release
 cargo run
 ```
 

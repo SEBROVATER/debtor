@@ -4,7 +4,7 @@ A pre-release Rust scaffold for a private, single-owner expense-sharing ledger.
 
 ## Status
 
-The repository currently contains workspace scaffolding, initial domain code, database migrations, and adapter/web placeholders. It does not yet provide a runnable ledger server, completed authentication, or the product features described by the design.
+The repository now provides a runnable password-gated server with group and participant management, group membership, equal-split spendings with multiple payer contributions, advisory debt calculation, SQLite migrations, and Frankfurter rate integration. Editing, exact-share forms, statistics, and several hardening tasks remain in progress.
 
 The intended first-release product and architecture contract is documented in [specs/design.md](specs/design.md). That document is authoritative for planned behavior; it is not a claim that all behavior is implemented.
 
@@ -12,9 +12,10 @@ The intended first-release product and architecture contract is documented in [s
 
 ```
 debtor (root)
-├── debtor-domain     # domain scaffolding
-├── debtor-infra      # infrastructure scaffolding
-└── debtor-web        # web scaffolding
+├── debtor-domain       # pure business rules
+├── debtor-application  # use cases and mockable ports
+├── debtor-infra        # SQLx, Argon2, and Frankfurter adapters
+└── debtor-web          # Axum and Askama HTTP layer
 ```
 
 ## Development
@@ -24,10 +25,10 @@ cargo check
 cargo test
 cargo fmt
 cargo clippy --fix --allow-dirty --workspace
-cargo build --release
+cargo run
 ```
 
-`cargo run` currently initializes the scaffold and exits. The complete local-run contract, including `.env` setup and `APP_ADMIN_PASSWORD_HASH`, is specified in [specs/design.md](specs/design.md).
+Copy `.env.example` to `.env`, set `APP_ADMIN_PASSWORD_HASH`, then run `cargo run`. Startup creates/connects SQLite, applies migrations, and serves the application. The complete local-run contract is specified in [specs/design.md](specs/design.md).
 
 ## License
 
