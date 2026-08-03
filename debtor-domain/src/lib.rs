@@ -15,3 +15,5 @@ pub mod expenses;
 pub mod groups;
 /// Core entities and validated value objects.
 pub mod model;
+/// Canonical exact monetary text conversion.
+pub mod money;

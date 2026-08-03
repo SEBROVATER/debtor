@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO spending_shares (spending_id, participant_id, share_amount) VALUES (?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "227b95e4df75a5151ec99676c1db06dfdecdfc2f9ee357119ffb19a20bbcc896"
+}

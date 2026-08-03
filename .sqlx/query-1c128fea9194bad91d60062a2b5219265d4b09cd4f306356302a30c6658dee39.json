@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT is_archived FROM participants WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "is_archived",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "1c128fea9194bad91d60062a2b5219265d4b09cd4f306356302a30c6658dee39"
+}

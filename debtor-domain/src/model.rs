@@ -63,6 +63,12 @@ pub enum ValidationError {
         /// Repeated participant identifier.
         participant_id: EntityId,
     },
+    /// An equal split would create one or more zero-valued shares.
+    #[error("equal split total must contain at least one minor unit per recipient")]
+    InsufficientMinorUnits {
+        /// Number of selected recipients.
+        recipients: usize,
+    },
     /// An allocation sum differs from the total.
     #[error("{field} allocations must equal the spending total")]
     AllocationTotalMismatch {

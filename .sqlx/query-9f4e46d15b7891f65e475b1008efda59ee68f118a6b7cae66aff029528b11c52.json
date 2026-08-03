@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM spending_payers WHERE spending_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "9f4e46d15b7891f65e475b1008efda59ee68f118a6b7cae66aff029528b11c52"
+}

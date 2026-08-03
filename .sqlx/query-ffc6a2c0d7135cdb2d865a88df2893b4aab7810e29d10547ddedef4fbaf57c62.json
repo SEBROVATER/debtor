@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT participant_id, share_amount AS amount FROM spending_shares WHERE spending_id = ? ORDER BY participant_id",
+  "describe": {
+    "columns": [
+      {
+        "name": "participant_id",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "amount",
+        "ordinal": 1,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "ffc6a2c0d7135cdb2d865a88df2893b4aab7810e29d10547ddedef4fbaf57c62"
+}

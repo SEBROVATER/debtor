@@ -1,0 +1,16 @@
+[package]
+name = "password-hash"
+description = "Generate the Debtor administrator Argon2id password hash"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+
+# Keep this helper independent from the production workspace.
+[workspace]
+
+[dependencies]
+argon2 = { version = "0.5.3", features = ["std", "zeroize"] }
+rand = { version = "0.10.2", default-features = false, features = ["std", "sys_rng"] }
+rpassword = "7.5.4"
+zeroize = "1.9.0"

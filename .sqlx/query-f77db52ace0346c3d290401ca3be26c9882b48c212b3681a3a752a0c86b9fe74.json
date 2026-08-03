@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM spending_shares WHERE spending_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "f77db52ace0346c3d290401ca3be26c9882b48c212b3681a3a752a0c86b9fe74"
+}

@@ -521,6 +521,7 @@ dependencies = [
  "chrono",
  "debtor-application",
  "debtor-domain",
+ "ipnet",
  "rust_decimal",
  "serde",
  "thiserror",

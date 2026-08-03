@@ -21,6 +21,7 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 rust_decimal = { workspace = true }
+ipnet = { workspace = true }
 
 [lints]
 workspace = true

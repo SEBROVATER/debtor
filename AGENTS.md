@@ -30,4 +30,4 @@ cargo clippy --fix --allow-dirty --workspace
 cargo run
 ```
 
-Copy `.env.example` to `.env` and set `APP_ADMIN_PASSWORD_HASH` before running. Generate a hash with `echo -n "yourpassword" | argon2 somesalt -e`.
+Copy `.env.example` to `.env` and set `APP_ADMIN_PASSWORD_HASH` before running. Generate a hash with `cargo run --manifest-path tools/password-hash/Cargo.toml`.

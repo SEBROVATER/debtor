@@ -11,10 +11,10 @@ use debtor_application::{
     Clock, DebtService, DebtUseCases, GroupService, GroupUseCases, LedgerStore, ParticipantService,
     ParticipantUseCases, PasswordVerifier, SpendingService, SpendingUseCases, UtcClock,
 };
-use debtor_infra::auth::ArgonPasswordGate;
+use debtor_infra::auth::{ArgonPasswordGate, MemoryLoginAttemptLimiter};
 use debtor_infra::db::repos::SqliteLedgerStore;
 use debtor_infra::exchange_rates::FrankfurterClient;
-use debtor_web::state::AppState;
+use debtor_web::state::{AppState, TrustedProxyConfig};
 use tower_http::services::ServeDir;
 use tower_sessions::{Expiry, MemoryStore, SessionManagerLayer};
 
@@ -26,6 +26,8 @@ struct Config {
     cookie_secure: bool,
     session_cookie_name: String,
     exchange_base_url: String,
+    trusted_proxy_cidrs: String,
+    trusted_proxy_header: String,
 }
 
 impl Config {
@@ -44,20 +46,33 @@ impl Config {
                 .context("APP_BIND must be a socket address")?,
             password_hash,
             cookie_secure: env::var("APP_SESSION_COOKIE_SECURE")
-                .unwrap_or_else(|_| "false".to_owned())
+                .unwrap_or_else(|_| {
+                    if cfg!(debug_assertions) {
+                        "false"
+                    } else {
+                        "true"
+                    }
+                    .to_owned()
+                })
                 .parse()
                 .context("APP_SESSION_COOKIE_SECURE must be true or false")?,
             session_cookie_name: env::var("APP_SESSION_COOKIE_NAME")
                 .unwrap_or_else(|_| "debtor_session".to_owned()),
             exchange_base_url: env::var("APP_EXCHANGE_BASE_URL")
                 .unwrap_or_else(|_| "https://api.frankfurter.dev/v2".to_owned()),
+            trusted_proxy_cidrs: env::var("APP_TRUSTED_PROXY_CIDRS").unwrap_or_default(),
+            trusted_proxy_header: env::var("APP_TRUSTED_PROXY_HEADER").unwrap_or_default(),
         })
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    dotenvy::dotenv().ok();
+    match dotenvy::dotenv() {
+        Ok(_) => {}
+        Err(error) if error.not_found() => {}
+        Err(_) => anyhow::bail!("unable to load .env: malformed or unreadable file"),
+    }
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -65,6 +80,12 @@ async fn main() -> Result<()> {
         )
         .init();
     let config = Config::from_env()?;
+    if !cfg!(debug_assertions) && !config.cookie_secure {
+        anyhow::bail!("insecure session cookies are only allowed in debug builds");
+    }
+    let proxy =
+        TrustedProxyConfig::parse(&config.trusted_proxy_cidrs, &config.trusted_proxy_header)
+            .map_err(anyhow::Error::msg)?;
     let pool = debtor_infra::db::connect(&config.database_url)
         .await
         .context("unable to connect SQLite")?;
@@ -80,7 +101,7 @@ async fn main() -> Result<()> {
     let spendings: Arc<dyn SpendingUseCases> = Arc::new(SpendingService::new(store.clone()));
     let rates = Arc::new(FrankfurterClient::with_base_url(&config.exchange_base_url));
     let clock: Arc<dyn Clock> = Arc::new(UtcClock);
-    let debts: Arc<dyn DebtUseCases> = Arc::new(DebtService::new(store, rates, clock));
+    let debts: Arc<dyn DebtUseCases> = Arc::new(DebtService::new(store, rates, clock.clone()));
     let password: Arc<dyn PasswordVerifier> =
         Arc::new(ArgonPasswordGate::new(config.password_hash)?);
     let state = AppState {
@@ -89,10 +110,17 @@ async fn main() -> Result<()> {
         spendings,
         debts,
         password,
+        clock,
+        limiter: Arc::new(MemoryLoginAttemptLimiter::default()),
+        proxy,
     };
     let sessions = SessionManagerLayer::new(MemoryStore::default())
         .with_name(config.session_cookie_name)
         .with_secure(config.cookie_secure)
+        .with_http_only(true)
+        .with_same_site(tower_sessions::cookie::SameSite::Strict)
+        .with_path("/")
+        .with_always_save(true)
         .with_expiry(Expiry::OnInactivity(time::Duration::days(30)));
     let app = debtor_web::router::router(state)
         .nest_service("/static", ServeDir::new("static"))
@@ -101,10 +129,13 @@ async fn main() -> Result<()> {
         .await
         .context("unable to bind APP_BIND")?;
     tracing::info!(address = %config.bind, "debtor listening");
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("HTTP server failed")
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .context("HTTP server failed")
 }
 
 async fn shutdown_signal() {

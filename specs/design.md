@@ -23,6 +23,8 @@ debtor (root) -> debtor-web -> debtor-application -> debtor-domain
               -> debtor-infra -> debtor-application -> debtor-domain
 ```
 
+The root composes concrete adapters with application-owned ports and services; outer crates never leak framework or persistence types inward.
+
 - `debtor-domain` owns synchronous, deterministic business rules and has no I/O or framework dependencies.
 - `debtor-application` owns use cases and narrow, mockable inbound/outbound ports.
 - `debtor-infra` owns SQLx, HTTP, cryptography, caching, and other concrete adapters.
@@ -41,6 +43,8 @@ External effects MUST be constructor-injected through application-owned ports. U
 - New allocations require a globally active participant with active group membership. Historical inactive or archived identities remain in history, balances, and transfers.
 - Archived groups are read-only. Empty groups may be deleted; groups with spendings may only be archived. Participants are archived/restored, never deleted through the application. Referenced memberships may only be deactivated/reactivated.
 - Spending aggregate writes, including membership eligibility checks and allocations, MUST be transactional. Latest valid write wins.
+- The group page MUST offer atomic create-and-join for new participants and one expense form with independent single/multiple-payer and equal/exact-share choices. These input modes are not persisted; edit screens infer the closest mode from stored allocations.
+- Historical spending detail MUST remain readable for archived groups and resolve current participant names for inactive identities. Spending CRUD, group settings, empty-group deletion, participant editing, and reversible membership deactivation are server-rendered and CSRF protected.
 
 ## Rates And Settlements
 
@@ -49,23 +53,25 @@ A spending retains its source currency; a group currency is a freely changeable 
 - Historical mode is the default and requests a rate for each spending date.
 - Current mode uses the UTC calculation date for every spending and is not persisted.
 - Future dates in historical mode use the latest current rate and are marked provisional.
-- Cache keys include source, target, and requested/effective date. Historical entries may live for the process lifetime; current entries refresh on UTC day rollover.
-- On provider failure, a matching stale cached rate MAY be used with a warning. Without one, only the debts view returns retryable `503`; CRUD remains available.
+- Cache keys include source, target, original requested date, and effective fetch date. Past historical entries may live for the process lifetime; current and future historical entries refresh on UTC day rollover.
+- On provider failure, the latest context-matching prior quote MAY be used with a stale warning. Without one, only the debts view returns retryable `503`; CRUD remains available.
 - Final balances are quantized to target minor units with largest-remainder allocation and participant ID tie-breaking, preserving an exact zero sum.
 - Settlement uses a deterministic greedy matcher ordered by descending absolute balance then participant ID. Transfers are positive, settle every balance, do not repeat a participant pair, and number at most `n - 1`. They are not guaranteed globally minimal.
 - The debts view MUST disclose the selected mode, calculation time, target currency, unique rates used, and stale/provisional warnings.
 
 ## Security
 
-`APP_ADMIN_PASSWORD_HASH` MUST contain a valid Argon2id hash; startup fails if it is absent or invalid. Sessions use an in-memory server-side store, HTTP-only `SameSite=Strict` cookies, 30-day inactivity expiry, rotation after login, and flush on logout. Restarting the process logs the administrator out.
+`APP_ADMIN_PASSWORD_HASH` MUST contain a valid bounded Argon2id v19 hash; startup fails if it is absent or invalid. Sessions use an in-memory server-side store, HTTP-only `SameSite=Strict` cookies, 30-day inactivity expiry refreshed on every request, rotation after login, and flush on logout. Restarting the process logs the administrator out.
 
-Every unsafe request, including login, MUST carry a session-backed synchronizer CSRF token. Login attempts MUST be throttled per trusted client IP. Forwarding headers are trusted only for configured reverse proxies. Secrets, password hashes, session IDs, and CSRF tokens MUST NOT be logged. Production runs behind HTTPS with secure cookies enabled.
+Every unsafe request, including login, MUST carry a session-backed synchronizer CSRF token. Login attempts MUST allow five attempts per trusted client IP in a rolling five-minute window. Forwarding headers are trusted only for configured proxies and one explicitly selected header mode. Secrets, password hashes, session IDs, and CSRF tokens MUST NOT be logged. Non-debug builds require secure cookies; debug builds may use insecure local cookies.
+
+Trusted proxies MUST strip untrusted forwarding input or append their immediate peer while preserving chain order. Only proxies within `APP_TRUSTED_PROXY_CIDRS` may supply the selected `APP_TRUSTED_PROXY_HEADER` format.
 
 ## Local Run Contract
 
-After copying `.env.example` to `.env` and supplying a valid `APP_ADMIN_PASSWORD_HASH`, `cargo run` MUST be sufficient to run the complete local application. It MUST load configuration, create/connect and migrate SQLite, enable foreign keys, compose adapters and services, bind the configured address, log the local URL without secrets, and shut down gracefully.
+After copying `.env.example` to `.env` and supplying a valid `APP_ADMIN_PASSWORD_HASH`, `cargo run` MUST be sufficient to run the complete local application. It MUST load configuration, create/connect and migrate SQLite, enable foreign keys, compose adapters and services, bind the configured address, log the local URL without secrets, and shut down gracefully. The independent password helper is run with `cargo run --manifest-path tools/password-hash/Cargo.toml`.
 
-Local startup MUST NOT require Docker, a frontend build, manual migrations, SQLx metadata generation, or Frankfurter availability. HTTP cookies may be insecure locally only when `APP_SESSION_COOKIE_SECURE=false`; production configuration MUST require secure cookies.
+Local startup MUST NOT require Docker, a frontend build, manual migrations, SQLx metadata generation, or Frankfurter availability. Local monetary databases are pre-release and may need to be deleted and recreated after canonical persistence changes.
 
 ## Maintenance
 

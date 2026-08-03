@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT participant_id FROM spending_shares WHERE spending_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "participant_id",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "99cccf3d237a33809c0677e238787bb9487ded9f14df6017328e0116ddbd67d6"
+}

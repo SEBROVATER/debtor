@@ -6,16 +6,15 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use chrono::{NaiveDate, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use debtor_domain::currency::Currency;
-use debtor_domain::debts::{Transfer, add_converted_spending, simplify};
+use debtor_domain::debts::{Transfer, add_converted_spending, quantize_balances, simplify};
 use debtor_domain::expenses::splitting::equal_split;
 use debtor_domain::model::{
     Color, Description, EntityId, Group, GroupMember, Name, Participant, Spending, SpendingType,
     ValidationError,
 };
-use rust_decimal::prelude::Signed;
-use rust_decimal::{Decimal, RoundingStrategy};
+use rust_decimal::Decimal;
 use thiserror::Error;
 
 /// Application-level failures suitable for HTTP mapping.
@@ -54,6 +53,8 @@ pub struct RateQuote {
     pub base: Currency,
     /// Target currency.
     pub quote: Currency,
+    /// Date requested by the calculation mode.
+    pub requested_date: NaiveDate,
     /// Date returned by the provider.
     pub effective_date: NaiveDate,
     /// Exact rate.
@@ -66,16 +67,16 @@ pub struct RateQuote {
 
 /// Source of wall-clock time, injected for deterministic tests.
 pub trait Clock: Send + Sync {
-    /// Returns the current UTC date.
-    fn today(&self) -> NaiveDate;
+    /// Returns the current UTC instant.
+    fn now(&self) -> DateTime<Utc>;
 }
 
 /// Production UTC clock.
 pub struct UtcClock;
 
 impl Clock for UtcClock {
-    fn today(&self) -> NaiveDate {
-        Utc::now().date_naive()
+    fn now(&self) -> DateTime<Utc> {
+        Utc::now()
     }
 }
 
@@ -97,6 +98,24 @@ pub trait ExchangeRateProvider: Send + Sync {
 pub trait PasswordVerifier: Send + Sync {
     /// Returns whether the submitted password is valid.
     async fn verify(&self, password: &str) -> Result<bool, ApplicationError>;
+}
+
+/// Admission result for a login attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginAdmission {
+    /// The attempt may proceed.
+    Allowed,
+    /// The attempt is blocked until the indicated number of seconds elapses.
+    RetryAfter(u64),
+}
+
+/// Limits password attempts by resolved client identity.
+#[async_trait]
+pub trait LoginAttemptLimiter: Send + Sync {
+    /// Reserves one password attempt.
+    async fn reserve(&self, client: std::net::IpAddr) -> LoginAdmission;
+    /// Clears attempts after a successful authenticated session is created.
+    async fn reset(&self, client: std::net::IpAddr);
 }
 
 /// Atomic persistence operations used by application workflows.
@@ -133,7 +152,18 @@ pub trait LedgerStore: Send + Sync {
         name: Name,
         color: Color,
     ) -> Result<Participant, ApplicationError>;
-    /// Updates one participant.
+    /// Loads one participant.
+    async fn participant(&self, id: EntityId) -> Result<Participant, ApplicationError>;
+    /// Creates a participant and active membership atomically.
+    async fn create_group_participant(
+        &self,
+        group_id: EntityId,
+        name: Name,
+        color: Color,
+    ) -> Result<Participant, ApplicationError>;
+    /// Updates one active participant.
+    ///
+    /// Archived identities are retained for history and reject direct updates.
     async fn update_participant(
         &self,
         id: EntityId,
@@ -163,12 +193,6 @@ pub trait LedgerStore: Send + Sync {
         group_id: EntityId,
         participant_id: EntityId,
         active: bool,
-    ) -> Result<(), ApplicationError>;
-    /// Removes an unused membership.
-    async fn delete_unused_member(
-        &self,
-        group_id: EntityId,
-        participant_id: EntityId,
     ) -> Result<(), ApplicationError>;
     /// Lists a group's complete spendings.
     async fn spendings(&self, group_id: EntityId) -> Result<Vec<Spending>, ApplicationError>;
@@ -233,6 +257,24 @@ pub trait ParticipantUseCases: Send + Sync {
         name: String,
         color: String,
     ) -> Result<Participant, ApplicationError>;
+    /// Loads one participant.
+    async fn participant(&self, id: EntityId) -> Result<Participant, ApplicationError>;
+    /// Updates an active reusable participant.
+    ///
+    /// Archived identities are retained for history and reject direct updates.
+    async fn update_participant(
+        &self,
+        id: EntityId,
+        name: String,
+        color: String,
+    ) -> Result<Participant, ApplicationError>;
+    /// Creates and joins a participant in one transaction.
+    async fn create_group_participant(
+        &self,
+        group_id: EntityId,
+        name: String,
+        color: String,
+    ) -> Result<Participant, ApplicationError>;
     /// Archives or restores a participant.
     async fn set_archived(&self, id: EntityId, archived: bool) -> Result<(), ApplicationError>;
     /// Lists memberships with participant data.
@@ -246,12 +288,11 @@ pub trait ParticipantUseCases: Send + Sync {
         group_id: EntityId,
         participant_id: EntityId,
     ) -> Result<(), ApplicationError>;
-    /// Activates or deactivates a membership.
-    async fn set_member_active(
+    /// Deactivates a membership while preserving its history.
+    async fn deactivate_member(
         &self,
         group_id: EntityId,
         participant_id: EntityId,
-        active: bool,
     ) -> Result<(), ApplicationError>;
 }
 
@@ -286,6 +327,32 @@ impl ParticipantUseCases for ParticipantService {
             .await
     }
 
+    async fn participant(&self, id: EntityId) -> Result<Participant, ApplicationError> {
+        self.store.participant(id).await
+    }
+
+    async fn update_participant(
+        &self,
+        id: EntityId,
+        name: String,
+        color: String,
+    ) -> Result<Participant, ApplicationError> {
+        self.store
+            .update_participant(id, Name::new(name)?, Color::new(color)?)
+            .await
+    }
+
+    async fn create_group_participant(
+        &self,
+        group_id: EntityId,
+        name: String,
+        color: String,
+    ) -> Result<Participant, ApplicationError> {
+        self.store
+            .create_group_participant(group_id, Name::new(name)?, Color::new(color)?)
+            .await
+    }
+
     async fn set_archived(&self, id: EntityId, archived: bool) -> Result<(), ApplicationError> {
         self.store.set_participant_archived(id, archived).await
     }
@@ -305,14 +372,13 @@ impl ParticipantUseCases for ParticipantService {
         self.store.add_member(group_id, participant_id).await
     }
 
-    async fn set_member_active(
+    async fn deactivate_member(
         &self,
         group_id: EntityId,
         participant_id: EntityId,
-        active: bool,
     ) -> Result<(), ApplicationError> {
         self.store
-            .set_member_active(group_id, participant_id, active)
+            .set_member_active(group_id, participant_id, false)
             .await
     }
 }
@@ -368,6 +434,8 @@ pub struct DebtResult {
     pub balances: BTreeMap<EntityId, Decimal>,
     /// Unique provider quotes used.
     pub rates: Vec<RateQuote>,
+    /// UTC instant at which this calculation was performed.
+    pub calculated_at: DateTime<Utc>,
 }
 
 /// Inbound debt operations.
@@ -411,13 +479,14 @@ impl DebtUseCases for DebtService {
         mode: RateMode,
     ) -> Result<DebtResult, ApplicationError> {
         let group = self.store.group(group_id).await?;
-        let today = self.clock.today();
+        let calculated_at = self.clock.now();
+        let today = calculated_at.date_naive();
         let mut balances = BTreeMap::new();
         let mut rates = Vec::new();
         for spending in self.store.spendings(group_id).await? {
             let requested_date = match mode {
-                RateMode::Historical if spending.spent_date <= today => spending.spent_date,
-                _ => today,
+                RateMode::Historical => spending.spent_date,
+                RateMode::Current => today,
             };
             let quote = self
                 .rates
@@ -434,42 +503,8 @@ impl DebtUseCases for DebtService {
             transfers: simplify(&balances),
             balances,
             rates,
+            calculated_at,
         })
-    }
-}
-
-/// Rounds balances while preserving their exact zero sum.
-pub fn quantize_balances(balances: &mut BTreeMap<EntityId, Decimal>, currency: Currency) {
-    let scale = currency.minor_unit_scale();
-    let rounded: BTreeMap<_, _> = balances
-        .iter()
-        .map(|(id, amount)| {
-            (
-                *id,
-                amount.round_dp_with_strategy(scale, RoundingStrategy::ToZero),
-            )
-        })
-        .collect();
-    let residual = -rounded.values().copied().sum::<Decimal>();
-    *balances = rounded;
-    if !residual.is_zero() {
-        let unit = Decimal::new(1, scale);
-        let target = if residual.is_sign_positive() {
-            balances
-                .iter()
-                .filter(|(_, value)| value.is_sign_positive() || value.is_zero())
-                .map(|(id, value)| (*id, *value))
-                .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0)))
-        } else {
-            balances
-                .iter()
-                .filter(|(_, value)| value.is_sign_negative() || value.is_zero())
-                .map(|(id, value)| (*id, *value))
-                .min_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)))
-        };
-        if let Some((id, _)) = target {
-            *balances.entry(id).or_default() += residual.signum() * unit;
-        }
     }
 }
 
@@ -518,6 +553,12 @@ pub struct ExactSpendingCommand {
 pub trait SpendingUseCases: Send + Sync {
     /// Lists a group's complete spending history.
     async fn list_spendings(&self, group_id: EntityId) -> Result<Vec<Spending>, ApplicationError>;
+    /// Loads one spending scoped to a group.
+    async fn spending(
+        &self,
+        group_id: EntityId,
+        spending_id: EntityId,
+    ) -> Result<Spending, ApplicationError>;
     /// Creates a validated equal-split spending.
     async fn create_equal(
         &self,
@@ -526,6 +567,18 @@ pub trait SpendingUseCases: Send + Sync {
     /// Creates a validated exact-share spending.
     async fn create_exact(
         &self,
+        command: ExactSpendingCommand,
+    ) -> Result<Spending, ApplicationError>;
+    /// Updates an equal-split spending.
+    async fn update_equal(
+        &self,
+        spending_id: EntityId,
+        command: EqualSpendingCommand,
+    ) -> Result<Spending, ApplicationError>;
+    /// Updates an exact-share spending.
+    async fn update_exact(
+        &self,
+        spending_id: EntityId,
         command: ExactSpendingCommand,
     ) -> Result<Spending, ApplicationError>;
     /// Deletes a spending correction.
@@ -552,6 +605,14 @@ impl SpendingService {
 impl SpendingUseCases for SpendingService {
     async fn list_spendings(&self, group_id: EntityId) -> Result<Vec<Spending>, ApplicationError> {
         self.store.spendings(group_id).await
+    }
+
+    async fn spending(
+        &self,
+        group_id: EntityId,
+        spending_id: EntityId,
+    ) -> Result<Spending, ApplicationError> {
+        self.store.spending(group_id, spending_id).await
     }
 
     async fn create_equal(
@@ -595,6 +656,51 @@ impl SpendingUseCases for SpendingService {
         };
         spending.validate()?;
         self.store.create_spending(spending).await
+    }
+
+    async fn update_equal(
+        &self,
+        spending_id: EntityId,
+        command: EqualSpendingCommand,
+    ) -> Result<Spending, ApplicationError> {
+        let shares = equal_split(
+            command.total,
+            command.currency,
+            &command.share_participant_ids,
+        )?;
+        let spending = Spending {
+            id: spending_id,
+            group_id: command.group_id,
+            description: Description::new(command.description)?,
+            total: command.total,
+            currency: command.currency,
+            spending_type: command.spending_type,
+            spent_date: command.spent_date,
+            payers: command.payers,
+            shares,
+        };
+        spending.validate()?;
+        self.store.update_spending(spending).await
+    }
+
+    async fn update_exact(
+        &self,
+        spending_id: EntityId,
+        command: ExactSpendingCommand,
+    ) -> Result<Spending, ApplicationError> {
+        let spending = Spending {
+            id: spending_id,
+            group_id: command.group_id,
+            description: Description::new(command.description)?,
+            total: command.total,
+            currency: command.currency,
+            spending_type: command.spending_type,
+            spent_date: command.spent_date,
+            payers: command.payers,
+            shares: command.shares,
+        };
+        spending.validate()?;
+        self.store.update_spending(spending).await
     }
 
     async fn delete(

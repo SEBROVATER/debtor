@@ -33,6 +33,11 @@ pub fn equal_split(
     crate::model::validate_amount(total, currency, "total")?;
     let unit = Decimal::new(1, currency.minor_unit_scale());
     let units = (total / unit).trunc();
+    if units < Decimal::from(ids.len() as u64) {
+        return Err(ValidationError::InsufficientMinorUnits {
+            recipients: ids.len(),
+        });
+    }
     let count = Decimal::from(ids.len() as u64);
     let base_units = (units / count).trunc();
     let remainder = units - base_units * count;
@@ -54,6 +59,7 @@ mod tests {
 
     use super::equal_split;
     use crate::currency::Currency;
+    use crate::model::ValidationError;
 
     #[test]
     fn distributes_residual_units_by_participant_id() {
@@ -63,5 +69,27 @@ mod tests {
         assert_eq!(split[0].amount, Decimal::new(4, 2));
         assert_eq!(split[1].amount, Decimal::new(3, 2));
         assert_eq!(split[2].amount, Decimal::new(3, 2));
+    }
+
+    #[test]
+    fn rejects_a_total_with_fewer_minor_units_than_recipients() {
+        let error = equal_split(Decimal::new(2, 2), Currency::Usd, &[1, 2, 3])
+            .expect_err("a zero-valued share must be rejected");
+
+        assert_eq!(
+            error,
+            ValidationError::InsufficientMinorUnits { recipients: 3 }
+        );
+    }
+
+    #[test]
+    fn applies_the_minimum_unit_rule_at_currency_scale() {
+        let error = equal_split(Decimal::new(2, 0), Currency::Jpy, &[1, 2, 3])
+            .expect_err("a zero-valued yen share must be rejected");
+
+        assert_eq!(
+            error,
+            ValidationError::InsufficientMinorUnits { recipients: 3 }
+        );
     }
 }

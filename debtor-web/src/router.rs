@@ -20,14 +20,35 @@ pub fn router(state: AppState) -> Router {
             get(handlers::groups).post(handlers::create_group),
         )
         .route("/groups/{id}", get(handlers::group_detail))
-        .route("/groups/{id}/members", post(handlers::add_member))
         .route(
-            "/groups/{id}/spendings",
-            post(handlers::create_equal_spending),
+            "/groups/{id}/edit",
+            get(handlers::group_edit_form).post(handlers::update_group),
         )
         .route(
-            "/groups/{id}/spendings/exact",
-            post(handlers::create_exact_spending),
+            "/groups/{id}/delete",
+            get(handlers::delete_group_form).post(handlers::delete_group),
+        )
+        .route("/groups/{id}/members", post(handlers::add_member))
+        .route(
+            "/groups/{group_id}/members/{participant_id}/deactivate",
+            post(handlers::deactivate_member),
+        )
+        .route(
+            "/groups/{id}/participants",
+            post(handlers::create_group_participant),
+        )
+        .route("/groups/{id}/spendings", post(handlers::create_spending))
+        .route(
+            "/groups/{group_id}/spendings/{spending_id}",
+            get(handlers::spending_detail).post(handlers::update_spending),
+        )
+        .route(
+            "/groups/{group_id}/spendings/{spending_id}/edit",
+            get(handlers::edit_spending_form),
+        )
+        .route(
+            "/groups/{group_id}/spendings/{spending_id}/delete",
+            get(handlers::delete_spending_form).post(handlers::delete_spending),
         )
         .route("/groups/{id}/archive", post(handlers::archive_group))
         .route("/groups/{id}/restore", post(handlers::restore_group))
@@ -44,5 +65,10 @@ pub fn router(state: AppState) -> Router {
             "/participants/{id}/restore",
             post(handlers::restore_participant),
         )
+        .route(
+            "/participants/{id}/edit",
+            get(handlers::participant_edit_form),
+        )
+        .route("/participants/{id}", post(handlers::update_participant))
         .with_state(state)
 }
