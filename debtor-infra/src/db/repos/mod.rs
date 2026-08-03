@@ -6,7 +6,10 @@ use std::collections::BTreeSet;
 use std::str::FromStr;
 
 use async_trait::async_trait;
-use debtor_application::{ApplicationError, LedgerStore};
+use debtor_application::{
+    ApplicationError, GroupReader, GroupRepository, ParticipantRepository, SpendingReader,
+    SpendingRepository,
+};
 use debtor_domain::currency::Currency;
 use debtor_domain::model::{
     Allocation, Color, Description, EntityId, Group, GroupMember, Name, Participant, Spending,
@@ -103,7 +106,7 @@ async fn group_mutable_in_transaction(
 }
 
 #[async_trait]
-impl LedgerStore for SqliteLedgerStore {
+impl GroupReader for SqliteLedgerStore {
     async fn list_groups(&self, archived: bool) -> Result<Vec<Group>, ApplicationError> {
         let archived = i64::from(archived);
         sqlx::query_as!(DbGroup, "SELECT id, name, currency, is_archived FROM groups WHERE is_archived = ? ORDER BY name, id", archived)
@@ -127,7 +130,10 @@ impl LedgerStore for SqliteLedgerStore {
         .ok_or(ApplicationError::NotFound)
         .and_then(group)
     }
+}
 
+#[async_trait]
+impl GroupRepository for SqliteLedgerStore {
     async fn create_group(
         &self,
         name: Name,
@@ -193,7 +199,10 @@ impl LedgerStore for SqliteLedgerStore {
         }
         Ok(())
     }
+}
 
+#[async_trait]
+impl ParticipantRepository for SqliteLedgerStore {
     async fn list_participants(
         &self,
         archived: bool,
@@ -351,7 +360,10 @@ impl LedgerStore for SqliteLedgerStore {
             .await
             .map_err(storage)?)
     }
+}
 
+#[async_trait]
+impl SpendingReader for SqliteLedgerStore {
     async fn spendings(&self, group_id: EntityId) -> Result<Vec<Spending>, ApplicationError> {
         self.group(group_id).await?;
         let ids = sqlx::query_scalar!(
@@ -375,7 +387,10 @@ impl LedgerStore for SqliteLedgerStore {
     ) -> Result<Spending, ApplicationError> {
         load_spending(&self.pool, group_id, spending_id).await
     }
+}
 
+#[async_trait]
+impl SpendingRepository for SqliteLedgerStore {
     async fn create_spending(&self, spending: Spending) -> Result<Spending, ApplicationError> {
         save_spending(&self.pool, spending, false).await
     }

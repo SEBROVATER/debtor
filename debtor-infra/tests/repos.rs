@@ -3,7 +3,9 @@
 #![allow(clippy::expect_used)]
 
 use chrono::NaiveDate;
-use debtor_application::{ApplicationError, LedgerStore};
+use debtor_application::{
+    ApplicationError, GroupRepository, ParticipantRepository, SpendingReader, SpendingRepository,
+};
 use debtor_domain::currency::Currency;
 use debtor_domain::model::{Allocation, Color, Description, Name, Spending, SpendingType};
 use debtor_infra::db::repos::SqliteLedgerStore;

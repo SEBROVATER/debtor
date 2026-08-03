@@ -116,13 +116,18 @@ pub trait LoginAttemptLimiter: Send + Sync {
     async fn reset(&self, client: std::net::IpAddr);
 }
 
-/// Atomic persistence operations used by application workflows.
+/// Reads group records.
 #[async_trait]
-pub trait LedgerStore: Send + Sync {
+pub trait GroupReader: Send + Sync {
     /// Lists groups by archive state.
     async fn list_groups(&self, archived: bool) -> Result<Vec<Group>, ApplicationError>;
     /// Loads one group.
     async fn group(&self, id: EntityId) -> Result<Group, ApplicationError>;
+}
+
+/// Writes group records.
+#[async_trait]
+pub trait GroupRepository: Send + Sync {
     /// Creates a group.
     async fn create_group(&self, name: Name, currency: Currency)
     -> Result<Group, ApplicationError>;
@@ -141,6 +146,11 @@ pub trait LedgerStore: Send + Sync {
     ) -> Result<(), ApplicationError>;
     /// Deletes an empty group.
     async fn delete_empty_group(&self, id: EntityId) -> Result<(), ApplicationError>;
+}
+
+/// Reads and writes participant identities and memberships.
+#[async_trait]
+pub trait ParticipantRepository: Send + Sync {
     /// Lists participants by archive state.
     async fn list_participants(&self, archived: bool)
     -> Result<Vec<Participant>, ApplicationError>;
@@ -192,6 +202,11 @@ pub trait LedgerStore: Send + Sync {
         participant_id: EntityId,
         active: bool,
     ) -> Result<(), ApplicationError>;
+}
+
+/// Reads complete spending aggregates.
+#[async_trait]
+pub trait SpendingReader: Send + Sync {
     /// Lists a group's complete spendings.
     async fn spendings(&self, group_id: EntityId) -> Result<Vec<Spending>, ApplicationError>;
     /// Loads one complete spending.
@@ -200,6 +215,11 @@ pub trait LedgerStore: Send + Sync {
         group_id: EntityId,
         spending_id: EntityId,
     ) -> Result<Spending, ApplicationError>;
+}
+
+/// Writes complete spending aggregates atomically.
+#[async_trait]
+pub trait SpendingRepository: Send + Sync {
     /// Atomically creates a validated spending whose referenced members are active.
     async fn create_spending(&self, spending: Spending) -> Result<Spending, ApplicationError>;
     /// Atomically replaces a validated spending while preserving historical-member rules.
@@ -210,6 +230,17 @@ pub trait LedgerStore: Send + Sync {
         group_id: EntityId,
         spending_id: EntityId,
     ) -> Result<(), ApplicationError>;
+}
+
+/// Compatibility facade for adapters that provide all ledger persistence ports.
+pub trait LedgerStore:
+    GroupReader + GroupRepository + ParticipantRepository + SpendingReader + SpendingRepository
+{
+}
+
+impl<T> LedgerStore for T where
+    T: GroupReader + GroupRepository + ParticipantRepository + SpendingReader + SpendingRepository
+{
 }
 
 /// Inbound group operations.
@@ -240,7 +271,8 @@ pub trait GroupUseCases: Send + Sync {
 
 /// Group workflow implementation.
 pub struct GroupService {
-    store: Arc<dyn LedgerStore>,
+    reader: Arc<dyn GroupReader>,
+    repository: Arc<dyn GroupRepository>,
 }
 
 /// Inbound participant and membership operations.
@@ -296,13 +328,13 @@ pub trait ParticipantUseCases: Send + Sync {
 
 /// Participant and membership workflow implementation.
 pub struct ParticipantService {
-    store: Arc<dyn LedgerStore>,
+    repository: Arc<dyn ParticipantRepository>,
 }
 
 impl ParticipantService {
     /// Creates a service with injected persistence.
-    pub fn new(store: Arc<dyn LedgerStore>) -> Self {
-        Self { store }
+    pub fn new(repository: Arc<dyn ParticipantRepository>) -> Self {
+        Self { repository }
     }
 }
 
@@ -312,7 +344,7 @@ impl ParticipantUseCases for ParticipantService {
         &self,
         archived: bool,
     ) -> Result<Vec<Participant>, ApplicationError> {
-        self.store.list_participants(archived).await
+        self.repository.list_participants(archived).await
     }
 
     async fn create_participant(
@@ -320,13 +352,13 @@ impl ParticipantUseCases for ParticipantService {
         name: String,
         color: String,
     ) -> Result<Participant, ApplicationError> {
-        self.store
+        self.repository
             .create_participant(Name::new(name)?, Color::new(color)?)
             .await
     }
 
     async fn participant(&self, id: EntityId) -> Result<Participant, ApplicationError> {
-        self.store.participant(id).await
+        self.repository.participant(id).await
     }
 
     async fn update_participant(
@@ -335,7 +367,7 @@ impl ParticipantUseCases for ParticipantService {
         name: String,
         color: String,
     ) -> Result<Participant, ApplicationError> {
-        self.store
+        self.repository
             .update_participant(id, Name::new(name)?, Color::new(color)?)
             .await
     }
@@ -346,20 +378,20 @@ impl ParticipantUseCases for ParticipantService {
         name: String,
         color: String,
     ) -> Result<Participant, ApplicationError> {
-        self.store
+        self.repository
             .create_group_participant(group_id, Name::new(name)?, Color::new(color)?)
             .await
     }
 
     async fn set_archived(&self, id: EntityId, archived: bool) -> Result<(), ApplicationError> {
-        self.store.set_participant_archived(id, archived).await
+        self.repository.set_participant_archived(id, archived).await
     }
 
     async fn members(
         &self,
         group_id: EntityId,
     ) -> Result<Vec<(Participant, GroupMember)>, ApplicationError> {
-        self.store.group_members(group_id).await
+        self.repository.group_members(group_id).await
     }
 
     async fn add_member(
@@ -367,7 +399,7 @@ impl ParticipantUseCases for ParticipantService {
         group_id: EntityId,
         participant_id: EntityId,
     ) -> Result<(), ApplicationError> {
-        self.store.add_member(group_id, participant_id).await
+        self.repository.add_member(group_id, participant_id).await
     }
 
     async fn deactivate_member(
@@ -375,7 +407,7 @@ impl ParticipantUseCases for ParticipantService {
         group_id: EntityId,
         participant_id: EntityId,
     ) -> Result<(), ApplicationError> {
-        self.store
+        self.repository
             .set_member_active(group_id, participant_id, false)
             .await
     }
@@ -383,25 +415,27 @@ impl ParticipantUseCases for ParticipantService {
 
 impl GroupService {
     /// Creates a service with injected persistence.
-    pub fn new(store: Arc<dyn LedgerStore>) -> Self {
-        Self { store }
+    pub fn new(reader: Arc<dyn GroupReader>, repository: Arc<dyn GroupRepository>) -> Self {
+        Self { reader, repository }
     }
 }
 
 #[async_trait]
 impl GroupUseCases for GroupService {
     async fn list_groups(&self, archived: bool) -> Result<Vec<Group>, ApplicationError> {
-        self.store.list_groups(archived).await
+        self.reader.list_groups(archived).await
     }
     async fn group(&self, id: EntityId) -> Result<Group, ApplicationError> {
-        self.store.group(id).await
+        self.reader.group(id).await
     }
     async fn create_group(
         &self,
         name: String,
         currency: Currency,
     ) -> Result<Group, ApplicationError> {
-        self.store.create_group(Name::new(name)?, currency).await
+        self.repository
+            .create_group(Name::new(name)?, currency)
+            .await
     }
     async fn update_group(
         &self,
@@ -409,15 +443,15 @@ impl GroupUseCases for GroupService {
         name: String,
         currency: Currency,
     ) -> Result<Group, ApplicationError> {
-        self.store
+        self.repository
             .update_group(id, Name::new(name)?, currency)
             .await
     }
     async fn set_archived(&self, id: EntityId, archived: bool) -> Result<(), ApplicationError> {
-        self.store.set_group_archived(id, archived).await
+        self.repository.set_group_archived(id, archived).await
     }
     async fn delete_empty(&self, id: EntityId) -> Result<(), ApplicationError> {
-        self.store.delete_empty_group(id).await
+        self.repository.delete_empty_group(id).await
     }
 }
 
@@ -449,7 +483,8 @@ pub trait DebtUseCases: Send + Sync {
 
 /// Debt workflow implementation.
 pub struct DebtService {
-    store: Arc<dyn LedgerStore>,
+    groups: Arc<dyn GroupReader>,
+    spendings: Arc<dyn SpendingReader>,
     rates: Arc<dyn ExchangeRateProvider>,
     clock: Arc<dyn Clock>,
 }
@@ -457,12 +492,14 @@ pub struct DebtService {
 impl DebtService {
     /// Creates a service with injected dependencies.
     pub fn new(
-        store: Arc<dyn LedgerStore>,
+        groups: Arc<dyn GroupReader>,
+        spendings: Arc<dyn SpendingReader>,
         rates: Arc<dyn ExchangeRateProvider>,
         clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
-            store,
+            groups,
+            spendings,
             rates,
             clock,
         }
@@ -476,12 +513,12 @@ impl DebtUseCases for DebtService {
         group_id: EntityId,
         mode: RateMode,
     ) -> Result<DebtResult, ApplicationError> {
-        let group = self.store.group(group_id).await?;
+        let group = self.groups.group(group_id).await?;
         let calculated_at = self.clock.now();
         let today = calculated_at.date_naive();
         let mut balances = BTreeMap::new();
         let mut rates = Vec::new();
-        for spending in self.store.spendings(group_id).await? {
+        for spending in self.spendings.spendings(group_id).await? {
             let requested_date = match mode {
                 RateMode::Historical => spending.spent_date,
                 RateMode::Current => today,
@@ -589,20 +626,21 @@ pub trait SpendingUseCases: Send + Sync {
 
 /// Spending workflow implementation.
 pub struct SpendingService {
-    store: Arc<dyn LedgerStore>,
+    reader: Arc<dyn SpendingReader>,
+    repository: Arc<dyn SpendingRepository>,
 }
 
 impl SpendingService {
     /// Creates a service with injected persistence.
-    pub fn new(store: Arc<dyn LedgerStore>) -> Self {
-        Self { store }
+    pub fn new(reader: Arc<dyn SpendingReader>, repository: Arc<dyn SpendingRepository>) -> Self {
+        Self { reader, repository }
     }
 }
 
 #[async_trait]
 impl SpendingUseCases for SpendingService {
     async fn list_spendings(&self, group_id: EntityId) -> Result<Vec<Spending>, ApplicationError> {
-        self.store.spendings(group_id).await
+        self.reader.spendings(group_id).await
     }
 
     async fn spending(
@@ -610,7 +648,7 @@ impl SpendingUseCases for SpendingService {
         group_id: EntityId,
         spending_id: EntityId,
     ) -> Result<Spending, ApplicationError> {
-        self.store.spending(group_id, spending_id).await
+        self.reader.spending(group_id, spending_id).await
     }
 
     async fn create_equal(
@@ -634,7 +672,7 @@ impl SpendingUseCases for SpendingService {
             shares,
         };
         spending.validate()?;
-        self.store.create_spending(spending).await
+        self.repository.create_spending(spending).await
     }
 
     async fn create_exact(
@@ -653,7 +691,7 @@ impl SpendingUseCases for SpendingService {
             shares: command.shares,
         };
         spending.validate()?;
-        self.store.create_spending(spending).await
+        self.repository.create_spending(spending).await
     }
 
     async fn update_equal(
@@ -678,7 +716,7 @@ impl SpendingUseCases for SpendingService {
             shares,
         };
         spending.validate()?;
-        self.store.update_spending(spending).await
+        self.repository.update_spending(spending).await
     }
 
     async fn update_exact(
@@ -698,7 +736,7 @@ impl SpendingUseCases for SpendingService {
             shares: command.shares,
         };
         spending.validate()?;
-        self.store.update_spending(spending).await
+        self.repository.update_spending(spending).await
     }
 
     async fn delete(
@@ -706,6 +744,551 @@ impl SpendingUseCases for SpendingService {
         group_id: EntityId,
         spending_id: EntityId,
     ) -> Result<(), ApplicationError> {
-        self.store.delete_spending(group_id, spending_id).await
+        self.repository.delete_spending(group_id, spending_id).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use chrono::TimeZone;
+    use debtor_domain::model::Allocation;
+
+    use super::*;
+
+    const GROUP_ID: EntityId = 10;
+    const PARTICIPANT_ONE: EntityId = 1;
+    const PARTICIPANT_TWO: EntityId = 2;
+
+    fn date(day: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 7, day).unwrap()
+    }
+
+    fn allocation(participant_id: EntityId, amount: i64) -> Allocation {
+        Allocation {
+            participant_id,
+            amount: Decimal::new(amount, 2),
+        }
+    }
+
+    fn group(id: EntityId) -> Group {
+        Group {
+            id,
+            name: Name::new("Trip").unwrap(),
+            currency: Currency::Usd,
+            is_archived: false,
+        }
+    }
+
+    fn participant(id: EntityId) -> Participant {
+        Participant {
+            id,
+            name: Name::new("Ada").unwrap(),
+            color: Color::new("#123456").unwrap(),
+            is_archived: false,
+        }
+    }
+
+    struct GroupFake {
+        listed_archived: Mutex<Vec<bool>>,
+        created: Mutex<Vec<(Name, Currency)>>,
+        updated: Mutex<Vec<(EntityId, Name, Currency)>>,
+        fail_create: bool,
+    }
+
+    #[async_trait]
+    impl GroupReader for GroupFake {
+        async fn list_groups(&self, archived: bool) -> Result<Vec<Group>, ApplicationError> {
+            self.listed_archived.lock().unwrap().push(archived);
+            Ok(vec![group(if archived { 2 } else { 1 })])
+        }
+
+        async fn group(&self, id: EntityId) -> Result<Group, ApplicationError> {
+            Ok(group(id))
+        }
+    }
+
+    #[async_trait]
+    impl GroupRepository for GroupFake {
+        async fn create_group(
+            &self,
+            name: Name,
+            currency: Currency,
+        ) -> Result<Group, ApplicationError> {
+            if self.fail_create {
+                return Err(ApplicationError::Storage("groups unavailable".into()));
+            }
+            self.created.lock().unwrap().push((name.clone(), currency));
+            Ok(Group {
+                id: 1,
+                name,
+                currency,
+                is_archived: false,
+            })
+        }
+
+        async fn update_group(
+            &self,
+            id: EntityId,
+            name: Name,
+            currency: Currency,
+        ) -> Result<Group, ApplicationError> {
+            self.updated
+                .lock()
+                .unwrap()
+                .push((id, name.clone(), currency));
+            Ok(Group {
+                id,
+                name,
+                currency,
+                is_archived: false,
+            })
+        }
+
+        async fn set_group_archived(&self, _: EntityId, _: bool) -> Result<(), ApplicationError> {
+            Ok(())
+        }
+
+        async fn delete_empty_group(&self, _: EntityId) -> Result<(), ApplicationError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn group_service_normalizes_writes_scopes_reads_and_propagates_storage_errors() {
+        let fake = Arc::new(GroupFake {
+            listed_archived: Mutex::new(Vec::new()),
+            created: Mutex::new(Vec::new()),
+            updated: Mutex::new(Vec::new()),
+            fail_create: false,
+        });
+        let service = GroupService::new(fake.clone(), fake.clone());
+
+        let groups = service.list_groups(true).await.unwrap();
+        service
+            .create_group("  Summer trip  ".into(), Currency::Eur)
+            .await
+            .unwrap();
+        service
+            .update_group(7, "  Updated trip  ".into(), Currency::Usd)
+            .await
+            .unwrap();
+
+        assert_eq!(groups[0].id, 2);
+        assert_eq!(*fake.listed_archived.lock().unwrap(), vec![true]);
+        assert_eq!(fake.created.lock().unwrap()[0].0.as_str(), "Summer trip");
+        assert_eq!(fake.updated.lock().unwrap()[0].1.as_str(), "Updated trip");
+
+        let failing = Arc::new(GroupFake {
+            listed_archived: Mutex::new(Vec::new()),
+            created: Mutex::new(Vec::new()),
+            updated: Mutex::new(Vec::new()),
+            fail_create: true,
+        });
+        let error = GroupService::new(failing.clone(), failing)
+            .create_group("Trip".into(), Currency::Usd)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, ApplicationError::Storage(message) if message == "groups unavailable")
+        );
+    }
+
+    struct ParticipantFake {
+        created: Mutex<Vec<(Name, Color)>>,
+        updated: Mutex<Vec<(EntityId, Name, Color)>>,
+        member_requests: Mutex<Vec<EntityId>>,
+        deactivated: Mutex<Vec<(EntityId, EntityId, bool)>>,
+    }
+
+    #[async_trait]
+    impl ParticipantRepository for ParticipantFake {
+        async fn list_participants(&self, _: bool) -> Result<Vec<Participant>, ApplicationError> {
+            Ok(Vec::new())
+        }
+        async fn create_participant(
+            &self,
+            name: Name,
+            color: Color,
+        ) -> Result<Participant, ApplicationError> {
+            self.created
+                .lock()
+                .unwrap()
+                .push((name.clone(), color.clone()));
+            Ok(Participant {
+                id: 1,
+                name,
+                color,
+                is_archived: false,
+            })
+        }
+        async fn participant(&self, id: EntityId) -> Result<Participant, ApplicationError> {
+            Ok(participant(id))
+        }
+        async fn create_group_participant(
+            &self,
+            _: EntityId,
+            name: Name,
+            color: Color,
+        ) -> Result<Participant, ApplicationError> {
+            Ok(Participant {
+                id: 1,
+                name,
+                color,
+                is_archived: false,
+            })
+        }
+        async fn update_participant(
+            &self,
+            id: EntityId,
+            name: Name,
+            color: Color,
+        ) -> Result<Participant, ApplicationError> {
+            self.updated
+                .lock()
+                .unwrap()
+                .push((id, name.clone(), color.clone()));
+            Ok(Participant {
+                id,
+                name,
+                color,
+                is_archived: false,
+            })
+        }
+        async fn set_participant_archived(
+            &self,
+            _: EntityId,
+            _: bool,
+        ) -> Result<(), ApplicationError> {
+            Ok(())
+        }
+        async fn group_members(
+            &self,
+            group_id: EntityId,
+        ) -> Result<Vec<(Participant, GroupMember)>, ApplicationError> {
+            self.member_requests.lock().unwrap().push(group_id);
+            Ok(Vec::new())
+        }
+        async fn add_member(&self, _: EntityId, _: EntityId) -> Result<(), ApplicationError> {
+            Ok(())
+        }
+        async fn set_member_active(
+            &self,
+            group_id: EntityId,
+            participant_id: EntityId,
+            active: bool,
+        ) -> Result<(), ApplicationError> {
+            self.deactivated
+                .lock()
+                .unwrap()
+                .push((group_id, participant_id, active));
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn participant_service_normalizes_writes_and_scopes_membership_actions() {
+        let fake = Arc::new(ParticipantFake {
+            created: Mutex::new(Vec::new()),
+            updated: Mutex::new(Vec::new()),
+            member_requests: Mutex::new(Vec::new()),
+            deactivated: Mutex::new(Vec::new()),
+        });
+        let service = ParticipantService::new(fake.clone());
+
+        service
+            .create_participant("  Ada  ".into(), "#aabbcc".into())
+            .await
+            .unwrap();
+        service
+            .update_participant(3, "  Grace  ".into(), "#abcdef".into())
+            .await
+            .unwrap();
+        service.members(GROUP_ID).await.unwrap();
+        service
+            .deactivate_member(GROUP_ID, PARTICIPANT_ONE)
+            .await
+            .unwrap();
+
+        assert_eq!(fake.created.lock().unwrap()[0].0.as_str(), "Ada");
+        assert_eq!(fake.created.lock().unwrap()[0].1.as_str(), "#AABBCC");
+        assert_eq!(fake.updated.lock().unwrap()[0].1.as_str(), "Grace");
+        assert_eq!(*fake.member_requests.lock().unwrap(), vec![GROUP_ID]);
+        assert_eq!(
+            *fake.deactivated.lock().unwrap(),
+            vec![(GROUP_ID, PARTICIPANT_ONE, false)]
+        );
+    }
+
+    struct SpendingFake {
+        listed_groups: Mutex<Vec<EntityId>>,
+        read_requests: Mutex<Vec<(EntityId, EntityId)>>,
+        created: Mutex<Vec<Spending>>,
+        updated: Mutex<Vec<Spending>>,
+        fail_update: bool,
+    }
+
+    #[async_trait]
+    impl SpendingReader for SpendingFake {
+        async fn spendings(&self, group_id: EntityId) -> Result<Vec<Spending>, ApplicationError> {
+            self.listed_groups.lock().unwrap().push(group_id);
+            Ok(Vec::new())
+        }
+        async fn spending(
+            &self,
+            group_id: EntityId,
+            spending_id: EntityId,
+        ) -> Result<Spending, ApplicationError> {
+            self.read_requests
+                .lock()
+                .unwrap()
+                .push((group_id, spending_id));
+            Err(ApplicationError::NotFound)
+        }
+    }
+
+    #[async_trait]
+    impl SpendingRepository for SpendingFake {
+        async fn create_spending(&self, spending: Spending) -> Result<Spending, ApplicationError> {
+            self.created.lock().unwrap().push(spending.clone());
+            Ok(spending)
+        }
+        async fn update_spending(&self, spending: Spending) -> Result<Spending, ApplicationError> {
+            if self.fail_update {
+                return Err(ApplicationError::Conflict);
+            }
+            self.updated.lock().unwrap().push(spending.clone());
+            Ok(spending)
+        }
+        async fn delete_spending(&self, _: EntityId, _: EntityId) -> Result<(), ApplicationError> {
+            Ok(())
+        }
+    }
+
+    fn equal_command() -> EqualSpendingCommand {
+        EqualSpendingCommand {
+            group_id: GROUP_ID,
+            description: "  Dinner  ".into(),
+            total: Decimal::new(1001, 2),
+            currency: Currency::Usd,
+            spending_type: SpendingType::Food,
+            spent_date: date(5),
+            payers: vec![allocation(PARTICIPANT_ONE, 1001)],
+            share_participant_ids: vec![PARTICIPANT_TWO, PARTICIPANT_ONE],
+        }
+    }
+
+    fn exact_command() -> ExactSpendingCommand {
+        ExactSpendingCommand {
+            group_id: GROUP_ID,
+            description: "Taxi".into(),
+            total: Decimal::new(1000, 2),
+            currency: Currency::Usd,
+            spending_type: SpendingType::Transport,
+            spent_date: date(6),
+            payers: vec![allocation(PARTICIPANT_ONE, 1000)],
+            shares: vec![
+                allocation(PARTICIPANT_ONE, 400),
+                allocation(PARTICIPANT_TWO, 600),
+            ],
+        }
+    }
+
+    #[tokio::test]
+    async fn spending_service_builds_equal_and_exact_create_update_aggregates_and_scopes_reads() {
+        let fake = Arc::new(SpendingFake {
+            listed_groups: Mutex::new(Vec::new()),
+            read_requests: Mutex::new(Vec::new()),
+            created: Mutex::new(Vec::new()),
+            updated: Mutex::new(Vec::new()),
+            fail_update: false,
+        });
+        let service = SpendingService::new(fake.clone(), fake.clone());
+
+        service.create_equal(equal_command()).await.unwrap();
+        service.create_exact(exact_command()).await.unwrap();
+        service.update_equal(99, equal_command()).await.unwrap();
+        service.update_exact(100, exact_command()).await.unwrap();
+        assert!(matches!(
+            service.spending(GROUP_ID, 77).await,
+            Err(ApplicationError::NotFound)
+        ));
+        service.list_spendings(GROUP_ID).await.unwrap();
+
+        let created = fake.created.lock().unwrap();
+        assert_eq!(created[0].description.as_str(), "Dinner");
+        assert_eq!(
+            created[0].shares,
+            vec![
+                allocation(PARTICIPANT_ONE, 501),
+                allocation(PARTICIPANT_TWO, 500)
+            ]
+        );
+        assert_eq!(created[1].shares, exact_command().shares);
+        let updated = fake.updated.lock().unwrap();
+        assert_eq!(updated[0].id, 99);
+        assert_eq!(updated[1].id, 100);
+        assert_eq!(*fake.read_requests.lock().unwrap(), vec![(GROUP_ID, 77)]);
+        assert_eq!(*fake.listed_groups.lock().unwrap(), vec![GROUP_ID]);
+    }
+
+    #[tokio::test]
+    async fn spending_service_propagates_repository_errors() {
+        let fake = Arc::new(SpendingFake {
+            listed_groups: Mutex::new(Vec::new()),
+            read_requests: Mutex::new(Vec::new()),
+            created: Mutex::new(Vec::new()),
+            updated: Mutex::new(Vec::new()),
+            fail_update: true,
+        });
+        let error = SpendingService::new(fake.clone(), fake)
+            .update_exact(9, exact_command())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ApplicationError::Conflict));
+    }
+
+    struct FixedClock(DateTime<Utc>);
+    impl Clock for FixedClock {
+        fn now(&self) -> DateTime<Utc> {
+            self.0
+        }
+    }
+
+    struct DebtGroups;
+    #[async_trait]
+    impl GroupReader for DebtGroups {
+        async fn list_groups(&self, _: bool) -> Result<Vec<Group>, ApplicationError> {
+            Ok(Vec::new())
+        }
+        async fn group(&self, id: EntityId) -> Result<Group, ApplicationError> {
+            Ok(group(id))
+        }
+    }
+
+    struct DebtSpendings(Vec<Spending>);
+    #[async_trait]
+    impl SpendingReader for DebtSpendings {
+        async fn spendings(&self, _: EntityId) -> Result<Vec<Spending>, ApplicationError> {
+            Ok(self.0.clone())
+        }
+        async fn spending(&self, _: EntityId, _: EntityId) -> Result<Spending, ApplicationError> {
+            Err(ApplicationError::NotFound)
+        }
+    }
+
+    struct RateFake(Mutex<Vec<(Currency, Currency, NaiveDate, NaiveDate)>>);
+    #[async_trait]
+    impl ExchangeRateProvider for RateFake {
+        async fn rate(
+            &self,
+            base: Currency,
+            quote: Currency,
+            requested_date: NaiveDate,
+            today: NaiveDate,
+        ) -> Result<RateQuote, ApplicationError> {
+            self.0
+                .lock()
+                .unwrap()
+                .push((base, quote, requested_date, today));
+            Ok(RateQuote {
+                base,
+                quote,
+                requested_date,
+                effective_date: requested_date,
+                rate: Decimal::ONE,
+                is_stale: false,
+                is_provisional: false,
+            })
+        }
+    }
+
+    struct FailingRates;
+    #[async_trait]
+    impl ExchangeRateProvider for FailingRates {
+        async fn rate(
+            &self,
+            _: Currency,
+            _: Currency,
+            _: NaiveDate,
+            _: NaiveDate,
+        ) -> Result<RateQuote, ApplicationError> {
+            Err(ApplicationError::Unavailable("rates unavailable".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn debt_service_uses_fixed_clock_for_current_and_spending_dates_for_historical_rates() {
+        let spending = Spending {
+            id: 1,
+            group_id: GROUP_ID,
+            description: Description::new("Lunch").unwrap(),
+            total: Decimal::new(100, 2),
+            currency: Currency::Eur,
+            spending_type: SpendingType::Food,
+            spent_date: date(4),
+            payers: vec![allocation(PARTICIPANT_ONE, 100)],
+            shares: vec![allocation(PARTICIPANT_TWO, 100)],
+        };
+        let rates = Arc::new(RateFake(Mutex::new(Vec::new())));
+        let clock_time = Utc.with_ymd_and_hms(2026, 7, 8, 12, 30, 0).unwrap();
+        let service = DebtService::new(
+            Arc::new(DebtGroups),
+            Arc::new(DebtSpendings(vec![spending])),
+            rates.clone(),
+            Arc::new(FixedClock(clock_time)),
+        );
+
+        let historical = service
+            .calculate(GROUP_ID, RateMode::Historical)
+            .await
+            .unwrap();
+        let current = service
+            .calculate(GROUP_ID, RateMode::Current)
+            .await
+            .unwrap();
+
+        assert_eq!(historical.calculated_at, clock_time);
+        assert_eq!(current.calculated_at, clock_time);
+        assert_eq!(
+            *rates.0.lock().unwrap(),
+            vec![
+                (Currency::Eur, Currency::Usd, date(4), date(8)),
+                (Currency::Eur, Currency::Usd, date(8), date(8)),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn debt_service_propagates_rate_provider_errors() {
+        let spending = Spending {
+            id: 1,
+            group_id: GROUP_ID,
+            description: Description::new("Lunch").unwrap(),
+            total: Decimal::new(100, 2),
+            currency: Currency::Eur,
+            spending_type: SpendingType::Food,
+            spent_date: date(4),
+            payers: vec![allocation(PARTICIPANT_ONE, 100)],
+            shares: vec![allocation(PARTICIPANT_TWO, 100)],
+        };
+        let service = DebtService::new(
+            Arc::new(DebtGroups),
+            Arc::new(DebtSpendings(vec![spending])),
+            Arc::new(FailingRates),
+            Arc::new(FixedClock(
+                Utc.with_ymd_and_hms(2026, 7, 8, 12, 30, 0).unwrap(),
+            )),
+        );
+
+        let error = service
+            .calculate(GROUP_ID, RateMode::Historical)
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(error, ApplicationError::Unavailable(message) if message == "rates unavailable")
+        );
     }
 }

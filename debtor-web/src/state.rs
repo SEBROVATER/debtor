@@ -93,15 +93,12 @@ impl TrustedProxyConfig {
     ///
     /// Returns an error when the selected forwarding header is malformed.
     pub fn resolve(&self, peer: SocketAddr, headers: &HeaderMap) -> Result<IpAddr, String> {
-        if !self
-            .cidrs
-            .iter()
-            .any(|network| network.contains(&peer.ip()))
-        {
-            return Ok(peer.ip());
+        let peer = canonical_ip(peer.ip());
+        if !self.cidrs.iter().any(|network| network.contains(&peer)) {
+            return Ok(peer);
         }
         let Some(header) = self.header else {
-            return Ok(peer.ip());
+            return Ok(peer);
         };
         let values = match header {
             ProxyHeader::Forwarded => headers.get_all("forwarded").iter().collect::<Vec<_>>(),
@@ -111,7 +108,7 @@ impl TrustedProxyConfig {
                 .collect::<Vec<_>>(),
         };
         if values.is_empty() {
-            return Ok(peer.ip());
+            return Ok(peer);
         }
         let mut chain = Vec::new();
         for value in values {
@@ -119,16 +116,8 @@ impl TrustedProxyConfig {
                 .to_str()
                 .map_err(|_| "malformed forwarding header".to_string())?;
             if matches!(header, ProxyHeader::Forwarded) {
-                for element in text.split(',') {
-                    let mut values = element.trim().split(';').map(str::trim);
-                    let item = values
-                        .next()
-                        .and_then(|part| part.strip_prefix("for="))
-                        .ok_or_else(|| "malformed Forwarded header".to_string())?;
-                    if values.next().is_some() {
-                        return Err("malformed Forwarded header".into());
-                    }
-                    chain.push(parse_forwarded_ip(item)?);
+                for element in split_forwarded(text, ',')? {
+                    chain.push(parse_forwarded_element(element)?);
                 }
             } else {
                 for item in text.split(',') {
@@ -136,7 +125,7 @@ impl TrustedProxyConfig {
                 }
             }
         }
-        let mut current = peer.ip();
+        let mut current = peer;
         for candidate in chain.into_iter().rev() {
             if !self.cidrs.iter().any(|network| network.contains(&current)) {
                 break;
@@ -147,11 +136,75 @@ impl TrustedProxyConfig {
     }
 }
 
+fn split_forwarded(value: &str, delimiter: char) -> Result<Vec<&str>, String> {
+    let mut values = Vec::new();
+    let mut quoted = false;
+    let mut start = 0;
+    for (index, character) in value.char_indices() {
+        match character {
+            '"' => quoted = !quoted,
+            '\\' if quoted => return Err("malformed Forwarded header".into()),
+            _ if character == delimiter && !quoted => {
+                let item = value[start..index].trim();
+                if item.is_empty() {
+                    return Err("malformed Forwarded header".into());
+                }
+                values.push(item);
+                start = index + character.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    if quoted {
+        return Err("malformed Forwarded header".into());
+    }
+    let item = value[start..].trim();
+    if item.is_empty() {
+        return Err("malformed Forwarded header".into());
+    }
+    values.push(item);
+    Ok(values)
+}
+
+fn parse_forwarded_element(element: &str) -> Result<IpAddr, String> {
+    let mut client = None;
+    for parameter in split_forwarded(element, ';')? {
+        let (name, value) = parameter
+            .split_once('=')
+            .ok_or_else(|| "malformed Forwarded header".to_string())?;
+        if name.is_empty() || !name.bytes().all(is_token) || value.is_empty() {
+            return Err("malformed Forwarded header".into());
+        }
+        if name.eq_ignore_ascii_case("for") {
+            if client.replace(parse_forwarded_ip(value)?).is_some() {
+                return Err("malformed Forwarded header".into());
+            }
+        } else if !is_forwarded_value(value) {
+            return Err("malformed Forwarded header".into());
+        }
+    }
+    client.ok_or_else(|| "malformed Forwarded header".into())
+}
+
+fn is_token(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte)
+}
+
+fn is_forwarded_value(value: &str) -> bool {
+    value.bytes().all(is_token)
+        || value.len() >= 2
+            && value.starts_with('"')
+            && value.ends_with('"')
+            && value[1..value.len() - 1]
+                .bytes()
+                .all(|byte| byte.is_ascii_graphic() || byte == b' ')
+}
+
 fn parse_forwarded_ip(value: &str) -> Result<IpAddr, String> {
     let value = value.trim();
     let value = if value.starts_with('"') && value.ends_with('"') && value.len() >= 2 {
         &value[1..value.len() - 1]
-    } else if value.contains('"') {
+    } else if value.contains(['"', '\\']) {
         return Err("malformed forwarding header".into());
     } else {
         value
@@ -164,14 +217,16 @@ fn parse_forwarded_ip(value: &str) -> Result<IpAddr, String> {
             .find(']')
             .ok_or_else(|| "malformed forwarding header".to_string())?;
         let suffix = &value[end + 1..];
-        if !(suffix.is_empty() || suffix.starts_with(':') && suffix[1..].parse::<u16>().is_ok()) {
+        if !(suffix.is_empty() || suffix.strip_prefix(':').is_some_and(is_port)) {
             return Err("malformed forwarding header".into());
         }
-        return Ok(canonical_ip(
-            value[1..end]
-                .parse()
-                .map_err(|_| "malformed forwarding header".to_string())?,
-        ));
+        let IpAddr::V6(ip) = value[1..end]
+            .parse()
+            .map_err(|_| "malformed forwarding header".to_string())?
+        else {
+            return Err("malformed forwarding header".into());
+        };
+        return Ok(canonical_ip(IpAddr::V6(ip)));
     }
     if let Ok(ip) = value.parse() {
         return Ok(canonical_ip(ip));
@@ -179,13 +234,19 @@ fn parse_forwarded_ip(value: &str) -> Result<IpAddr, String> {
     let (host, port) = value
         .rsplit_once(':')
         .ok_or_else(|| "malformed forwarding header".to_string())?;
-    if port.parse::<u16>().is_err() {
+    if !is_port(port) {
         return Err("malformed forwarding header".into());
     }
     Ok(canonical_ip(
         host.parse()
             .map_err(|_| "malformed forwarding header".to_string())?,
     ))
+}
+
+fn is_port(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|byte| byte.is_ascii_digit())
+        && value.parse::<u16>().is_ok()
 }
 
 fn canonical_ip(ip: IpAddr) -> IpAddr {
@@ -243,10 +304,14 @@ mod tests {
 
         for (config, name, value) in [
             (&forwarded, "forwarded", "for=unknown"),
-            (&forwarded, "forwarded", "for=192.0.2.1;proto=https"),
+            (&forwarded, "forwarded", "for=192.0.2.1;proto"),
+            (&forwarded, "forwarded", "for=192.0.2.1;for=192.0.2.2"),
+            (&forwarded, "forwarded", "for=192.0.2.1;proto=\"https\\\""),
             (&forwarded, "forwarded", "for=[2001:db8::1"),
             (&x_forwarded_for, "x-forwarded-for", "192.0.2.1,"),
             (&x_forwarded_for, "x-forwarded-for", "_hidden"),
+            (&x_forwarded_for, "x-forwarded-for", "192.0.2.1:+443"),
+            (&x_forwarded_for, "x-forwarded-for", "[fe80::1%25eth0]:443"),
         ] {
             let mut headers = HeaderMap::new();
             headers.insert(name, HeaderValue::from_static(value));
@@ -282,8 +347,34 @@ mod tests {
         );
 
         assert_eq!(
+            config.resolve(peer("[::ffff:10.0.0.9]:443"), &headers),
+            Ok(ip("192.0.2.25"))
+        );
+    }
+
+    #[test]
+    fn accepts_bare_addresses_and_strict_port_literals() {
+        let config = TrustedProxyConfig::parse("10.0.0.0/8", "forwarded")
+            .expect("valid proxy configuration");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "forwarded",
+            HeaderValue::from_static("for=192.0.2.25:00443;proto=https"),
+        );
+        assert_eq!(
             config.resolve(peer("10.0.0.9:443"), &headers),
             Ok(ip("192.0.2.25"))
+        );
+
+        let config = TrustedProxyConfig::parse("10.0.0.0/8", "x-forwarded-for")
+            .expect("valid proxy configuration");
+        headers.insert(
+            "x-forwarded-for",
+            HeaderValue::from_static("[2001:db8::25]:65535"),
+        );
+        assert_eq!(
+            config.resolve(peer("10.0.0.9:443"), &headers),
+            Ok(ip("2001:db8::25"))
         );
     }
 }

@@ -1,13 +1,13 @@
 //! debtor composition root and local server entry point.
 
-use std::env;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use debtor_application::{
-    Clock, DebtService, DebtUseCases, GroupService, GroupUseCases, LedgerStore, ParticipantService,
-    ParticipantUseCases, PasswordVerifier, SpendingService, SpendingUseCases, UtcClock,
+    Clock, DebtService, DebtUseCases, GroupReader, GroupRepository, GroupService, GroupUseCases,
+    ParticipantRepository, ParticipantService, ParticipantUseCases, PasswordVerifier,
+    SpendingReader, SpendingRepository, SpendingService, SpendingUseCases, UtcClock,
 };
 use debtor_infra::auth::{ArgonPasswordGate, MemoryLoginAttemptLimiter};
 use debtor_infra::db::repos::SqliteLedgerStore;
@@ -16,53 +16,9 @@ use debtor_web::state::{AppState, TrustedProxyConfig};
 use tower_http::services::ServeDir;
 use tower_sessions::{Expiry, MemoryStore, SessionManagerLayer};
 
-/// Validated process configuration.
-struct Config {
-    database_url: String,
-    bind: SocketAddr,
-    password_hash: String,
-    cookie_secure: bool,
-    session_cookie_name: String,
-    exchange_base_url: String,
-    trusted_proxy_cidrs: String,
-    trusted_proxy_header: String,
-}
+mod config;
 
-impl Config {
-    fn from_env() -> Result<Self> {
-        let password_hash =
-            env::var("APP_ADMIN_PASSWORD_HASH").context("APP_ADMIN_PASSWORD_HASH is required")?;
-        if password_hash.trim().is_empty() {
-            anyhow::bail!("APP_ADMIN_PASSWORD_HASH must not be empty");
-        }
-        Ok(Self {
-            database_url: env::var("APP_DATABASE_URL")
-                .unwrap_or_else(|_| "sqlite://debtor.db?mode=rwc".to_owned()),
-            bind: env::var("APP_BIND")
-                .unwrap_or_else(|_| "127.0.0.1:3000".to_owned())
-                .parse()
-                .context("APP_BIND must be a socket address")?,
-            password_hash,
-            cookie_secure: env::var("APP_SESSION_COOKIE_SECURE")
-                .unwrap_or_else(|_| {
-                    if cfg!(debug_assertions) {
-                        "false"
-                    } else {
-                        "true"
-                    }
-                    .to_owned()
-                })
-                .parse()
-                .context("APP_SESSION_COOKIE_SECURE must be true or false")?,
-            session_cookie_name: env::var("APP_SESSION_COOKIE_NAME")
-                .unwrap_or_else(|_| "debtor_session".to_owned()),
-            exchange_base_url: env::var("APP_EXCHANGE_BASE_URL")
-                .unwrap_or_else(|_| "https://api.frankfurter.dev/v2".to_owned()),
-            trusted_proxy_cidrs: env::var("APP_TRUSTED_PROXY_CIDRS").unwrap_or_default(),
-            trusted_proxy_header: env::var("APP_TRUSTED_PROXY_HEADER").unwrap_or_default(),
-        })
-    }
-}
+use config::Config;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -77,10 +33,7 @@ async fn main() -> Result<()> {
                 .unwrap_or_else(|_| "debtor=info,tower_http=info".into()),
         )
         .init();
-    let config = Config::from_env()?;
-    if !cfg!(debug_assertions) && !config.cookie_secure {
-        anyhow::bail!("insecure session cookies are only allowed in debug builds");
-    }
+    let config = Config::from_lookup(|name| std::env::var(name).ok(), cfg!(debug_assertions))?;
     let proxy =
         TrustedProxyConfig::parse(&config.trusted_proxy_cidrs, &config.trusted_proxy_header)
             .map_err(anyhow::Error::msg)?;
@@ -92,14 +45,28 @@ async fn main() -> Result<()> {
         .await
         .context("unable to apply SQLite migrations")?;
 
-    let store: Arc<dyn LedgerStore> = Arc::new(SqliteLedgerStore::new(pool));
-    let groups: Arc<dyn GroupUseCases> = Arc::new(GroupService::new(store.clone()));
+    let store = Arc::new(SqliteLedgerStore::new(pool));
+    let group_reader: Arc<dyn GroupReader> = store.clone();
+    let group_repository: Arc<dyn GroupRepository> = store.clone();
+    let participant_repository: Arc<dyn ParticipantRepository> = store.clone();
+    let spending_reader: Arc<dyn SpendingReader> = store.clone();
+    let spending_repository: Arc<dyn SpendingRepository> = store;
+    let groups: Arc<dyn GroupUseCases> =
+        Arc::new(GroupService::new(group_reader.clone(), group_repository));
     let participants: Arc<dyn ParticipantUseCases> =
-        Arc::new(ParticipantService::new(store.clone()));
-    let spendings: Arc<dyn SpendingUseCases> = Arc::new(SpendingService::new(store.clone()));
+        Arc::new(ParticipantService::new(participant_repository));
+    let spendings: Arc<dyn SpendingUseCases> = Arc::new(SpendingService::new(
+        spending_reader.clone(),
+        spending_repository,
+    ));
     let rates = Arc::new(FrankfurterClient::with_base_url(&config.exchange_base_url));
     let clock: Arc<dyn Clock> = Arc::new(UtcClock);
-    let debts: Arc<dyn DebtUseCases> = Arc::new(DebtService::new(store, rates, clock.clone()));
+    let debts: Arc<dyn DebtUseCases> = Arc::new(DebtService::new(
+        group_reader,
+        spending_reader,
+        rates,
+        clock.clone(),
+    ));
     let password: Arc<dyn PasswordVerifier> =
         Arc::new(ArgonPasswordGate::new(config.password_hash)?);
     let state = AppState {

@@ -16,5 +16,8 @@ debtor-domain = { workspace = true }
 rust_decimal = { workspace = true }
 thiserror = { workspace = true }
 
+[dev-dependencies]
+tokio = { workspace = true }
+
 [lints]
 workspace = true

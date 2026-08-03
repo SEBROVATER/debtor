@@ -22,6 +22,7 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 rust_decimal = { workspace = true }
 ipnet = { workspace = true }
+form_urlencoded = { workspace = true }
 
 [lints]
 workspace = true
