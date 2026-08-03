@@ -3,14 +3,14 @@ use std::collections::BTreeMap;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    response::{IntoResponse, Redirect, Response},
+    response::Response,
 };
 use debtor_application::RateMode;
 use tower_sessions::Session;
 
 use super::{
     DebtQuery,
-    auth::authed,
+    auth::require_auth,
     response::{error_response, map_error, render},
 };
 use crate::{
@@ -24,8 +24,8 @@ pub(crate) async fn debts(
     Path(id): Path<i64>,
     Query(query): Query<DebtQuery>,
 ) -> Response {
-    if !authed(&session).await {
-        return Redirect::to("/login").into_response();
+    if let Err(response) = require_auth(&session).await {
+        return response;
     }
     let mode = match query.rate_mode.as_deref() {
         None | Some("historical") => RateMode::Historical,

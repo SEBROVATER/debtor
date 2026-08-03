@@ -1,5 +1,4 @@
 use axum::{
-    Form,
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Redirect, Response},
@@ -8,12 +7,13 @@ use debtor_domain::currency::Currency;
 use tower_sessions::Session;
 
 use super::{
-    CsrfForm, GroupForm, GroupsQuery,
-    auth::{authed, csrf, matches_csrf},
+    GroupsQuery,
+    auth::{csrf, require_auth, require_csrf},
     response::{error_response, map_error, render},
-    spendings::build_group_template,
+    spendings::{build_group_template, map_group_template_error},
 };
 use crate::{
+    forms::{OrderedForm, parse_csrf_form, parse_group_form},
     state::AppState,
     templates::{ConfirmTemplate, GroupEditTemplate, GroupRow, GroupsTemplate, SelectOption},
 };
@@ -23,8 +23,8 @@ pub(crate) async fn groups(
     session: Session,
     Query(query): Query<GroupsQuery>,
 ) -> Response {
-    if !authed(&session).await {
-        return Redirect::to("/login").into_response();
+    if let Err(response) = require_auth(&session).await {
+        return response;
     }
     let archived = query.archived.unwrap_or(false);
     match state.groups.list_groups(archived).await {
@@ -37,7 +37,10 @@ pub(crate) async fn groups(
                     currency: g.currency.to_string(),
                 })
                 .collect(),
-            csrf: csrf(&session).await,
+            csrf: match csrf(&session).await {
+                Ok(token) => token,
+                Err(response) => return response,
+            },
             archived,
         }),
         Err(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "Unable to load groups."),
@@ -47,13 +50,17 @@ pub(crate) async fn groups(
 pub(crate) async fn create_group(
     State(state): State<AppState>,
     session: Session,
-    Form(form): Form<GroupForm>,
+    form: OrderedForm,
 ) -> Response {
-    if !authed(&session).await {
-        return Redirect::to("/login").into_response();
+    if let Err(response) = require_auth(&session).await {
+        return response;
     }
-    if !matches_csrf(&session, &form.csrf).await {
-        return error_response(StatusCode::FORBIDDEN, "Invalid form token.");
+    let form = match parse_group_form(form) {
+        Ok(form) => form,
+        Err(error) => return error_response(error.status, error.message),
+    };
+    if let Err(response) = require_csrf(&session, &form.csrf).await {
+        return response;
     }
     let Ok(currency) = form.currency.parse::<Currency>() else {
         return error_response(StatusCode::UNPROCESSABLE_ENTITY, "Invalid currency.");
@@ -69,12 +76,12 @@ pub(crate) async fn group_detail(
     session: Session,
     Path(id): Path<i64>,
 ) -> Response {
-    if !authed(&session).await {
-        return Redirect::to("/login").into_response();
+    if let Err(response) = require_auth(&session).await {
+        return response;
     }
     match build_group_template(&state, &session, id, None, None, None).await {
         Ok(template) => render(&template),
-        Err(error) => map_error(error),
+        Err(error) => map_group_template_error(error),
     }
 }
 
@@ -82,7 +89,7 @@ pub(crate) async fn archive_group(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<i64>,
-    Form(form): Form<CsrfForm>,
+    form: OrderedForm,
 ) -> Response {
     archive(state, session, id, true, form).await
 }
@@ -91,7 +98,7 @@ pub(crate) async fn restore_group(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<i64>,
-    Form(form): Form<CsrfForm>,
+    form: OrderedForm,
 ) -> Response {
     archive(state, session, id, false, form).await
 }
@@ -101,8 +108,8 @@ pub(crate) async fn group_edit_form(
     session: Session,
     Path(id): Path<i64>,
 ) -> Response {
-    if !authed(&session).await {
-        return Redirect::to("/login").into_response();
+    if let Err(response) = require_auth(&session).await {
+        return response;
     }
     match state.groups.group(id).await {
         Ok(group) if !group.is_archived => render(&GroupEditTemplate {
@@ -117,7 +124,10 @@ pub(crate) async fn group_edit_form(
                     selected: *c == group.currency,
                 })
                 .collect(),
-            csrf: csrf(&session).await,
+            csrf: match csrf(&session).await {
+                Ok(token) => token,
+                Err(response) => return response,
+            },
             error: None,
         }),
         Ok(_) => error_response(StatusCode::CONFLICT, "Archived groups are read-only."),
@@ -129,13 +139,17 @@ pub(crate) async fn update_group(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<i64>,
-    Form(form): Form<GroupForm>,
+    form: OrderedForm,
 ) -> Response {
-    if !authed(&session).await {
-        return Redirect::to("/login").into_response();
+    if let Err(response) = require_auth(&session).await {
+        return response;
     }
-    if !matches_csrf(&session, &form.csrf).await {
-        return error_response(StatusCode::FORBIDDEN, "Invalid form token.");
+    let form = match parse_group_form(form) {
+        Ok(form) => form,
+        Err(error) => return error_response(error.status, error.message),
+    };
+    if let Err(response) = require_csrf(&session, &form.csrf).await {
+        return response;
     }
     let Ok(currency) = form.currency.parse::<Currency>() else {
         return error_response(StatusCode::UNPROCESSABLE_ENTITY, "Invalid currency.");
@@ -151,8 +165,8 @@ pub(crate) async fn delete_group_form(
     session: Session,
     Path(id): Path<i64>,
 ) -> Response {
-    if !authed(&session).await {
-        return Redirect::to("/login").into_response();
+    if let Err(response) = require_auth(&session).await {
+        return response;
     }
     match state.groups.group(id).await {
         Ok(group) if !group.is_archived => render(&ConfirmTemplate {
@@ -160,7 +174,10 @@ pub(crate) async fn delete_group_form(
             message: "This permanently deletes the group only if it has no expenses.".into(),
             action: format!("/groups/{id}/delete"),
             cancel: format!("/groups/{id}"),
-            csrf: csrf(&session).await,
+            csrf: match csrf(&session).await {
+                Ok(token) => token,
+                Err(response) => return response,
+            },
         }),
         Ok(_) => error_response(StatusCode::CONFLICT, "Archived groups cannot be deleted."),
         Err(error) => map_error(error),
@@ -171,13 +188,17 @@ pub(crate) async fn delete_group(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<i64>,
-    Form(form): Form<CsrfForm>,
+    form: OrderedForm,
 ) -> Response {
-    if !authed(&session).await {
-        return Redirect::to("/login").into_response();
+    if let Err(response) = require_auth(&session).await {
+        return response;
     }
-    if !matches_csrf(&session, &form.csrf).await {
-        return error_response(StatusCode::FORBIDDEN, "Invalid form token.");
+    let form = match parse_csrf_form(form) {
+        Ok(form) => form,
+        Err(error) => return error_response(error.status, error.message),
+    };
+    if let Err(response) = require_csrf(&session, &form.csrf).await {
+        return response;
     }
     match state.groups.delete_empty(id).await {
         Ok(()) => Redirect::to("/groups").into_response(),
@@ -190,13 +211,17 @@ async fn archive(
     session: Session,
     id: i64,
     archived: bool,
-    form: CsrfForm,
+    form: OrderedForm,
 ) -> Response {
-    if !authed(&session).await {
-        return Redirect::to("/login").into_response();
+    if let Err(response) = require_auth(&session).await {
+        return response;
     }
-    if !matches_csrf(&session, &form.csrf).await {
-        return error_response(StatusCode::FORBIDDEN, "Invalid form token.");
+    let form = match parse_csrf_form(form) {
+        Ok(form) => form,
+        Err(error) => return error_response(error.status, error.message),
+    };
+    if let Err(response) = require_csrf(&session, &form.csrf).await {
+        return response;
     }
     match state.groups.set_archived(id, archived).await {
         Ok(()) => Redirect::to("/groups").into_response(),

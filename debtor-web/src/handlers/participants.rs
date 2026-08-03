@@ -1,5 +1,4 @@
 use axum::{
-    Form,
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Redirect, Response},
@@ -7,11 +6,12 @@ use axum::{
 use tower_sessions::Session;
 
 use super::{
-    CsrfForm, GroupsQuery, ParticipantForm,
-    auth::{authed, csrf, matches_csrf},
+    GroupsQuery,
+    auth::{csrf, require_auth, require_csrf},
     response::{error_response, map_error, render},
 };
 use crate::{
+    forms::{OrderedForm, parse_csrf_form, parse_participant_form},
     state::AppState,
     templates::{ParticipantEditTemplate, ParticipantRow, ParticipantsTemplate},
 };
@@ -21,8 +21,8 @@ pub(crate) async fn participants(
     session: Session,
     Query(query): Query<GroupsQuery>,
 ) -> Response {
-    if !authed(&session).await {
-        return Redirect::to("/login").into_response();
+    if let Err(response) = require_auth(&session).await {
+        return response;
     }
     let archived = query.archived.unwrap_or(false);
     match state.participants.list_participants(archived).await {
@@ -35,7 +35,10 @@ pub(crate) async fn participants(
                     color: p.color.as_str().to_owned(),
                 })
                 .collect(),
-            csrf: csrf(&session).await,
+            csrf: match csrf(&session).await {
+                Ok(token) => token,
+                Err(response) => return response,
+            },
             archived,
         }),
         Err(_) => error_response(
@@ -48,13 +51,17 @@ pub(crate) async fn participants(
 pub(crate) async fn create_participant(
     State(state): State<AppState>,
     session: Session,
-    Form(form): Form<ParticipantForm>,
+    form: OrderedForm,
 ) -> Response {
-    if !authed(&session).await {
-        return Redirect::to("/login").into_response();
+    if let Err(response) = require_auth(&session).await {
+        return response;
     }
-    if !matches_csrf(&session, &form.csrf).await {
-        return error_response(StatusCode::FORBIDDEN, "Invalid form token.");
+    let form = match parse_participant_form(form) {
+        Ok(form) => form,
+        Err(error) => return error_response(error.status, error.message),
+    };
+    if let Err(response) = require_csrf(&session, &form.csrf).await {
+        return response;
     }
     match state
         .participants
@@ -71,15 +78,18 @@ pub(crate) async fn participant_edit_form(
     session: Session,
     Path(id): Path<i64>,
 ) -> Response {
-    if !authed(&session).await {
-        return Redirect::to("/login").into_response();
+    if let Err(response) = require_auth(&session).await {
+        return response;
     }
     match state.participants.participant(id).await {
         Ok(p) if !p.is_archived => render(&ParticipantEditTemplate {
             id,
             name: p.name.to_string(),
             color: p.color.as_str().to_owned(),
-            csrf: csrf(&session).await,
+            csrf: match csrf(&session).await {
+                Ok(token) => token,
+                Err(response) => return response,
+            },
             error: None,
         }),
         Ok(_) => error_response(
@@ -94,13 +104,17 @@ pub(crate) async fn update_participant(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<i64>,
-    Form(form): Form<ParticipantForm>,
+    form: OrderedForm,
 ) -> Response {
-    if !authed(&session).await {
-        return Redirect::to("/login").into_response();
+    if let Err(response) = require_auth(&session).await {
+        return response;
     }
-    if !matches_csrf(&session, &form.csrf).await {
-        return error_response(StatusCode::FORBIDDEN, "Invalid form token.");
+    let form = match parse_participant_form(form) {
+        Ok(form) => form,
+        Err(error) => return error_response(error.status, error.message),
+    };
+    if let Err(response) = require_csrf(&session, &form.csrf).await {
+        return response;
     }
     match state
         .participants
@@ -116,7 +130,7 @@ pub(crate) async fn archive_participant(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<i64>,
-    Form(form): Form<CsrfForm>,
+    form: OrderedForm,
 ) -> Response {
     set_participant_archive(state, session, id, true, form).await
 }
@@ -125,7 +139,7 @@ pub(crate) async fn restore_participant(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<i64>,
-    Form(form): Form<CsrfForm>,
+    form: OrderedForm,
 ) -> Response {
     set_participant_archive(state, session, id, false, form).await
 }
@@ -135,13 +149,17 @@ async fn set_participant_archive(
     session: Session,
     id: i64,
     archived: bool,
-    form: CsrfForm,
+    form: OrderedForm,
 ) -> Response {
-    if !authed(&session).await {
-        return Redirect::to("/login").into_response();
+    if let Err(response) = require_auth(&session).await {
+        return response;
     }
-    if !matches_csrf(&session, &form.csrf).await {
-        return error_response(StatusCode::FORBIDDEN, "Invalid form token.");
+    let form = match parse_csrf_form(form) {
+        Ok(form) => form,
+        Err(error) => return error_response(error.status, error.message),
+    };
+    if let Err(response) = require_csrf(&session, &form.csrf).await {
+        return response;
     }
     match state.participants.set_archived(id, archived).await {
         Ok(()) => Redirect::to("/participants").into_response(),

@@ -1,29 +1,33 @@
 use axum::{
-    Form,
     extract::{Path, State},
-    http::StatusCode,
     response::{IntoResponse, Redirect, Response},
 };
 use tower_sessions::Session;
 
 use super::{
-    CsrfForm, MemberForm, ParticipantForm,
-    auth::{authed, matches_csrf},
+    auth::{require_auth, require_csrf},
     response::{error_response, map_error},
 };
-use crate::state::AppState;
+use crate::{
+    forms::{OrderedForm, parse_csrf_form, parse_member_form, parse_participant_form},
+    state::AppState,
+};
 
 pub(crate) async fn add_member(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<i64>,
-    Form(form): Form<MemberForm>,
+    form: OrderedForm,
 ) -> Response {
-    if !authed(&session).await {
-        return Redirect::to("/login").into_response();
+    if let Err(response) = require_auth(&session).await {
+        return response;
     }
-    if !matches_csrf(&session, &form.csrf).await {
-        return error_response(StatusCode::FORBIDDEN, "Invalid form token.");
+    let form = match parse_member_form(form) {
+        Ok(form) => form,
+        Err(error) => return error_response(error.status, error.message),
+    };
+    if let Err(response) = require_csrf(&session, &form.csrf).await {
+        return response;
     }
     match state.participants.add_member(id, form.participant_id).await {
         Ok(()) => Redirect::to(&format!("/groups/{id}")).into_response(),
@@ -35,13 +39,17 @@ pub(crate) async fn create_group_participant(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<i64>,
-    Form(form): Form<ParticipantForm>,
+    form: OrderedForm,
 ) -> Response {
-    if !authed(&session).await {
-        return Redirect::to("/login").into_response();
+    if let Err(response) = require_auth(&session).await {
+        return response;
     }
-    if !matches_csrf(&session, &form.csrf).await {
-        return error_response(StatusCode::FORBIDDEN, "Invalid form token.");
+    let form = match parse_participant_form(form) {
+        Ok(form) => form,
+        Err(error) => return error_response(error.status, error.message),
+    };
+    if let Err(response) = require_csrf(&session, &form.csrf).await {
+        return response;
     }
     match state
         .participants
@@ -57,13 +65,17 @@ pub(crate) async fn deactivate_member(
     State(state): State<AppState>,
     session: Session,
     Path((group_id, participant_id)): Path<(i64, i64)>,
-    Form(form): Form<CsrfForm>,
+    form: OrderedForm,
 ) -> Response {
-    if !authed(&session).await {
-        return Redirect::to("/login").into_response();
+    if let Err(response) = require_auth(&session).await {
+        return response;
     }
-    if !matches_csrf(&session, &form.csrf).await {
-        return error_response(StatusCode::FORBIDDEN, "Invalid form token.");
+    let form = match parse_csrf_form(form) {
+        Ok(form) => form,
+        Err(error) => return error_response(error.status, error.message),
+    };
+    if let Err(response) = require_csrf(&session, &form.csrf).await {
+        return response;
     }
     match state
         .participants

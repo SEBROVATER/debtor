@@ -18,6 +18,10 @@ pub(super) fn error_response(status: StatusCode, message: &str) -> Response {
     (status, render(&template)).into_response()
 }
 
+pub(super) fn session_error() -> Response {
+    error_response(StatusCode::INTERNAL_SERVER_ERROR, "Session error.")
+}
+
 pub(super) fn map_error(error: debtor_application::ApplicationError) -> Response {
     match error {
         debtor_application::ApplicationError::NotFound => {

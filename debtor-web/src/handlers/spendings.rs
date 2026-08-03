@@ -17,10 +17,11 @@ use tower_sessions::Session;
 
 use super::{
     ExpenseForm,
-    auth::{authed, csrf, matches_csrf},
+    auth::{csrf, require_auth, require_csrf},
     response::{error_response, map_error, render},
 };
 use crate::{
+    forms::{OrderedForm, parse_expense_csrf, parse_expense_form},
     state::AppState,
     templates::{
         AllocationRow, ConfirmTemplate, ExpenseFormView, GroupTemplate, MemberRow, SelectOption,
@@ -32,7 +33,7 @@ pub(crate) async fn create_spending(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<i64>,
-    Form(form): Form<ExpenseForm>,
+    form: OrderedForm,
 ) -> Response {
     save_spending(state, session, id, None, form).await
 }
@@ -40,7 +41,7 @@ pub(crate) async fn update_spending(
     State(state): State<AppState>,
     session: Session,
     Path((group_id, spending_id)): Path<(i64, i64)>,
-    Form(form): Form<ExpenseForm>,
+    form: OrderedForm,
 ) -> Response {
     save_spending(state, session, group_id, Some(spending_id), form).await
 }
@@ -50,8 +51,8 @@ pub(crate) async fn edit_spending_form(
     session: Session,
     Path((group_id, spending_id)): Path<(i64, i64)>,
 ) -> Response {
-    if !authed(&session).await {
-        return Redirect::to("/login").into_response();
+    if let Err(response) = require_auth(&session).await {
+        return response;
     }
     let spending = match state.spendings.spending(group_id, spending_id).await {
         Ok(value) => value,
@@ -59,7 +60,7 @@ pub(crate) async fn edit_spending_form(
     };
     match build_group_template(&state, &session, group_id, Some(&spending), None, None).await {
         Ok(template) => render(&template),
-        Err(error) => map_error(error),
+        Err(error) => map_group_template_error(error),
     }
 }
 
@@ -68,8 +69,8 @@ pub(crate) async fn spending_detail(
     session: Session,
     Path((group_id, spending_id)): Path<(i64, i64)>,
 ) -> Response {
-    if !authed(&session).await {
-        return Redirect::to("/login").into_response();
+    if let Err(response) = require_auth(&session).await {
+        return response;
     }
     let group = match state.groups.group(group_id).await {
         Ok(value) => value,
@@ -98,7 +99,10 @@ pub(crate) async fn spending_detail(
         spent_date: spending.spent_date.to_string(),
         payers: named_allocations(&spending.payers, &names),
         shares: named_allocations(&spending.shares, &names),
-        csrf: csrf(&session).await,
+        csrf: match csrf(&session).await {
+            Ok(token) => token,
+            Err(response) => return response,
+        },
     })
 }
 
@@ -107,8 +111,8 @@ pub(crate) async fn delete_spending_form(
     session: Session,
     Path((group_id, spending_id)): Path<(i64, i64)>,
 ) -> Response {
-    if !authed(&session).await {
-        return Redirect::to("/login").into_response();
+    if let Err(response) = require_auth(&session).await {
+        return response;
     }
     let spending = match state.spendings.spending(group_id, spending_id).await {
         Ok(value) => value,
@@ -124,7 +128,10 @@ pub(crate) async fn delete_spending_form(
         ),
         action: format!("/groups/{group_id}/spendings/{spending_id}/delete"),
         cancel: format!("/groups/{group_id}/spendings/{spending_id}"),
-        csrf: csrf(&session).await,
+        csrf: match csrf(&session).await {
+            Ok(token) => token,
+            Err(response) => return response,
+        },
     })
 }
 
@@ -134,11 +141,11 @@ pub(crate) async fn delete_spending(
     Path((group_id, spending_id)): Path<(i64, i64)>,
     Form(form): Form<super::CsrfForm>,
 ) -> Response {
-    if !authed(&session).await {
-        return Redirect::to("/login").into_response();
+    if let Err(response) = require_auth(&session).await {
+        return response;
     }
-    if !matches_csrf(&session, &form.csrf).await {
-        return error_response(StatusCode::FORBIDDEN, "Invalid form token.");
+    if let Err(response) = require_csrf(&session, &form.csrf).await {
+        return response;
     }
     match state.spendings.delete(group_id, spending_id).await {
         Ok(()) => Redirect::to(&format!("/groups/{group_id}")).into_response(),
@@ -151,13 +158,17 @@ async fn save_spending(
     session: Session,
     group_id: i64,
     spending_id: Option<i64>,
-    form: ExpenseForm,
+    form: OrderedForm,
 ) -> Response {
-    if !authed(&session).await {
-        return Redirect::to("/login").into_response();
+    if let Err(response) = require_auth(&session).await {
+        return response;
     }
-    if !matches_csrf(&session, &form.csrf).await {
-        return error_response(StatusCode::FORBIDDEN, "Invalid form token.");
+    let csrf_token = match parse_expense_csrf(&form) {
+        Ok(value) => value,
+        Err(error) => return error_response(error.status, error.message),
+    };
+    if let Err(response) = require_csrf(&session, &csrf_token).await {
+        return response;
     }
     let mut member_ids = match state.participants.members(group_id).await {
         Ok(members) => members
@@ -167,27 +178,29 @@ async fn save_spending(
             .collect::<Vec<_>>(),
         Err(error) => return map_error(error),
     };
-    if let Some(id) = spending_id {
-        match state.spendings.spending(group_id, id).await {
-            Ok(spending) => member_ids.extend(
+    let editing = if let Some(id) = spending_id {
+        let spending = match state.spendings.spending(group_id, id).await {
+            Ok(spending) => {
+                member_ids.extend(
+                    spending
+                        .payers
+                        .iter()
+                        .chain(&spending.shares)
+                        .map(|a| a.participant_id),
+                );
                 spending
-                    .payers
-                    .iter()
-                    .chain(&spending.shares)
-                    .map(|a| a.participant_id),
-            ),
+            }
             Err(error) => return map_error(error),
         };
         member_ids.sort_unstable();
         member_ids.dedup();
-    }
-    let editing = if let Some(id) = spending_id {
-        match state.spendings.spending(group_id, id).await {
-            Ok(value) => Some(value),
-            Err(error) => return map_error(error),
-        }
+        Some(spending)
     } else {
         None
+    };
+    let form = match parse_expense_form(form, &member_ids) {
+        Ok(value) => value,
+        Err(error) => return error_response(error.status, error.message),
     };
     let parsed = match parse_expense(group_id, &member_ids, &form) {
         Ok(value) => value,
@@ -238,7 +251,7 @@ async fn form_error(
 ) -> Response {
     match build_group_template(state, session, group_id, editing, Some(message), Some(form)).await {
         Ok(template) => (StatusCode::UNPROCESSABLE_ENTITY, render(&template)).into_response(),
-        Err(error) => map_error(error),
+        Err(error) => map_group_template_error(error),
     }
 }
 
@@ -345,7 +358,7 @@ pub(super) async fn build_group_template(
     editing: Option<&Spending>,
     error: Option<String>,
     submitted: Option<&ExpenseForm>,
-) -> Result<GroupTemplate, debtor_application::ApplicationError> {
+) -> Result<GroupTemplate, GroupTemplateError> {
     let group = state.groups.group(id).await?;
     let members = state.participants.members(id).await?;
     let all_participants = state.participants.list_participants(false).await?;
@@ -401,7 +414,9 @@ pub(super) async fn build_group_template(
         name: group.name.to_string(),
         group_id: id,
         currency: group.currency.to_string(),
-        csrf: csrf(session).await,
+        csrf: csrf(session)
+            .await
+            .map_err(|_| GroupTemplateError::Session)?,
         members: active_members,
         inactive_members,
         available_participants: available,
@@ -422,6 +437,24 @@ pub(super) async fn build_group_template(
         expense,
     })
 }
+
+pub(super) enum GroupTemplateError {
+    Application(debtor_application::ApplicationError),
+    Session,
+}
+
+impl From<debtor_application::ApplicationError> for GroupTemplateError {
+    fn from(error: debtor_application::ApplicationError) -> Self {
+        Self::Application(error)
+    }
+}
+
+pub(super) fn map_group_template_error(error: GroupTemplateError) -> Response {
+    match error {
+        GroupTemplateError::Application(error) => map_error(error),
+        GroupTemplateError::Session => super::response::session_error(),
+    }
+}
 fn member_row(p: &debtor_domain::model::Participant, active: bool, selected: bool) -> MemberRow {
     MemberRow {
         id: p.id,
@@ -433,6 +466,7 @@ fn member_row(p: &debtor_domain::model::Participant, active: bool, selected: boo
         amount: String::new(),
     }
 }
+#[allow(clippy::too_many_lines)]
 fn expense_view(
     state: &AppState,
     currency: Currency,
@@ -562,7 +596,7 @@ fn apply_submitted_expense(view: &mut ExpenseFormView, form: &ExpenseForm) {
             .extra
             .get(&format!("payer_{}", r.id))
             .cloned()
-            .unwrap_or_default()
+            .unwrap_or_default();
     });
     view.share_rows
         .iter_mut()
@@ -572,7 +606,7 @@ fn apply_submitted_expense(view: &mut ExpenseFormView, form: &ExpenseForm) {
             .extra
             .get(&format!("exact_{}", r.id))
             .cloned()
-            .unwrap_or_default()
+            .unwrap_or_default();
     });
 }
 fn named_allocations(items: &[Allocation], names: &BTreeMap<i64, String>) -> Vec<AllocationRow> {

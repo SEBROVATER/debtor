@@ -1,15 +1,64 @@
 //! Strict ordered form decoding.
 
+use std::collections::HashMap;
+
 use axum::{
     extract::{FromRequest, RawForm, Request},
+    http::StatusCode,
     response::{IntoResponse, Response},
 };
+use serde::Deserialize;
 
 /// Decoded URL-encoded pairs in their original wire order.
 pub struct OrderedForm(pub Vec<(String, String)>);
 
+#[derive(Deserialize)]
+pub(crate) struct CsrfForm {
+    pub(crate) csrf: String,
+}
+
+pub(crate) struct GroupForm {
+    pub(crate) name: String,
+    pub(crate) currency: String,
+    pub(crate) csrf: String,
+}
+
+pub(crate) struct ParticipantForm {
+    pub(crate) name: String,
+    pub(crate) color: String,
+    pub(crate) csrf: String,
+}
+
+pub(crate) struct MemberForm {
+    pub(crate) participant_id: i64,
+    pub(crate) csrf: String,
+}
+
+/// Expense form values after strict field-name and duplicate validation.
+pub(crate) struct ExpenseForm {
+    pub(crate) description: String,
+    pub(crate) total: String,
+    pub(crate) currency: String,
+    pub(crate) spending_type: String,
+    pub(crate) spent_date: String,
+    pub(crate) payer_mode: String,
+    pub(crate) single_payer_id: Option<i64>,
+    pub(crate) split_mode: String,
+    pub(crate) extra: HashMap<String, String>,
+}
+
+#[derive(Debug)]
+pub(crate) struct FormError {
+    pub(crate) status: StatusCode,
+    pub(crate) message: &'static str,
+}
+
 impl OrderedForm {
     /// Returns exactly one required value and rejects unknown or duplicate keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for missing, unknown, or duplicated keys.
     pub fn required_fields<'a>(
         &'a self,
         allowed: &[&str],
@@ -35,6 +84,159 @@ impl OrderedForm {
     }
 }
 
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn parse_csrf_form(form: OrderedForm) -> Result<CsrfForm, FormError> {
+    let fields = form.required_fields(&["csrf"]).map_err(malformed_form)?;
+    Ok(CsrfForm {
+        csrf: value(&fields, "csrf"),
+    })
+}
+
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn parse_group_form(form: OrderedForm) -> Result<GroupForm, FormError> {
+    let fields = form
+        .required_fields(&["name", "currency", "csrf"])
+        .map_err(malformed_form)?;
+    Ok(GroupForm {
+        name: value(&fields, "name"),
+        currency: value(&fields, "currency"),
+        csrf: value(&fields, "csrf"),
+    })
+}
+
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn parse_participant_form(form: OrderedForm) -> Result<ParticipantForm, FormError> {
+    let fields = form
+        .required_fields(&["name", "color", "csrf"])
+        .map_err(malformed_form)?;
+    Ok(ParticipantForm {
+        name: value(&fields, "name"),
+        color: value(&fields, "color"),
+        csrf: value(&fields, "csrf"),
+    })
+}
+
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn parse_member_form(form: OrderedForm) -> Result<MemberForm, FormError> {
+    let fields = form
+        .required_fields(&["participant_id", "csrf"])
+        .map_err(malformed_form)?;
+    let participant_id = value(&fields, "participant_id")
+        .parse()
+        .map_err(|_| FormError {
+            status: StatusCode::UNPROCESSABLE_ENTITY,
+            message: "Invalid participant.",
+        })?;
+    Ok(MemberForm {
+        participant_id,
+        csrf: value(&fields, "csrf"),
+    })
+}
+
+/// Extracts the token independently so unsafe handlers can validate it before
+/// loading data needed to validate the rest of a dynamic form.
+pub(crate) fn parse_expense_csrf(form: &OrderedForm) -> Result<String, FormError> {
+    let csrf = form
+        .0
+        .iter()
+        .filter(|(key, _)| key == "csrf")
+        .map(|(_, value)| value)
+        .collect::<Vec<_>>();
+    if csrf.len() != 1 {
+        return Err(malformed_form("Malformed form submission."));
+    }
+    Ok((*csrf[0]).clone())
+}
+
+/// Parses an expense form after the handler has established its eligible IDs.
+pub(crate) fn parse_expense_form(
+    form: OrderedForm,
+    eligible_ids: &[i64],
+) -> Result<ExpenseForm, FormError> {
+    const SCALARS: [&str; 9] = [
+        "description",
+        "total",
+        "currency",
+        "spending_type",
+        "spent_date",
+        "payer_mode",
+        "single_payer_id",
+        "split_mode",
+        "csrf",
+    ];
+
+    let eligible_ids = eligible_ids
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut scalars = HashMap::new();
+    let mut extra = HashMap::new();
+    for (key, value) in form.0 {
+        if SCALARS.contains(&key.as_str()) {
+            if scalars.insert(key, value).is_some() {
+                return Err(malformed_form("Malformed form submission."));
+            }
+            continue;
+        }
+        let Some((prefix, id)) = dynamic_expense_field(&key) else {
+            return Err(malformed_form("Malformed form submission."));
+        };
+        if !eligible_ids.contains(&id) || extra.insert(format!("{prefix}{id}"), value).is_some() {
+            return Err(malformed_form("Malformed form submission."));
+        }
+    }
+    if SCALARS.iter().any(|key| !scalars.contains_key(*key)) {
+        return Err(malformed_form("Malformed form submission."));
+    }
+
+    let single_payer_id = scalar(&scalars, "single_payer_id")
+        .parse()
+        .map_err(|_| malformed_form("Malformed form submission."))?;
+    if single_payer_id != 0 && !eligible_ids.contains(&single_payer_id) {
+        return Err(malformed_form("Malformed form submission."));
+    }
+
+    Ok(ExpenseForm {
+        description: scalar(&scalars, "description"),
+        total: scalar(&scalars, "total"),
+        currency: scalar(&scalars, "currency"),
+        spending_type: scalar(&scalars, "spending_type"),
+        spent_date: scalar(&scalars, "spent_date"),
+        payer_mode: scalar(&scalars, "payer_mode"),
+        single_payer_id: (single_payer_id != 0).then_some(single_payer_id),
+        split_mode: scalar(&scalars, "split_mode"),
+        extra,
+    })
+}
+
+fn dynamic_expense_field(key: &str) -> Option<(&str, i64)> {
+    ["payer_", "share_", "exact_"]
+        .into_iter()
+        .find_map(|prefix| {
+            key.strip_prefix(prefix)
+                .and_then(|id| id.parse::<i64>().ok().filter(|id| *id > 0))
+                .map(|id| (prefix, id))
+        })
+}
+
+fn malformed_form(message: &'static str) -> FormError {
+    FormError {
+        status: StatusCode::BAD_REQUEST,
+        message,
+    }
+}
+
+fn value(fields: &[(&str, &str)], key: &str) -> String {
+    fields
+        .iter()
+        .find(|(field, _)| *field == key)
+        .map_or_else(String::new, |(_, value)| (*value).to_owned())
+}
+
+fn scalar(values: &HashMap<String, String>, key: &str) -> String {
+    values.get(key).cloned().unwrap_or_default()
+}
+
 impl<S> FromRequest<S> for OrderedForm
 where
     S: Send + Sync,
@@ -45,7 +247,7 @@ where
         let RawForm(bytes) = RawForm::from_request(req, state)
             .await
             .map_err(IntoResponse::into_response)?;
-        validate_percent_encoding(&bytes).map_err(|_| {
+        validate_percent_encoding(&bytes).map_err(|()| {
             (
                 axum::http::StatusCode::BAD_REQUEST,
                 "Malformed form encoding.",
@@ -75,8 +277,14 @@ fn validate_percent_encoding(bytes: &[u8]) -> Result<(), ()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
-    use super::validate_percent_encoding;
+    use axum::http::StatusCode;
+
+    use super::{
+        OrderedForm, parse_csrf_form, parse_expense_csrf, parse_expense_form, parse_group_form,
+        parse_member_form, validate_percent_encoding,
+    };
 
     #[test]
     fn rejects_incomplete_or_non_hex_percent_encoding() {
@@ -84,5 +292,101 @@ mod tests {
         assert!(validate_percent_encoding(b"value=%0").is_err());
         assert!(validate_percent_encoding(b"value=%xz").is_err());
         assert!(validate_percent_encoding(b"value=%20").is_ok());
+    }
+
+    #[test]
+    fn parsers_reject_duplicate_and_unknown_fields() {
+        let duplicate = OrderedForm(vec![
+            ("csrf".into(), "first".into()),
+            ("csrf".into(), "second".into()),
+        ]);
+        let unknown = OrderedForm(vec![
+            ("name".into(), "Trip".into()),
+            ("currency".into(), "USD".into()),
+            ("csrf".into(), "token".into()),
+            ("extra".into(), "value".into()),
+        ]);
+
+        assert_eq!(
+            parse_csrf_form(duplicate).err().map(|error| error.status),
+            Some(StatusCode::BAD_REQUEST)
+        );
+        assert_eq!(
+            parse_group_form(unknown).err().map(|error| error.status),
+            Some(StatusCode::BAD_REQUEST)
+        );
+    }
+
+    #[test]
+    fn member_parser_reports_invalid_ids_as_validation_errors() {
+        let form = OrderedForm(vec![
+            ("participant_id".into(), "not-an-id".into()),
+            ("csrf".into(), "token".into()),
+        ]);
+
+        assert_eq!(
+            parse_member_form(form).err().map(|error| error.status),
+            Some(StatusCode::UNPROCESSABLE_ENTITY)
+        );
+    }
+
+    fn expense_fields() -> OrderedForm {
+        OrderedForm(vec![
+            ("description".into(), "Lunch".into()),
+            ("total".into(), "12.00".into()),
+            ("currency".into(), "USD".into()),
+            ("spending_type".into(), "other".into()),
+            ("spent_date".into(), "2025-01-01".into()),
+            ("payer_mode".into(), "single".into()),
+            ("single_payer_id".into(), "1".into()),
+            ("split_mode".into(), "equal".into()),
+            ("csrf".into(), "token".into()),
+        ])
+    }
+
+    #[test]
+    fn expense_parser_accepts_only_eligible_dynamic_fields() {
+        let mut form = expense_fields();
+        form.0.push(("payer_1".into(), "12.00".into()));
+        form.0.push(("share_2".into(), "on".into()));
+
+        let parsed = parse_expense_form(form, &[1, 2]).expect("valid expense form");
+        assert_eq!(
+            parsed.extra.get("payer_1").map(String::as_str),
+            Some("12.00")
+        );
+        assert_eq!(parsed.extra.get("share_2").map(String::as_str), Some("on"));
+    }
+
+    #[test]
+    fn expense_parser_rejects_duplicate_unknown_and_malformed_dynamic_fields() {
+        for field in ["payer_1", "payer_3", "payer_not-an-id", "unexpected"] {
+            let mut form = expense_fields();
+            form.0.push((field.into(), "12.00".into()));
+            if field == "payer_1" {
+                form.0.push((field.into(), "13.00".into()));
+            }
+            assert_eq!(
+                parse_expense_form(form, &[1, 2])
+                    .err()
+                    .map(|error| error.status),
+                Some(StatusCode::BAD_REQUEST),
+                "{field}"
+            );
+        }
+    }
+
+    #[test]
+    fn expense_csrf_parser_rejects_duplicate_tokens_before_other_validation() {
+        let form = OrderedForm(vec![
+            ("csrf".into(), "first".into()),
+            ("csrf".into(), "second".into()),
+            ("unexpected".into(), "value".into()),
+        ]);
+
+        assert_eq!(
+            parse_expense_csrf(&form).err().map(|error| error.status),
+            Some(StatusCode::BAD_REQUEST)
+        );
     }
 }
