@@ -1,1 +1,24 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Edit participant | debtor</title><link rel="stylesheet" href="/static/css/app.css"></head><body><header><a href="/participants">Participants</a></header><main><h1>Edit participant</h1>{% match error %}{% when Some with (message) %}<p class="error" role="alert">{{ message }}</p>{% when None %}{% endmatch %}<form method="post" action="/participants/{{ id }}"><input type="hidden" name="csrf" value="{{ csrf }}"><label>Name <input name="name" value="{{ name }}" required></label><label>Color <input type="color" name="color" value="{{ color }}" required></label><button>Save participant</button></form></main></body></html>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Edit participant | debtor</title>
+    <link rel="stylesheet" href="/static/css/app.css" />
+  </head>
+  <body>
+    <header><a href="/participants">Participants</a></header>
+    <main>
+      <h1>Edit participant</h1>
+      {% match error %}{% when Some with (message) %}
+      <p class="error" role="alert">{{ message }}</p>
+      {% when None %}{% endmatch %}
+      <form method="post" action="/participants/{{ id }}">
+        <input type="hidden" name="csrf" value="{{ csrf }}" /><label
+          >Name <input name="name" value="{{ name }}" required /></label
+        ><label>Color <input type="color" name="color" value="{{ color }}" required /></label
+        ><button>Save participant</button>
+      </form>
+    </main>
+  </body>
+</html>

@@ -1,18 +1,268 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{{ name }} | debtor</title><link rel="stylesheet" href="/static/css/app.css"></head>
-<body><header><a href="/groups">debtor</a><nav><a href="/groups/{{ group_id }}/debts">Debts</a><a href="/groups/{{ group_id }}/edit">Settings</a></nav></header><main>
-<div class="page-heading"><div><h1>{{ name }}</h1><p>Settlement target: <strong>{{ currency }}</strong></p></div>{% if !archived %}<a class="button secondary" href="/groups/{{ group_id }}/delete">Delete empty group</a>{% endif %}</div>
-{% match error %}{% when Some with (message) %}<p class="error" role="alert">{{ message }}</p>{% when None %}{% endmatch %}
-{% if archived %}<p class="warning">This group is archived and read-only. Historical participants and expense details remain available.</p>{% else %}
-<section class="card"><h2>Members</h2>
-{% if members.len() == 0 %}<p class="warning">Add active members before recording expenses.</p>{% else %}<ul class="member-list">{% for member in members %}<li><span class="swatch" style="background: {{ member.color }}"></span>{{ member.name }}<form method="post" action="/groups/{{ group_id }}/members/{{ member.id }}/deactivate"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="link-button" type="submit">Remove</button></form></li>{% endfor %}</ul>{% endif %}
-{% if inactive_members.len() > 0 %}<p class="helper">Previously used members can be reactivated.</p>{% endif %}
-<div class="member-actions">{% if available_participants.len() > 0 || inactive_members.len() > 0 %}<form method="post" action="/groups/{{ group_id }}/members" class="compact-form"><input type="hidden" name="csrf" value="{{ csrf }}"><label>Add existing participant <select name="participant_id" required>{% for participant in available_participants %}<option value="{{ participant.id }}">{{ participant.name }}</option>{% endfor %}{% for participant in inactive_members %}<option value="{{ participant.id }}">{{ participant.name }} (reactivate)</option>{% endfor %}</select></label><button type="submit">Add member</button></form>{% else %}<p class="helper">All active participants already belong to this group.</p>{% endif %}
-<form method="post" action="/groups/{{ group_id }}/participants" class="compact-form"><input type="hidden" name="csrf" value="{{ csrf }}"><label>Create and add participant <input name="name" value="{{ create_name }}" required></label><label>Color <input type="color" name="color" value="{{ create_color }}" required></label><button type="submit">Create and add</button></form></div></section>
-{% if members.len() > 0 %}<section class="card"><form method="post" action="{{ expense.action }}"><input type="hidden" name="csrf" value="{{ csrf }}"><h2>{{ expense.heading }}</h2>{% match expense.error %}{% when Some with (message) %}<p class="error" role="alert">{{ message }}</p>{% when None %}{% endmatch %}
-<div class="form-grid"><label>Description <input name="description" value="{{ expense.description }}" required></label><label>Total <input name="total" value="{{ expense.total }}" inputmode="decimal" required></label><label>Currency <select name="currency">{% for option in expense.currencies %}<option value="{{ option.value }}"{% if option.selected %} selected{% endif %}>{{ option.label }}</option>{% endfor %}</select></label><label>Category <select name="spending_type">{% for option in expense.categories %}<option value="{{ option.value }}"{% if option.selected %} selected{% endif %}>{{ option.label }}</option>{% endfor %}</select></label><label>Date <input type="date" name="spent_date" value="{{ expense.spent_date }}" required></label></div>
-<fieldset><legend>Who paid?</legend><div class="choice-row"><label><input type="radio" name="payer_mode" value="single"{% if expense.payer_mode == "single" %} checked{% endif %}> One person paid</label><label><input type="radio" name="payer_mode" value="multiple"{% if expense.payer_mode == "multiple" %} checked{% endif %}> Several people paid</label></div><p class="helper">The amount paid must equal the expense total.</p><div class="mode-panel single-payer"><label>Paid by <select name="single_payer_id"><option value="0"{% if expense.single_payer_id == 0 %} selected{% endif %}>Choose a participant</option>{% for member in expense.payer_rows %}<option value="{{ member.id }}"{% if member.id == expense.single_payer_id %} selected{% endif %}>{{ member.name }}</option>{% endfor %}</select></label></div><div class="mode-panel multiple-payers">{% for member in expense.payer_rows %}<label>{{ member.name }}<input name="payer_{{ member.id }}" value="{{ member.amount }}" inputmode="decimal" placeholder="0.00"></label>{% endfor %}</div></fieldset>
-<fieldset><legend>How should this expense be split?</legend><div class="choice-row"><label><input type="radio" name="split_mode" value="equal"{% if expense.split_mode == "equal" %} checked{% endif %}> Split equally</label><label><input type="radio" name="split_mode" value="exact"{% if expense.split_mode == "exact" %} checked{% endif %}> Enter exact amounts</label></div><div class="mode-panel equal-split"><p class="helper">Who shares this expense? The total is divided equally.</p>{% for member in expense.share_rows %}<label class="check-row"><input type="checkbox" name="share_{{ member.id }}" value="on"{% if member.selected %} checked{% endif %}> {{ member.name }}</label>{% endfor %}</div><div class="mode-panel exact-split"><p class="helper">How much does each person owe? Owed amounts must add up to the total.</p>{% for member in expense.exact_rows %}<label>{{ member.name }}<input name="exact_{{ member.id }}" value="{{ member.amount }}" inputmode="decimal" placeholder="0.00"></label>{% endfor %}</div></fieldset><button type="submit">{{ expense.submit_label }}</button></form></section>{% endif %}{% endif %}
-<section class="card"><h2>Expense history</h2>{% if spendings.len() == 0 %}<p class="empty">No expenses recorded.</p>{% else %}<table><thead><tr><th>Date</th><th>Description</th><th>Total</th><th>Actions</th></tr></thead><tbody>{% for spending in spendings %}<tr><td data-label="Date">{{ spending.spent_date }}</td><td data-label="Description"><a href="/groups/{{ group_id }}/spendings/{{ spending.id }}">{{ spending.description }}</a></td><td data-label="Total">{{ spending.total }} {{ spending.currency }}</td><td data-label="Actions">{% if !archived %}<a href="/groups/{{ group_id }}/spendings/{{ spending.id }}/edit">Edit</a> <a class="danger" href="/groups/{{ group_id }}/spendings/{{ spending.id }}/delete">Delete</a>{% else %}Read only{% endif %}</td></tr>{% endfor %}</tbody></table>{% endif %}</section>
-</main></body></html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ name }} | debtor</title>
+    <link rel="stylesheet" href="/static/css/app.css" />
+  </head>
+  <body>
+    <header>
+      <a href="/groups">debtor</a>
+      <nav>
+        <a href="/groups/{{ group_id }}/debts">Debts</a
+        ><a href="/groups/{{ group_id }}/edit">Settings</a>
+      </nav>
+    </header>
+    <main>
+      <div class="page-heading">
+        <div>
+          <h1>{{ name }}</h1>
+          <p>Settlement target: <strong>{{ currency }}</strong></p>
+        </div>
+        {% if !archived %}<a class="button secondary" href="/groups/{{ group_id }}/delete"
+          >Delete empty group</a
+        >{% endif %}
+      </div>
+      {% match error %}{% when Some with (message) %}
+      <p class="error" role="alert">{{ message }}</p>
+      {% when None %}{% endmatch %} {% if archived %}
+      <p class="warning">
+        This group is archived and read-only. Historical participants and expense details remain
+        available.
+      </p>
+      {% else %}
+      <section class="card">
+        <h2>Members</h2>
+        {% if members.len() == 0 %}
+        <p class="warning">Add active members before recording expenses.</p>
+        {% else %}
+        <ul class="member-list">
+          {% for member in members %}
+          <li>
+            <span class="swatch" style="background: {{ member.color }}"></span>{{ member.name }}
+            <form method="post" action="/groups/{{ group_id }}/members/{{ member.id }}/deactivate">
+              <input type="hidden" name="csrf" value="{{ csrf }}" /><button
+                class="link-button"
+                type="submit"
+              >
+                Remove
+              </button>
+            </form>
+          </li>
+          {% endfor %}
+        </ul>
+        {% endif %} {% if inactive_members.len() > 0 %}
+        <p class="helper">Previously used members can be reactivated.</p>
+        {% endif %}
+        <div class="member-actions">
+          {% if available_participants.len() > 0 || inactive_members.len() > 0 %}
+          <form method="post" action="/groups/{{ group_id }}/members" class="compact-form">
+            <input type="hidden" name="csrf" value="{{ csrf }}" /><label
+              >Add existing participant
+              <select name="participant_id" required>
+                {% for participant in available_participants %}
+                <option value="{{ participant.id }}">{{ participant.name }}</option>
+                {% endfor %}{% for participant in inactive_members %}
+                <option value="{{ participant.id }}">{{ participant.name }} (reactivate)</option>
+                {% endfor %}
+              </select></label
+            ><button type="submit">Add member</button>
+          </form>
+          {% else %}
+          <p class="helper">All active participants already belong to this group.</p>
+          {% endif %}
+          <form method="post" action="/groups/{{ group_id }}/participants" class="compact-form">
+            <input type="hidden" name="csrf" value="{{ csrf }}" /><label
+              >Create and add participant
+              <input name="name" value="{{ create_name }}" required /></label
+            ><label
+              >Color <input type="color" name="color" value="{{ create_color }}" required /></label
+            ><button type="submit">Create and add</button>
+          </form>
+        </div>
+      </section>
+      {% if members.len() > 0 %}
+      <section class="card">
+        <form method="post" action="{{ expense.action }}">
+          <input type="hidden" name="csrf" value="{{ csrf }}" />
+          <h2>{{ expense.heading }}</h2>
+          {% match expense.error %}{% when Some with (message) %}
+          <p class="error" role="alert">{{ message }}</p>
+          {% when None %}{% endmatch %}
+          <div class="form-grid">
+            <label
+              >Description
+              <input name="description" value="{{ expense.description }}" required /></label
+            ><label
+              >Total
+              <input name="total" value="{{ expense.total }}" inputmode="decimal" required /></label
+            ><label
+              >Currency
+              <select name="currency">
+                {% for option in expense.currencies %}
+                <option value="{{ option.value }}" {% if option.selected %} selected{% endif %}>
+                  {{ option.label }}
+                </option>
+                {% endfor %}
+              </select></label
+            ><label
+              >Category
+              <select name="spending_type">
+                {% for option in expense.categories %}
+                <option value="{{ option.value }}" {% if option.selected %} selected{% endif %}>
+                  {{ option.label }}
+                </option>
+                {% endfor %}
+              </select></label
+            ><label
+              >Date <input type="date" name="spent_date" value="{{ expense.spent_date }}" required
+            /></label>
+          </div>
+          <fieldset>
+            <legend>Who paid?</legend>
+            <div class="choice-row">
+              <label
+                ><input
+                  type="radio"
+                  name="payer_mode"
+                  value="single"
+                  {% if expense.payer_mode == "single" %} checked{% endif %}
+                />
+                One person paid</label
+              ><label
+                ><input
+                  type="radio"
+                  name="payer_mode"
+                  value="multiple"
+                  {% if expense.payer_mode == "multiple" %} checked{% endif %}
+                />
+                Several people paid</label
+              >
+            </div>
+            <p class="helper">The amount paid must equal the expense total.</p>
+            <div class="mode-panel single-payer">
+              <label
+                >Paid by
+                <select name="single_payer_id">
+                  <option value="0" {% if expense.single_payer_id == 0 %} selected{% endif %}>
+                    Choose a participant
+                  </option>
+                  {% for member in expense.payer_rows %}
+                  <option
+                    value="{{ member.id }}"
+                    {% if member.id == expense.single_payer_id %} selected{% endif %}
+                  >
+                    {{ member.name }}
+                  </option>
+                  {% endfor %}
+                </select></label
+              >
+            </div>
+            <div class="mode-panel multiple-payers">
+              {% for member in expense.payer_rows %}<label
+                >{{ member.name }}<input
+                  name="payer_{{ member.id }}"
+                  value="{{ member.amount }}"
+                  inputmode="decimal"
+                  placeholder="0.00" /></label
+              >{% endfor %}
+            </div>
+          </fieldset>
+          <fieldset>
+            <legend>How should this expense be split?</legend>
+            <div class="choice-row">
+              <label
+                ><input
+                  type="radio"
+                  name="split_mode"
+                  value="equal"
+                  {% if expense.split_mode == "equal" %} checked{% endif %}
+                />
+                Split equally</label
+              ><label
+                ><input
+                  type="radio"
+                  name="split_mode"
+                  value="exact"
+                  {% if expense.split_mode == "exact" %} checked{% endif %}
+                />
+                Enter exact amounts</label
+              >
+            </div>
+            <div class="mode-panel equal-split">
+              <p class="helper">Who shares this expense? The total is divided equally.</p>
+              {% for member in expense.share_rows %}<label class="check-row"
+                ><input
+                  type="checkbox"
+                  name="share_{{ member.id }}"
+                  value="on"
+                  {%
+                  if
+                  member.selected
+                  %}
+                  checked{%
+                  endif
+                  %}
+                />
+                {{ member.name }}</label
+              >{% endfor %}
+            </div>
+            <div class="mode-panel exact-split">
+              <p class="helper">
+                How much does each person owe? Owed amounts must add up to the total.
+              </p>
+              {% for member in expense.exact_rows %}<label
+                >{{ member.name }}<input
+                  name="exact_{{ member.id }}"
+                  value="{{ member.amount }}"
+                  inputmode="decimal"
+                  placeholder="0.00" /></label
+              >{% endfor %}
+            </div>
+          </fieldset>
+          <button type="submit">{{ expense.submit_label }}</button>
+        </form>
+      </section>
+      {% endif %}{% endif %}
+      <section class="card">
+        <h2>Expense history</h2>
+        {% if spendings.len() == 0 %}
+        <p class="empty">No expenses recorded.</p>
+        {% else %}
+        <table>
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Description</th>
+              <th>Total</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for spending in spendings %}
+            <tr>
+              <td data-label="Date">{{ spending.spent_date }}</td>
+              <td data-label="Description">
+                <a href="/groups/{{ group_id }}/spendings/{{ spending.id }}"
+                  >{{ spending.description }}</a
+                >
+              </td>
+              <td data-label="Total">{{ spending.total }} {{ spending.currency }}</td>
+              <td data-label="Actions">
+                {% if !archived %}<a href="/groups/{{ group_id }}/spendings/{{ spending.id }}/edit"
+                  >Edit</a
+                >
+                <a class="danger" href="/groups/{{ group_id }}/spendings/{{ spending.id }}/delete"
+                  >Delete</a
+                >{% else %}Read only{% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% endif %}
+      </section>
+    </main>
+  </body>
+</html>

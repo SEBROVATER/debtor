@@ -1,1 +1,23 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>debtor</title><link rel="stylesheet" href="/static/css/app.css"></head><body><main class="gate"><h1>debtor</h1><p>Private shared spending ledger</p>{% match error %}{% when Some with (message) %}<p class="error">{{ message }}</p>{% when None %}{% endmatch %}<form method="post" action="/login"><input type="hidden" name="csrf" value="{{ csrf }}"><label>Password <input type="password" name="password" required autofocus></label><button>Unlock</button></form></main></body></html>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>debtor</title>
+    <link rel="stylesheet" href="/static/css/app.css" />
+  </head>
+  <body>
+    <main class="gate">
+      <h1>debtor</h1>
+      <p>Private shared spending ledger</p>
+      {% match error %}{% when Some with (message) %}
+      <p class="error">{{ message }}</p>
+      {% when None %}{% endmatch %}
+      <form method="post" action="/login">
+        <input type="hidden" name="csrf" value="{{ csrf }}" /><label
+          >Password <input type="password" name="password" required autofocus /></label
+        ><button>Unlock</button>
+      </form>
+    </main>
+  </body>
+</html>

@@ -1,1 +1,34 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Edit group | debtor</title><link rel="stylesheet" href="/static/css/app.css"></head><body><header><a href="/groups">Groups</a></header><main><h1>Edit group</h1>{% match error %}{% when Some with (message) %}<p class="error" role="alert">{{ message }}</p>{% when None %}{% endmatch %}<form method="post" action="/groups/{{ id }}"><input type="hidden" name="csrf" value="{{ csrf }}"><label>Name <input name="name" value="{{ name }}" required></label><label>Settlement currency <select name="currency">{% for option in currencies %}<option value="{{ option.value }}"{% if option.selected %} selected{% endif %}>{{ option.label }}</option>{% endfor %}</select></label><p class="helper">Changing this affects settlement display, not stored expense amounts.</p><button>Save group</button></form></main></body></html>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Edit group | debtor</title>
+    <link rel="stylesheet" href="/static/css/app.css" />
+  </head>
+  <body>
+    <header><a href="/groups">Groups</a></header>
+    <main>
+      <h1>Edit group</h1>
+      {% match error %}{% when Some with (message) %}
+      <p class="error" role="alert">{{ message }}</p>
+      {% when None %}{% endmatch %}
+      <form method="post" action="/groups/{{ id }}">
+        <input type="hidden" name="csrf" value="{{ csrf }}" /><label
+          >Name <input name="name" value="{{ name }}" required /></label
+        ><label
+          >Settlement currency
+          <select name="currency">
+            {% for option in currencies %}
+            <option value="{{ option.value }}" {% if option.selected %} selected{% endif %}>
+              {{ option.label }}
+            </option>
+            {% endfor %}
+          </select></label
+        >
+        <p class="helper">Changing this affects settlement display, not stored expense amounts.</p>
+        <button>Save group</button>
+      </form>
+    </main>
+  </body>
+</html>
