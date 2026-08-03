@@ -1,5 +1,3 @@
-#![warn(missing_docs)]
-
 //! HTTP layer for the debtor application.
 //!
 //! Contains Axum route definitions, request handlers, middleware,

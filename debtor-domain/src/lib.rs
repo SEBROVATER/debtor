@@ -1,5 +1,3 @@
-#![warn(missing_docs)]
-
 //! Pure domain logic for the debtor application.
 //!
 //! This crate contains business rules and domain types. It has zero I/O

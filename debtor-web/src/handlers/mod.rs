@@ -1057,39 +1057,43 @@ fn expense_view(
             .for_each(|m| m.amount = exact_map.get(&m.id).cloned().unwrap_or_default());
     }
     if let Some(form) = submitted {
-        view.description = form.description.clone();
-        view.total = form.total.clone();
-        view.currency = form.currency.clone();
-        view.spending_type = form.spending_type.clone();
-        view.spent_date = form.spent_date.clone();
-        view.payer_mode = form.payer_mode.clone();
-        view.split_mode = form.split_mode.clone();
-        view.single_payer_id = form.single_payer_id.unwrap_or(0);
-        view.currencies
-            .iter_mut()
-            .for_each(|option| option.selected = option.value == view.currency);
-        view.categories
-            .iter_mut()
-            .for_each(|option| option.selected = option.value == view.spending_type);
-        view.payer_rows.iter_mut().for_each(|row| {
-            row.amount = form
-                .extra
-                .get(&format!("payer_{}", row.id))
-                .cloned()
-                .unwrap_or_default()
-        });
-        view.share_rows
-            .iter_mut()
-            .for_each(|row| row.selected = form.extra.contains_key(&format!("share_{}", row.id)));
-        view.exact_rows.iter_mut().for_each(|row| {
-            row.amount = form
-                .extra
-                .get(&format!("exact_{}", row.id))
-                .cloned()
-                .unwrap_or_default()
-        });
+        apply_submitted_expense(&mut view, form);
     }
     view
+}
+
+fn apply_submitted_expense(view: &mut ExpenseFormView, form: &ExpenseForm) {
+    view.description.clone_from(&form.description);
+    view.total.clone_from(&form.total);
+    view.currency.clone_from(&form.currency);
+    view.spending_type.clone_from(&form.spending_type);
+    view.spent_date.clone_from(&form.spent_date);
+    view.payer_mode.clone_from(&form.payer_mode);
+    view.split_mode.clone_from(&form.split_mode);
+    view.single_payer_id = form.single_payer_id.unwrap_or(0);
+    view.currencies
+        .iter_mut()
+        .for_each(|option| option.selected = option.value == view.currency);
+    view.categories
+        .iter_mut()
+        .for_each(|option| option.selected = option.value == view.spending_type);
+    view.payer_rows.iter_mut().for_each(|row| {
+        row.amount = form
+            .extra
+            .get(&format!("payer_{}", row.id))
+            .cloned()
+            .unwrap_or_default();
+    });
+    view.share_rows
+        .iter_mut()
+        .for_each(|row| row.selected = form.extra.contains_key(&format!("share_{}", row.id)));
+    view.exact_rows.iter_mut().for_each(|row| {
+        row.amount = form
+            .extra
+            .get(&format!("exact_{}", row.id))
+            .cloned()
+            .unwrap_or_default();
+    });
 }
 
 fn named_allocations(items: &[Allocation], names: &BTreeMap<i64, String>) -> Vec<AllocationRow> {

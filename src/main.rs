@@ -1,5 +1,3 @@
-#![warn(missing_docs)]
-
 //! debtor composition root and local server entry point.
 
 use std::env;

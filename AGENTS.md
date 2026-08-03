@@ -23,11 +23,14 @@ Preserve `root -> web/infra -> application -> domain`. Domain owns pure rules; a
 
 ```bash
 cargo check
-cargo test
+cargo test --workspace --all-features --locked
 cargo test -p <crate>
-cargo fmt
-cargo clippy --fix --allow-dirty --workspace
+cargo fmt --all -- --check
+SQLX_OFFLINE=true cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo clippy --fix --allow-dirty --workspace # optional autofix; review changes
 cargo run
 ```
+
+The password helper is an independent workspace. Validate it with `cargo fmt --manifest-path tools/password-hash/Cargo.toml -- --check`, `cargo clippy --manifest-path tools/password-hash/Cargo.toml --all-targets --all-features --locked -- -D warnings`, and `cargo test --manifest-path tools/password-hash/Cargo.toml --locked`.
 
 Copy `.env.example` to `.env` and set `APP_ADMIN_PASSWORD_HASH` before running. Generate a hash with `cargo run --manifest-path tools/password-hash/Cargo.toml`.

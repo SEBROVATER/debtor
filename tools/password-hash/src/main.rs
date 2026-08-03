@@ -80,6 +80,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use argon2::password_hash::{PasswordHash, PasswordVerifier};

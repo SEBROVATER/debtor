@@ -1,5 +1,3 @@
-#![warn(missing_docs)]
-
 //! Application use cases and mockable ports for debtor.
 
 use std::collections::BTreeMap;

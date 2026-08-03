@@ -1,5 +1,3 @@
-#![warn(missing_docs)]
-
 //! Infrastructure adapters for the debtor application.
 //!
 //! Implements application ports using concrete I/O libraries:
