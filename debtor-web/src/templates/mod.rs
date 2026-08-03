@@ -116,6 +116,8 @@ pub struct ParticipantsTemplate {
     pub csrf: String,
     /// Whether this is the archive view.
     pub archived: bool,
+    /// Suggested color for a fresh participant form.
+    pub create_color: String,
 }
 
 /// Participant edit page.

@@ -12,6 +12,7 @@ use super::{
 };
 use crate::{
     forms::{OrderedForm, parse_csrf_form, parse_participant_form},
+    participant_color::suggested_participant_color,
     state::AppState,
     templates::{ParticipantEditTemplate, ParticipantRow, ParticipantsTemplate},
 };
@@ -40,6 +41,7 @@ pub(crate) async fn participants(
                 Err(response) => return response,
             },
             archived,
+            create_color: suggested_participant_color().to_owned(),
         }),
         Err(_) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,

@@ -22,6 +22,7 @@ use super::{
 };
 use crate::{
     forms::{OrderedForm, parse_expense_csrf, parse_expense_form},
+    participant_color::suggested_participant_color,
     state::AppState,
     templates::{
         AllocationRow, ConfirmTemplate, ExpenseFormView, GroupTemplate, MemberRow, SelectOption,
@@ -433,7 +434,7 @@ pub(super) async fn build_group_template(
         archived: group.is_archived,
         error,
         create_name: String::new(),
-        create_color: "#16697A".into(),
+        create_color: suggested_participant_color().to_owned(),
         expense,
     })
 }

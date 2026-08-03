@@ -44,6 +44,7 @@ External effects MUST be constructor-injected through application-owned ports. U
 - Archived groups are read-only. Empty groups may be deleted; groups with spendings may only be archived. Participants are archived/restored, never deleted through the application. Referenced memberships may only be deactivated/reactivated.
 - Spending aggregate writes, including membership eligibility checks and allocations, MUST be transactional. Latest valid write wins.
 - The group page MUST offer atomic create-and-join for new participants and one expense form with independent single/multiple-payer and equal/exact-share choices. These input modes are not persisted; edit screens infer the closest mode from stored allocations.
+- New participant forms MUST suggest a varied valid color from the server while allowing the administrator to select a different color before submission. Validation re-renders retain the submitted color.
 - Historical spending detail MUST remain readable for archived groups and resolve current participant names for inactive identities. Spending CRUD, group settings, empty-group deletion, participant editing, and reversible membership deactivation are server-rendered and CSRF protected.
 
 ## Rates And Settlements

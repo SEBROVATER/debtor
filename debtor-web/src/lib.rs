@@ -7,6 +7,7 @@
 pub mod forms;
 pub mod handlers;
 pub mod middleware;
+mod participant_color;
 pub mod router;
 pub mod session;
 pub mod state;

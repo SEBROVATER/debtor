@@ -5,3 +5,5 @@ CLAUDE.md
 
 /target
 /tools/password-hash/target
+.playwright-mcp/
+debtor.db
