@@ -166,7 +166,7 @@ pub(crate) async fn group_detail(
     if !authed(&session).await {
         return Redirect::to("/login").into_response();
     }
-    match build_group_template(&state, &session, id, None, None).await {
+    match build_group_template(&state, &session, id, None, None, None).await {
         Ok(template) => render(&template),
         Err(error) => map_error(error),
     }
@@ -255,7 +255,7 @@ pub(crate) async fn edit_spending_form(
         Ok(value) => value,
         Err(error) => return map_error(error),
     };
-    match build_group_template(&state, &session, group_id, Some(&spending), None).await {
+    match build_group_template(&state, &session, group_id, Some(&spending), None, None).await {
         Ok(template) => render(&template),
         Err(error) => map_error(error),
     }
@@ -689,10 +689,26 @@ async fn save_spending(
         member_ids.sort_unstable();
         member_ids.dedup();
     }
-    let parsed = match parse_expense(group_id, &member_ids, form) {
+    let editing = if let Some(id) = spending_id {
+        match state.spendings.spending(group_id, id).await {
+            Ok(value) => Some(value),
+            Err(error) => return map_error(error),
+        }
+    } else {
+        None
+    };
+    let parsed = match parse_expense(group_id, &member_ids, &form) {
         Ok(value) => value,
         Err(message) => {
-            return match build_group_template(&state, &session, group_id, None, Some(message)).await
+            return match build_group_template(
+                &state,
+                &session,
+                group_id,
+                editing.as_ref(),
+                Some(message),
+                Some(&form),
+            )
+            .await
             {
                 Ok(template) => (
                     axum::http::StatusCode::UNPROCESSABLE_ENTITY,
@@ -721,6 +737,23 @@ async fn save_spending(
     };
     match result {
         Ok(_) => Redirect::to(&format!("/groups/{group_id}")).into_response(),
+        Err(debtor_application::ApplicationError::Validation(error)) => match build_group_template(
+            &state,
+            &session,
+            group_id,
+            editing.as_ref(),
+            Some(error.to_string()),
+            Some(&form),
+        )
+        .await
+        {
+            Ok(template) => (
+                axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+                render(&template),
+            )
+                .into_response(),
+            Err(error) => map_error(error),
+        },
         Err(error) => map_error(error),
     }
 }
@@ -733,7 +766,7 @@ enum ParsedExpense {
 fn parse_expense(
     group_id: i64,
     member_ids: &[i64],
-    form: ExpenseForm,
+    form: &ExpenseForm,
 ) -> Result<ParsedExpense, String> {
     let total = form
         .total
@@ -768,7 +801,7 @@ fn parse_expense(
     match form.split_mode.as_str() {
         "equal" => Ok(ParsedExpense::Equal(EqualSpendingCommand {
             group_id,
-            description: form.description,
+            description: form.description.clone(),
             total,
             currency,
             spending_type,
@@ -778,7 +811,7 @@ fn parse_expense(
         })),
         "exact" => Ok(ParsedExpense::Exact(ExactSpendingCommand {
             group_id,
-            description: form.description,
+            description: form.description.clone(),
             total,
             currency,
             spending_type,
@@ -829,6 +862,7 @@ async fn build_group_template(
     id: i64,
     editing: Option<&Spending>,
     error: Option<String>,
+    submitted: Option<&ExpenseForm>,
 ) -> Result<GroupTemplate, debtor_application::ApplicationError> {
     let group = state.groups.group(id).await?;
     let members = state.participants.members(id).await?;
@@ -877,7 +911,7 @@ async fn build_group_template(
             }
         }
     }
-    let mut expense = expense_view(state, group.currency, &form_members, editing);
+    let mut expense = expense_view(state, group.currency, &form_members, editing, submitted);
     if editing.is_none() {
         expense.action = format!("/groups/{id}/spendings");
     }
@@ -924,6 +958,7 @@ fn expense_view(
     currency: Currency,
     members: &[MemberRow],
     spending: Option<&Spending>,
+    submitted: Option<&ExpenseForm>,
 ) -> ExpenseFormView {
     let today = state.clock.now().date_naive().to_string();
     let mut view = ExpenseFormView {
@@ -1020,6 +1055,39 @@ fn expense_view(
         view.exact_rows
             .iter_mut()
             .for_each(|m| m.amount = exact_map.get(&m.id).cloned().unwrap_or_default());
+    }
+    if let Some(form) = submitted {
+        view.description = form.description.clone();
+        view.total = form.total.clone();
+        view.currency = form.currency.clone();
+        view.spending_type = form.spending_type.clone();
+        view.spent_date = form.spent_date.clone();
+        view.payer_mode = form.payer_mode.clone();
+        view.split_mode = form.split_mode.clone();
+        view.single_payer_id = form.single_payer_id.unwrap_or(0);
+        view.currencies
+            .iter_mut()
+            .for_each(|option| option.selected = option.value == view.currency);
+        view.categories
+            .iter_mut()
+            .for_each(|option| option.selected = option.value == view.spending_type);
+        view.payer_rows.iter_mut().for_each(|row| {
+            row.amount = form
+                .extra
+                .get(&format!("payer_{}", row.id))
+                .cloned()
+                .unwrap_or_default()
+        });
+        view.share_rows
+            .iter_mut()
+            .for_each(|row| row.selected = form.extra.contains_key(&format!("share_{}", row.id)));
+        view.exact_rows.iter_mut().for_each(|row| {
+            row.amount = form
+                .extra
+                .get(&format!("exact_{}", row.id))
+                .cloned()
+                .unwrap_or_default()
+        });
     }
     view
 }

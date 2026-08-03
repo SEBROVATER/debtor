@@ -139,9 +139,40 @@ fn semaphore() -> &'static std::sync::Arc<Semaphore> {
 #[allow(clippy::expect_used)]
 mod tests {
     use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
-    use debtor_application::PasswordVerifier;
+    use debtor_application::{LoginAdmission, LoginAttemptLimiter, PasswordVerifier};
+    use std::net::IpAddr;
 
-    use super::ArgonPasswordGate;
+    use super::{ArgonPasswordGate, MemoryLoginAttemptLimiter};
+
+    #[tokio::test]
+    async fn limits_five_attempts_per_client_and_reset_restores_admission() {
+        let limiter = MemoryLoginAttemptLimiter::default();
+        let client: IpAddr = "192.0.2.25".parse().expect("valid test IP");
+
+        for _ in 0..5 {
+            assert_eq!(limiter.reserve(client).await, LoginAdmission::Allowed);
+        }
+        assert!(matches!(
+            limiter.reserve(client).await,
+            LoginAdmission::RetryAfter(1..=300)
+        ));
+
+        limiter.reset(client).await;
+        assert_eq!(limiter.reserve(client).await, LoginAdmission::Allowed);
+    }
+
+    #[tokio::test]
+    async fn tracks_attempts_independently_per_client() {
+        let limiter = MemoryLoginAttemptLimiter::default();
+        let first: IpAddr = "192.0.2.25".parse().expect("valid test IP");
+        let second: IpAddr = "192.0.2.26".parse().expect("valid test IP");
+
+        for _ in 0..5 {
+            assert_eq!(limiter.reserve(first).await, LoginAdmission::Allowed);
+        }
+
+        assert_eq!(limiter.reserve(second).await, LoginAdmission::Allowed);
+    }
 
     #[tokio::test]
     async fn verifies_the_configured_password() {

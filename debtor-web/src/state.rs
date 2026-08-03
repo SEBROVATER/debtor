@@ -194,3 +194,96 @@ fn canonical_ip(ip: IpAddr) -> IpAddr {
         IpAddr::V4(value) => IpAddr::V4(value),
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use axum::http::{HeaderMap, HeaderValue};
+    use std::net::{IpAddr, SocketAddr};
+
+    use super::TrustedProxyConfig;
+
+    fn peer(value: &str) -> SocketAddr {
+        value.parse().expect("valid socket address")
+    }
+
+    fn ip(value: &str) -> IpAddr {
+        value.parse().expect("valid IP address")
+    }
+
+    #[test]
+    fn configuration_requires_proxy_cidrs_and_exactly_one_supported_header() {
+        assert!(TrustedProxyConfig::parse("", "").is_ok());
+        assert!(TrustedProxyConfig::parse("10.0.0.0/8", "forwarded").is_ok());
+        assert!(TrustedProxyConfig::parse("", "forwarded").is_err());
+        assert!(TrustedProxyConfig::parse("10.0.0.0/8", "").is_err());
+        assert!(TrustedProxyConfig::parse("10.0.0.0/8", "Forwarded").is_err());
+        assert!(TrustedProxyConfig::parse("not-a-cidr", "forwarded").is_err());
+    }
+
+    #[test]
+    fn untrusted_peer_ignores_even_malformed_forwarding_headers() {
+        let config = TrustedProxyConfig::parse("10.0.0.0/8", "x-forwarded-for")
+            .expect("valid proxy configuration");
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", HeaderValue::from_static("not an IP"));
+
+        assert_eq!(
+            config.resolve(peer("192.0.2.10:443"), &headers),
+            Ok(ip("192.0.2.10"))
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_selected_forwarding_headers() {
+        let forwarded = TrustedProxyConfig::parse("10.0.0.0/8", "forwarded")
+            .expect("valid proxy configuration");
+        let x_forwarded_for = TrustedProxyConfig::parse("10.0.0.0/8", "x-forwarded-for")
+            .expect("valid proxy configuration");
+
+        for (config, name, value) in [
+            (&forwarded, "forwarded", "for=unknown"),
+            (&forwarded, "forwarded", "for=192.0.2.1;proto=https"),
+            (&forwarded, "forwarded", "for=[2001:db8::1"),
+            (&x_forwarded_for, "x-forwarded-for", "192.0.2.1,"),
+            (&x_forwarded_for, "x-forwarded-for", "_hidden"),
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert(name, HeaderValue::from_static(value));
+            assert!(config.resolve(peer("10.0.0.5:443"), &headers).is_err());
+        }
+    }
+
+    #[test]
+    fn resolves_trusted_proxy_chain_from_right_to_left() {
+        let config = TrustedProxyConfig::parse("10.0.0.0/8", "x-forwarded-for")
+            .expect("valid proxy configuration");
+        let mut headers = HeaderMap::new();
+        headers.append(
+            "x-forwarded-for",
+            HeaderValue::from_static("192.0.2.25, 198.51.100.7"),
+        );
+        headers.append("x-forwarded-for", HeaderValue::from_static("10.0.0.8"));
+
+        assert_eq!(
+            config.resolve(peer("10.0.0.9:443"), &headers),
+            Ok(ip("198.51.100.7"))
+        );
+    }
+
+    #[test]
+    fn canonicalizes_ipv4_mapped_ipv6_forwarding_addresses() {
+        let config = TrustedProxyConfig::parse("10.0.0.0/8", "forwarded")
+            .expect("valid proxy configuration");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "forwarded",
+            HeaderValue::from_static("for=\"[::ffff:192.0.2.25]\""),
+        );
+
+        assert_eq!(
+            config.resolve(peer("10.0.0.9:443"), &headers),
+            Ok(ip("192.0.2.25"))
+        );
+    }
+}
