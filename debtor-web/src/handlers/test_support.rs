@@ -20,6 +20,7 @@ use crate::state::{AppState, TrustedProxyConfig};
 pub(crate) struct TestState {
     pub(crate) app: AppState,
     pub(crate) groups: Arc<FakeGroups>,
+    pub(crate) participants: Arc<FakeParticipants>,
     pub(crate) auth_resets: Arc<AtomicUsize>,
 }
 
@@ -102,6 +103,7 @@ pub(crate) fn state_with_errors(
             proxy: TrustedProxyConfig::default(),
         },
         groups,
+        participants,
         auth_resets,
     }
 }

@@ -3,35 +3,76 @@
 use std::collections::HashMap;
 
 use axum::{
-    extract::{FromRequest, RawForm, Request},
+    extract::{FromRequest, FromRequestParts, RawForm, Request},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use serde::Deserialize;
+use tower_sessions::Session;
+
+use crate::session;
 
 /// Decoded URL-encoded pairs in their original wire order.
 pub struct OrderedForm(pub Vec<(String, String)>);
 
-#[derive(Deserialize)]
-pub(crate) struct CsrfForm {
-    pub(crate) csrf: String,
+/// An ordered form whose synchronizer token was validated before the handler ran.
+pub(crate) struct CsrfValidatedForm(pub(crate) OrderedForm);
+
+impl CsrfValidatedForm {
+    /// Returns the validated ordered form for route-specific parsing.
+    pub(crate) fn into_inner(self) -> OrderedForm {
+        self.0
+    }
+}
+
+impl<S> FromRequest<S> for CsrfValidatedForm
+where
+    S: Send + Sync,
+{
+    type Rejection = Response;
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        let (mut parts, body) = req.into_parts();
+        let session = Session::from_request_parts(&mut parts, state)
+            .await
+            .map_err(|_| session_rejection())?;
+        let form = OrderedForm::from_request(Request::from_parts(parts, body), state).await?;
+        let tokens = form
+            .0
+            .iter()
+            .filter(|(key, _)| key == "csrf")
+            .map(|(_, value)| value.as_str())
+            .collect::<Vec<_>>();
+        if tokens.len() != 1
+            || !session::matches_csrf(&session, tokens[0])
+                .await
+                .map_err(|_| session_rejection())?
+        {
+            return Err(csrf_rejection());
+        }
+        Ok(Self(form))
+    }
+}
+
+fn session_rejection() -> Response {
+    (StatusCode::INTERNAL_SERVER_ERROR, "Session error.").into_response()
+}
+
+fn csrf_rejection() -> Response {
+    (StatusCode::FORBIDDEN, "Invalid form token.").into_response()
 }
 
 pub(crate) struct GroupForm {
     pub(crate) name: String,
     pub(crate) currency: String,
-    pub(crate) csrf: String,
 }
 
 pub(crate) struct ParticipantForm {
     pub(crate) name: String,
     pub(crate) color: String,
-    pub(crate) csrf: String,
 }
 
 pub(crate) struct MemberForm {
     pub(crate) participant_id: i64,
-    pub(crate) csrf: String,
 }
 
 /// Expense form values after strict field-name and duplicate validation.
@@ -85,14 +126,6 @@ impl OrderedForm {
 }
 
 #[allow(clippy::needless_pass_by_value)]
-pub(crate) fn parse_csrf_form(form: OrderedForm) -> Result<CsrfForm, FormError> {
-    let fields = form.required_fields(&["csrf"]).map_err(malformed_form)?;
-    Ok(CsrfForm {
-        csrf: value(&fields, "csrf"),
-    })
-}
-
-#[allow(clippy::needless_pass_by_value)]
 pub(crate) fn parse_group_form(form: OrderedForm) -> Result<GroupForm, FormError> {
     let fields = form
         .required_fields(&["name", "currency", "csrf"])
@@ -100,7 +133,6 @@ pub(crate) fn parse_group_form(form: OrderedForm) -> Result<GroupForm, FormError
     Ok(GroupForm {
         name: value(&fields, "name"),
         currency: value(&fields, "currency"),
-        csrf: value(&fields, "csrf"),
     })
 }
 
@@ -112,7 +144,6 @@ pub(crate) fn parse_participant_form(form: OrderedForm) -> Result<ParticipantFor
     Ok(ParticipantForm {
         name: value(&fields, "name"),
         color: value(&fields, "color"),
-        csrf: value(&fields, "csrf"),
     })
 }
 
@@ -127,25 +158,7 @@ pub(crate) fn parse_member_form(form: OrderedForm) -> Result<MemberForm, FormErr
             status: StatusCode::UNPROCESSABLE_ENTITY,
             message: "Invalid participant.",
         })?;
-    Ok(MemberForm {
-        participant_id,
-        csrf: value(&fields, "csrf"),
-    })
-}
-
-/// Extracts the token independently so unsafe handlers can validate it before
-/// loading data needed to validate the rest of a dynamic form.
-pub(crate) fn parse_expense_csrf(form: &OrderedForm) -> Result<String, FormError> {
-    let csrf = form
-        .0
-        .iter()
-        .filter(|(key, _)| key == "csrf")
-        .map(|(_, value)| value)
-        .collect::<Vec<_>>();
-    if csrf.len() != 1 {
-        return Err(malformed_form("Malformed form submission."));
-    }
-    Ok((*csrf[0]).clone())
+    Ok(MemberForm { participant_id })
 }
 
 /// Parses an expense form after the handler has established its eligible IDs.
@@ -282,8 +295,8 @@ mod tests {
     use axum::http::StatusCode;
 
     use super::{
-        OrderedForm, parse_csrf_form, parse_expense_csrf, parse_expense_form, parse_group_form,
-        parse_member_form, validate_percent_encoding,
+        OrderedForm, parse_expense_form, parse_group_form, parse_member_form,
+        validate_percent_encoding,
     };
 
     #[test]
@@ -307,10 +320,7 @@ mod tests {
             ("extra".into(), "value".into()),
         ]);
 
-        assert_eq!(
-            parse_csrf_form(duplicate).err().map(|error| error.status),
-            Some(StatusCode::BAD_REQUEST)
-        );
+        assert!(duplicate.required_fields(&["csrf"]).is_err());
         assert_eq!(
             parse_group_form(unknown).err().map(|error| error.status),
             Some(StatusCode::BAD_REQUEST)
@@ -374,19 +384,5 @@ mod tests {
                 "{field}"
             );
         }
-    }
-
-    #[test]
-    fn expense_csrf_parser_rejects_duplicate_tokens_before_other_validation() {
-        let form = OrderedForm(vec![
-            ("csrf".into(), "first".into()),
-            ("csrf".into(), "second".into()),
-            ("unexpected".into(), "value".into()),
-        ]);
-
-        assert_eq!(
-            parse_expense_csrf(&form).err().map(|error| error.status),
-            Some(StatusCode::BAD_REQUEST)
-        );
     }
 }

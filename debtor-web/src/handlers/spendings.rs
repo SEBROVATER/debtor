@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use axum::{
-    Form,
     extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Redirect, Response},
@@ -18,12 +17,12 @@ use tower_sessions::Session;
 
 use super::{
     ExpenseForm,
-    auth::{csrf, require_auth, require_csrf},
+    auth::{csrf, require_auth},
     groups::require_writable_group,
     response::{error_response, map_error, render},
 };
 use crate::{
-    forms::{OrderedForm, parse_expense_csrf, parse_expense_form},
+    forms::{CsrfValidatedForm, parse_expense_form},
     participant_color::suggested_participant_color,
     state::AppState,
     templates::{
@@ -36,7 +35,7 @@ pub(crate) async fn create_spending(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<i64>,
-    form: OrderedForm,
+    form: CsrfValidatedForm,
 ) -> Response {
     save_spending(state, session, id, None, form).await
 }
@@ -44,7 +43,7 @@ pub(crate) async fn update_spending(
     State(state): State<AppState>,
     session: Session,
     Path((group_id, spending_id)): Path<(i64, i64)>,
-    form: OrderedForm,
+    form: CsrfValidatedForm,
 ) -> Response {
     save_spending(state, session, group_id, Some(spending_id), form).await
 }
@@ -158,12 +157,9 @@ pub(crate) async fn delete_spending(
     State(state): State<AppState>,
     session: Session,
     Path((group_id, spending_id)): Path<(i64, i64)>,
-    Form(form): Form<super::CsrfForm>,
+    _form: CsrfValidatedForm,
 ) -> Response {
     if let Err(response) = require_auth(&session).await {
-        return response;
-    }
-    if let Err(response) = require_csrf(&session, &form.csrf).await {
         return response;
     }
     if let Err(response) = require_writable_group(&state, group_id).await {
@@ -180,18 +176,12 @@ async fn save_spending(
     session: Session,
     group_id: i64,
     spending_id: Option<i64>,
-    form: OrderedForm,
+    form: CsrfValidatedForm,
 ) -> Response {
     if let Err(response) = require_auth(&session).await {
         return response;
     }
-    let csrf_token = match parse_expense_csrf(&form) {
-        Ok(value) => value,
-        Err(error) => return error_response(error.status, error.message),
-    };
-    if let Err(response) = require_csrf(&session, &csrf_token).await {
-        return response;
-    }
+    let form = form.into_inner();
     if let Err(response) = require_writable_group(&state, group_id).await {
         return response;
     }

@@ -14,7 +14,7 @@ pub(crate) mod test_support;
 
 use serde::Deserialize;
 
-pub(crate) use crate::forms::{CsrfForm, ExpenseForm};
+pub(crate) use crate::forms::ExpenseForm;
 
 pub(crate) use auth::{login, login_form, logout, root};
 pub(crate) use debts::debts;

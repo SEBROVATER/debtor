@@ -7,7 +7,7 @@ use debtor_application::AuthenticationAttempt;
 use tower_sessions::Session;
 
 use super::response::error_response;
-use crate::{forms::OrderedForm, session, state::AppState, templates::LoginTemplate};
+use crate::{forms::CsrfValidatedForm, session, state::AppState, templates::LoginTemplate};
 
 pub(crate) async fn root(session: Session) -> Response {
     match require_auth(&session).await {
@@ -25,23 +25,16 @@ pub(crate) async fn login(
     ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
     headers: HeaderMap,
     session: Session,
-    form: OrderedForm,
+    form: CsrfValidatedForm,
 ) -> Response {
-    let fields = match form.required_fields(&["csrf", "password"]) {
+    let fields = match form.0.required_fields(&["csrf", "password"]) {
         Ok(fields) => fields,
         Err(message) => return error_response(StatusCode::BAD_REQUEST, message),
     };
-    let csrf_value = fields
-        .iter()
-        .find(|(key, _)| *key == "csrf")
-        .map_or("", |(_, value)| *value);
     let password = fields
         .iter()
         .find(|(key, _)| *key == "password")
         .map_or("", |(_, value)| *value);
-    if let Err(response) = require_csrf(&session, csrf_value).await {
-        return response;
-    }
     let client = match state.proxy.resolve(peer, &headers) {
         Ok(ip) => ip,
         Err(message) => return error_response(StatusCode::BAD_REQUEST, &message),
@@ -77,14 +70,11 @@ pub(crate) async fn login(
     }
 }
 
-pub(crate) async fn logout(session: Session, form: OrderedForm) -> Response {
-    let fields = match form.required_fields(&["csrf"]) {
+pub(crate) async fn logout(session: Session, form: CsrfValidatedForm) -> Response {
+    let _fields = match form.0.required_fields(&["csrf"]) {
         Ok(fields) => fields,
         Err(message) => return error_response(StatusCode::BAD_REQUEST, message),
     };
-    if let Err(response) = require_csrf(&session, fields[0].1).await {
-        return response;
-    }
     match session::flush(&session).await {
         Ok(()) => Redirect::to("/login").into_response(),
         Err(_) => super::response::session_error(),
@@ -114,12 +104,4 @@ pub(super) async fn csrf(session: &Session) -> Result<String, Response> {
     session::csrf_token(session)
         .await
         .map_err(|_| super::response::session_error())
-}
-
-pub(super) async fn require_csrf(session: &Session, supplied: &str) -> Result<(), Response> {
-    match session::matches_csrf(session, supplied).await {
-        Ok(true) => Ok(()),
-        Ok(false) => Err(error_response(StatusCode::FORBIDDEN, "Invalid form token.")),
-        Err(_) => Err(super::response::session_error()),
-    }
 }

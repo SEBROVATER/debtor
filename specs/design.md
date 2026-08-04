@@ -80,6 +80,8 @@ A spending retains its source currency; a group currency is a freely changeable 
 
 Every unsafe request, including login, MUST carry a session-backed synchronizer CSRF token. Login attempts MUST allow five attempts per trusted client IP in a rolling five-minute window, track at most 4,096 active client keys, and fail closed for an unseen key when full. Forwarding headers are trusted only for configured proxies and one explicitly selected header mode. Secrets, password hashes, session IDs, CSRF tokens, and client-IP limiter keys MUST NOT be logged. Non-debug builds require secure cookies; debug builds may use insecure local cookies.
 
+Unsafe requests MUST use one shared CSRF-validating form extractor before route-specific parsing or use-case invocation. Missing, duplicate, malformed, or incorrect tokens are rejected. Login and authenticated HTML MUST send `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and the no-script content security policy defined by the foundation ADR. Probe and static routes MUST not create or load sessions.
+
 Trusted proxies MUST strip untrusted forwarding input or append their immediate peer while preserving chain order. Only proxies within `APP_TRUSTED_PROXY_CIDRS` may supply the selected `APP_TRUSTED_PROXY_HEADER` format.
 
 ## Local Run Contract

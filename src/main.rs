@@ -86,9 +86,8 @@ async fn main() -> Result<()> {
         .with_path("/")
         .with_always_save(true)
         .with_expiry(Expiry::OnInactivity(time::Duration::days(30)));
-    let app = debtor_web::router::router(state)
-        .nest_service("/static", ServeDir::new("static"))
-        .layer(sessions);
+    let app = debtor_web::router::router_with_sessions(state, sessions)
+        .nest_service("/static", ServeDir::new("static"));
     let listener = tokio::net::TcpListener::bind(config.bind)
         .await
         .context("unable to bind APP_BIND")?;

@@ -7,11 +7,11 @@ use tower_sessions::Session;
 
 use super::{
     GroupsQuery,
-    auth::{csrf, require_auth, require_csrf},
+    auth::{csrf, require_auth},
     response::{error_response, map_error, render},
 };
 use crate::{
-    forms::{OrderedForm, ParticipantForm, parse_csrf_form, parse_participant_form},
+    forms::{CsrfValidatedForm, ParticipantForm, parse_participant_form},
     participant_color::suggested_participant_color,
     state::AppState,
     templates::{ParticipantEditTemplate, ParticipantRow, ParticipantsTemplate},
@@ -44,18 +44,15 @@ pub(crate) async fn participants(
 pub(crate) async fn create_participant(
     State(state): State<AppState>,
     session: Session,
-    form: OrderedForm,
+    form: CsrfValidatedForm,
 ) -> Response {
     if let Err(response) = require_auth(&session).await {
         return response;
     }
-    let form = match parse_participant_form(form) {
+    let form = match parse_participant_form(form.into_inner()) {
         Ok(form) => form,
         Err(error) => return error_response(error.status, error.message),
     };
-    if let Err(response) = require_csrf(&session, &form.csrf).await {
-        return response;
-    }
     let ParticipantForm { name, color, .. } = form;
     match state
         .participants
@@ -88,18 +85,15 @@ pub(crate) async fn update_participant(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<i64>,
-    form: OrderedForm,
+    form: CsrfValidatedForm,
 ) -> Response {
     if let Err(response) = require_auth(&session).await {
         return response;
     }
-    let form = match parse_participant_form(form) {
+    let form = match parse_participant_form(form.into_inner()) {
         Ok(form) => form,
         Err(error) => return error_response(error.status, error.message),
     };
-    if let Err(response) = require_csrf(&session, &form.csrf).await {
-        return response;
-    }
     let ParticipantForm { name, color, .. } = form;
     match state
         .participants
@@ -119,7 +113,7 @@ pub(crate) async fn archive_participant(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<i64>,
-    form: OrderedForm,
+    form: CsrfValidatedForm,
 ) -> Response {
     set_participant_archive(state, session, id, true, form).await
 }
@@ -128,7 +122,7 @@ pub(crate) async fn restore_participant(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<i64>,
-    form: OrderedForm,
+    form: CsrfValidatedForm,
 ) -> Response {
     set_participant_archive(state, session, id, false, form).await
 }
@@ -138,16 +132,9 @@ async fn set_participant_archive(
     session: Session,
     id: i64,
     archived: bool,
-    form: OrderedForm,
+    _form: CsrfValidatedForm,
 ) -> Response {
     if let Err(response) = require_auth(&session).await {
-        return response;
-    }
-    let form = match parse_csrf_form(form) {
-        Ok(form) => form,
-        Err(error) => return error_response(error.status, error.message),
-    };
-    if let Err(response) = require_csrf(&session, &form.csrf).await {
         return response;
     }
     match state.participants.set_archived(id, archived).await {

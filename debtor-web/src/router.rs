@@ -1,19 +1,34 @@
 //! Axum route definitions.
 
 use axum::{
-    Router,
+    Router, middleware,
     routing::{get, post},
 };
+use tower_sessions::{MemoryStore, SessionManagerLayer};
 
-use crate::{handlers, state::AppState};
+use crate::{handlers, middleware as app_middleware, state::AppState};
 
 /// Builds the application router from application-facing state.
 pub fn router(state: AppState) -> Router {
-    Router::new()
-        .route("/", get(handlers::root))
+    router_with_sessions(
+        state,
+        SessionManagerLayer::new(MemoryStore::default())
+            .with_secure(false)
+            .with_always_save(true),
+    )
+}
+
+/// Builds the application router with the production-configured session layer.
+pub fn router_with_sessions(state: AppState, sessions: SessionManagerLayer<MemoryStore>) -> Router {
+    let public = Router::new()
         .route("/healthz", get(handlers::health))
-        .route("/readyz", get(handlers::health))
+        .route("/readyz", get(handlers::health));
+    let login = Router::new()
         .route("/login", get(handlers::login_form).post(handlers::login))
+        .layer(middleware::from_fn(app_middleware::security_headers))
+        .layer(sessions.clone());
+    let protected = Router::new()
+        .route("/", get(handlers::root))
         .route("/logout", post(handlers::logout))
         .route(
             "/groups",
@@ -70,7 +85,10 @@ pub fn router(state: AppState) -> Router {
             get(handlers::participant_edit_form),
         )
         .route("/participants/{id}", post(handlers::update_participant))
-        .with_state(state)
+        .layer(middleware::from_fn(app_middleware::security_headers))
+        .layer(middleware::from_fn(app_middleware::require_authenticated))
+        .layer(sessions);
+    public.merge(login).merge(protected).with_state(state)
 }
 
 #[cfg(test)]
@@ -87,7 +105,6 @@ mod tests {
     };
     use debtor_domain::currency::Currency;
     use tower::ServiceExt;
-    use tower_sessions::{MemoryStore, SessionManagerLayer};
 
     use super::router;
     use crate::handlers::test_support::{TestState, state, state_with_errors};
@@ -96,11 +113,7 @@ mod tests {
         std::net::SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 4000);
 
     fn app(test_state: &TestState) -> axum::Router {
-        router(test_state.app.clone()).layer(
-            SessionManagerLayer::new(MemoryStore::default())
-                .with_secure(false)
-                .with_always_save(true),
-        )
+        router(test_state.app.clone())
     }
 
     fn request(method: Method, uri: &str, body: &str, cookie: Option<&str>) -> Request<Body> {
@@ -440,5 +453,196 @@ mod tests {
                 .expect("archived mutation response");
             assert_eq!(response.status(), StatusCode::CONFLICT, "{method} {uri}");
         }
+    }
+
+    #[tokio::test]
+    async fn protected_gets_redirect_and_probes_do_not_create_sessions() {
+        let test_state = state(false);
+        let app = app(&test_state);
+        for uri in [
+            "/",
+            "/groups",
+            "/groups/1",
+            "/groups/1/edit",
+            "/groups/1/delete",
+            "/groups/1/spendings/1",
+            "/groups/1/spendings/1/edit",
+            "/groups/1/spendings/1/delete",
+            "/groups/1/debts",
+            "/participants",
+            "/participants/1/edit",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(request(Method::GET, uri, "", None))
+                .await
+                .expect("protected route response");
+            assert_eq!(response.status(), StatusCode::SEE_OTHER, "GET {uri}");
+            assert_eq!(
+                response
+                    .headers()
+                    .get("location")
+                    .expect("redirect location"),
+                "/login"
+            );
+        }
+        for uri in ["/healthz", "/readyz"] {
+            let response = app
+                .clone()
+                .oneshot(request(Method::GET, uri, "", None))
+                .await
+                .expect("probe response");
+            assert_eq!(response.status(), StatusCode::OK, "GET {uri}");
+            assert!(
+                response.headers().get(SET_COOKIE).is_none(),
+                "probe session {uri}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    async fn unsafe_routes_reject_missing_wrong_and_duplicate_csrf_before_use_cases() {
+        let test_state = state(false);
+        let app = app(&test_state);
+        let session_cookie = login(&app).await;
+        let routes = [
+            (Method::POST, "/logout"),
+            (Method::POST, "/groups"),
+            (Method::POST, "/groups/1/edit"),
+            (Method::POST, "/groups/1/delete"),
+            (Method::POST, "/groups/1/members"),
+            (Method::POST, "/groups/1/members/1/deactivate"),
+            (Method::POST, "/groups/1/participants"),
+            (Method::POST, "/groups/1/spendings"),
+            (Method::POST, "/groups/1/spendings/1"),
+            (Method::POST, "/groups/1/spendings/1/delete"),
+            (Method::POST, "/groups/1/archive"),
+            (Method::POST, "/groups/1/restore"),
+            (Method::POST, "/participants"),
+            (Method::POST, "/participants/1"),
+            (Method::POST, "/participants/1/archive"),
+            (Method::POST, "/participants/1/restore"),
+        ];
+        for (method, uri) in routes {
+            for body in ["", "csrf=wrong", "csrf=wrong&csrf=another"] {
+                let response = app
+                    .clone()
+                    .oneshot(request(method.clone(), uri, body, Some(&session_cookie)))
+                    .await
+                    .expect("CSRF rejection response");
+                assert_eq!(
+                    response.status(),
+                    StatusCode::FORBIDDEN,
+                    "{method} {uri} {body}"
+                );
+            }
+        }
+        assert!(
+            test_state
+                .groups
+                .created
+                .lock()
+                .expect("group calls")
+                .is_empty()
+        );
+        assert!(
+            test_state
+                .groups
+                .updated
+                .lock()
+                .expect("group calls")
+                .is_empty()
+        );
+        assert!(
+            test_state
+                .participants
+                .created
+                .lock()
+                .expect("participant calls")
+                .is_empty()
+        );
+        assert!(
+            test_state
+                .participants
+                .updated
+                .lock()
+                .expect("participant calls")
+                .is_empty()
+        );
+        assert!(
+            test_state
+                .participants
+                .group_created
+                .lock()
+                .expect("participant calls")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn login_and_authenticated_html_include_security_headers() {
+        let test_state = state(false);
+        let app = app(&test_state);
+        let response = app
+            .clone()
+            .oneshot(request(Method::GET, "/login", "", None))
+            .await
+            .expect("login response");
+        assert_security_headers(&response);
+        let login_cookie = session_cookie(&response);
+        let login_body = response_body(response).await;
+        let response = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                "/login",
+                &format!("csrf={}&password=correct", csrf(&login_body)),
+                Some(&login_cookie),
+            ))
+            .await
+            .expect("login completion response");
+        let authenticated_cookie = session_cookie(&response);
+        let response = app
+            .oneshot(request(
+                Method::GET,
+                "/groups",
+                "",
+                Some(&authenticated_cookie),
+            ))
+            .await
+            .expect("authenticated response");
+        assert_security_headers(&response);
+    }
+
+    fn assert_security_headers(response: &Response) {
+        assert_eq!(
+            response
+                .headers()
+                .get("cache-control")
+                .expect("cache header"),
+            "no-store"
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("x-content-type-options")
+                .expect("content type header"),
+            "nosniff"
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("referrer-policy")
+                .expect("referrer header"),
+            "no-referrer"
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("content-security-policy")
+                .expect("CSP header"),
+            "default-src 'none'; script-src 'none'; style-src 'self' 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+        );
     }
 }
