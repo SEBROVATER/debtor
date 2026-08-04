@@ -40,9 +40,26 @@ async fn main() -> Result<()> {
         )
         .init();
     let config = Config::from_lookup(|name| std::env::var(name).ok(), cfg!(debug_assertions))?;
+    let bind = config.bind;
+    let app = build_app(config).await?;
+    let listener = tokio::net::TcpListener::bind(bind)
+        .await
+        .context("unable to bind APP_BIND")?;
+    tracing::info!(url = %format!("http://{}", bind), "debtor listening");
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .context("HTTP server failed")
+}
+
+async fn build_app(config: Config) -> Result<axum::Router> {
     let proxy =
         TrustedProxyConfig::parse(&config.trusted_proxy_cidrs, &config.trusted_proxy_header)
             .map_err(anyhow::Error::msg)?;
+    let password = Arc::new(ArgonPasswordGate::new(config.password_hash)?);
     let pool = debtor_infra::db::connect(&config.database_url)
         .await
         .context("unable to connect SQLite")?;
@@ -70,7 +87,6 @@ async fn main() -> Result<()> {
     let clock: Arc<dyn Clock> = Arc::new(UtcClock);
     let debts: Arc<dyn DebtUseCases> =
         Arc::new(DebtService::new(snapshot_reader, rates, clock.clone()));
-    let password = Arc::new(ArgonPasswordGate::new(config.password_hash)?);
     let limiter = Arc::new(MemoryLoginAttemptLimiter::default());
     let authentication: Arc<dyn AuthenticationUseCases> =
         Arc::new(AuthenticationService::new(limiter, password));
@@ -108,19 +124,10 @@ async fn main() -> Result<()> {
             std::time::Duration::from_secs(30),
         ))
         .service(ServeDir::new("static"));
-    let app = debtor_web::router::router_with_sessions(state, sessions, user_limit)
-        .nest_service("/static", static_service);
-    let listener = tokio::net::TcpListener::bind(config.bind)
-        .await
-        .context("unable to bind APP_BIND")?;
-    tracing::info!(url = %format!("http://{}", config.bind), "debtor listening");
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
+    Ok(
+        debtor_web::router::router_with_sessions(state, sessions, user_limit)
+            .nest_service("/static", static_service),
     )
-    .with_graceful_shutdown(shutdown_signal())
-    .await
-    .context("HTTP server failed")
 }
 
 async fn shutdown_signal() {
@@ -138,4 +145,89 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();
     tokio::select! { () = ctrl_c => {}, () = terminate => {} }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod composition_tests {
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    use super::build_app;
+    use super::config::Config;
+
+    static DATABASE_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    const VALID_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+    fn database_path() -> PathBuf {
+        let id = DATABASE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("debtor-slice13-{}-{id}.db", std::process::id()))
+    }
+
+    fn config(path: &Path, password_hash: &str) -> Config {
+        Config {
+            database_url: format!("sqlite://{}?mode=rwc", path.display()),
+            bind: "127.0.0.1:0".parse().unwrap(),
+            password_hash: password_hash.to_owned(),
+            cookie_secure: false,
+            session_cookie_name: "debtor_session".to_owned(),
+            exchange_base_url: "http://127.0.0.1:1".to_owned(),
+            trusted_proxy_cidrs: String::new(),
+            trusted_proxy_header: String::new(),
+        }
+    }
+
+    fn remove_database(path: &Path) {
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+
+    #[tokio::test]
+    async fn invalid_password_hash_has_no_database_side_effect() {
+        let path = database_path();
+        let result = build_app(config(&path, "not-a-password-hash")).await;
+        assert!(result.is_err());
+        assert!(!path.exists());
+        remove_database(&path);
+    }
+
+    #[tokio::test]
+    async fn invalid_proxy_configuration_has_no_database_side_effect() {
+        let path = database_path();
+        let mut invalid = config(&path, VALID_HASH);
+        invalid.trusted_proxy_cidrs = "not-a-cidr".to_owned();
+        invalid.trusted_proxy_header = "x-forwarded-for".to_owned();
+        let result = build_app(invalid).await;
+        assert!(result.is_err());
+        assert!(!path.exists());
+        remove_database(&path);
+    }
+
+    #[tokio::test]
+    async fn build_app_migrates_and_constructs_router_without_binding() {
+        let path = database_path();
+        let app = build_app(config(&path, VALID_HASH))
+            .await
+            .expect("build application");
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/healthz")
+                    .body(Body::empty())
+                    .expect("health request"),
+            )
+            .await
+            .expect("health response");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(path.exists());
+        remove_database(&path);
+    }
 }

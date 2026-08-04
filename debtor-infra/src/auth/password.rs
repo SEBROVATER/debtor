@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use debtor_application::{
     ApplicationError, ConfigurationError, PasswordVerifier, UnavailableReason,
 };
+use std::collections::HashSet;
 use std::sync::OnceLock;
 use tokio::sync::Semaphore;
 
@@ -21,6 +22,20 @@ impl ArgonPasswordGate {
         let parsed = PasswordHash::new(&hash).map_err(|_| {
             ApplicationError::Configuration(ConfigurationError::InvalidPasswordHash)
         })?;
+        let mut parameter_names = HashSet::new();
+        for (name, _) in parsed.params.iter() {
+            let name = name.to_string();
+            if !matches!(name.as_str(), "m" | "t" | "p") || !parameter_names.insert(name) {
+                return Err(ApplicationError::Configuration(
+                    ConfigurationError::InvalidPasswordHash,
+                ));
+            }
+        }
+        if parameter_names.len() != 3 {
+            return Err(ApplicationError::Configuration(
+                ConfigurationError::InvalidPasswordHash,
+            ));
+        }
         let salt_length = parsed.salt.and_then(decoded_salt_length);
         let hash_length = parsed.hash.map(|output| output.as_bytes().len());
         let memory_cost = parsed.params.get("m").and_then(parse_parameter);
@@ -155,6 +170,8 @@ mod tests {
         for invalid in [
             valid.replacen("argon2id", "argon2i", 1),
             valid.replacen("v=19", "v=16", 1),
+            valid.replacen("m=19456", "m=19456,x=1", 1),
+            valid.replacen("m=19456", "m=19456,m=19456", 1),
             "$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$".into(),
             "$argon2id$v=19$c2FsdA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into(),
             "$argon2id$v=19$m=19456,t=2,p=1$$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into(),
