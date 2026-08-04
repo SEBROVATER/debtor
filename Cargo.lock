@@ -446,12 +446,15 @@ name = "debtor"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "argon2",
  "async-trait",
  "axum",
  "debtor-application",
  "debtor-infra",
  "debtor-web",
  "dotenvy",
+ "reqwest",
+ "serde_json",
  "sqlx",
  "time",
  "tokio",

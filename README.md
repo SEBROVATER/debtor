@@ -22,12 +22,22 @@ debtor (root)
 
 ```bash
 cargo fmt --all -- --check
+cargo run --bin architecture-check --locked
+cargo check --workspace --all-features --locked
 SQLX_OFFLINE=true cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --all-features --locked
 cargo run
 ```
 
-CI runs equivalent formatting, lint, and test checks for both the production workspace and the independent `tools/password-hash` helper. For local automatic Clippy fixes, use `cargo clippy --fix --allow-dirty --workspace` and review the resulting changes.
+CI runs formatting, architecture fitness, locked checks, offline lint, and tests for both the production workspace and the independent `tools/password-hash` helper. For local automatic Clippy fixes, use `cargo clippy --fix --allow-dirty --workspace` and review the resulting changes.
+
+The independent password-helper checks are:
+
+```bash
+cargo fmt --manifest-path tools/password-hash/Cargo.toml -- --check
+cargo clippy --manifest-path tools/password-hash/Cargo.toml --all-targets --all-features --locked -- -D warnings
+cargo test --manifest-path tools/password-hash/Cargo.toml --locked
+```
 
 Copy `.env.example` to `.env`, generate `APP_ADMIN_PASSWORD_HASH` with `cargo run --manifest-path tools/password-hash/Cargo.toml`, then run `cargo run`. Startup creates/connects SQLite, applies migrations, and serves the application. The complete local-run contract is specified in [specs/design.md](specs/design.md).
 

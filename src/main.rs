@@ -427,12 +427,28 @@ async fn run_runtime(
     listener: tokio::net::TcpListener,
     signals: SignalReceivers,
 ) -> Result<()> {
-    let coordinator = ShutdownCoordinator::default();
+    run_runtime_with_options(
+        runtime,
+        listener,
+        signals,
+        ShutdownCoordinator::default(),
+        CLEANUP_INTERVAL,
+    )
+    .await
+}
+
+async fn run_runtime_with_options(
+    runtime: BuiltApp,
+    listener: tokio::net::TcpListener,
+    signals: SignalReceivers,
+    coordinator: ShutdownCoordinator,
+    cleanup_interval: Duration,
+) -> Result<()> {
     let mut cleanup_handle: JoinHandle<()> = tokio::spawn(cleanup_worker(
         runtime.session_store.clone(),
         coordinator.clone(),
         runtime.cleanup_health.clone(),
-        CLEANUP_INTERVAL,
+        cleanup_interval,
     ));
     let mut signal_handle: JoinHandle<()> =
         tokio::spawn(signal_worker(signals, coordinator.clone()));
@@ -534,6 +550,7 @@ mod composition_tests {
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
     use async_trait::async_trait;
     use axum::{
         body::Body,
@@ -579,6 +596,29 @@ mod composition_tests {
         let _ = std::fs::remove_file(path);
         let _ = std::fs::remove_file(format!("{}-wal", path.display()));
         let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+
+    fn cookie_pair(response: &reqwest::Response) -> String {
+        response
+            .headers()
+            .get("set-cookie")
+            .expect("session cookie")
+            .to_str()
+            .expect("cookie header")
+            .split(';')
+            .next()
+            .expect("cookie pair")
+            .to_owned()
+    }
+
+    fn csrf_token(body: &str) -> String {
+        let marker = "name=\"csrf\" value=\"";
+        let start = body.find(marker).expect("CSRF field") + marker.len();
+        body[start..]
+            .split('"')
+            .next()
+            .expect("CSRF value")
+            .to_owned()
     }
 
     #[tokio::test]
@@ -632,6 +672,79 @@ mod composition_tests {
             .expect("readiness response");
         assert_eq!(readiness.status(), StatusCode::OK);
         assert!(path.exists());
+        remove_database(&path);
+    }
+
+    #[tokio::test]
+    async fn real_socket_smoke_covers_login_authenticated_read_and_bounded_shutdown() {
+        let salt = SaltString::encode_b64(b"slice18-real-socket").expect("test salt");
+        let password_hash = Argon2::default()
+            .hash_password(b"correct horse battery staple", &salt)
+            .expect("test hash")
+            .to_string();
+        let path = database_path();
+        let runtime = build_app(config(&path, &password_hash))
+            .await
+            .expect("build application");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test listener");
+        let address = listener.local_addr().expect("listener address");
+        let signals = SignalReceivers::install().expect("signal handlers");
+        let coordinator = ShutdownCoordinator::default();
+        let shutdown = coordinator.clone();
+        let server = tokio::spawn(run_runtime_with_options(
+            runtime,
+            listener,
+            signals,
+            shutdown,
+            Duration::from_millis(5),
+        ));
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("HTTP client");
+        let base_url = format!("http://{address}");
+
+        let response = client
+            .get(format!("{base_url}/login"))
+            .send()
+            .await
+            .expect("login form request");
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let login_cookie = cookie_pair(&response);
+        let login_body = response.text().await.expect("login form body");
+        let token = csrf_token(&login_body);
+
+        let response = client
+            .post(format!("{base_url}/login"))
+            .header("cookie", &login_cookie)
+            .form(&[
+                ("csrf", token.as_str()),
+                ("password", "correct horse battery staple"),
+            ])
+            .send()
+            .await
+            .expect("login request");
+        assert_eq!(response.status(), reqwest::StatusCode::SEE_OTHER);
+        let authenticated_cookie = cookie_pair(&response);
+
+        let response = client
+            .get(format!("{base_url}/groups"))
+            .header("cookie", authenticated_cookie)
+            .send()
+            .await
+            .expect("authenticated request");
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        coordinator.request(ShutdownTrigger::Signal).await;
+        let result = tokio::time::timeout(Duration::from_secs(15), server)
+            .await
+            .expect("bounded shutdown")
+            .expect("server task");
+        assert!(result.is_ok(), "runtime shutdown result: {result:?}");
         remove_database(&path);
     }
 
