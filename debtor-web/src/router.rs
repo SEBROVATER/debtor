@@ -181,6 +181,12 @@ mod tests {
         let test_state = state_with_errors(false, true, true, true, true, true);
         let app = app(&test_state);
         let session_cookie = login(&app).await;
+        assert_eq!(
+            test_state
+                .auth_resets
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
 
         let response = app
             .clone()

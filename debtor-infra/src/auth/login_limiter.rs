@@ -1,21 +1,82 @@
 use async_trait::async_trait;
 use debtor_application::{LoginAdmission, LoginAttemptLimiter};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+const WINDOW: Duration = Duration::from_secs(300);
+const MAX_CLIENTS: usize = 4_096;
+
 /// Process-local rolling login attempt limiter.
 pub struct MemoryLoginAttemptLimiter {
     clock: Arc<dyn MonotonicClock>,
-    attempts: Mutex<HashMap<IpAddr, VecDeque<Duration>>>,
+    state: Mutex<LimiterState>,
+}
+
+struct LimiterState {
+    attempts: HashMap<IpAddr, VecDeque<Duration>>,
+    expirations: BTreeMap<Duration, BTreeSet<IpAddr>>,
+    capacity: usize,
+}
+
+impl LimiterState {
+    fn new(capacity: usize) -> Self {
+        Self {
+            attempts: HashMap::new(),
+            expirations: BTreeMap::new(),
+            capacity,
+        }
+    }
+
+    fn prune_expired(&mut self, now: Duration) {
+        loop {
+            let Some((&expires, _)) = self.expirations.first_key_value() else {
+                return;
+            };
+            if expires > now {
+                return;
+            }
+            let clients = self.expirations.remove(&expires).unwrap_or_default();
+            for client in clients {
+                let next_expiry = if let Some(values) = self.attempts.get_mut(&client) {
+                    while values
+                        .front()
+                        .is_some_and(|time| now.saturating_sub(*time) >= WINDOW)
+                    {
+                        values.pop_front();
+                    }
+                    values.front().map(|time| time.saturating_add(WINDOW))
+                } else {
+                    None
+                };
+                if let Some(next_expiry) = next_expiry {
+                    self.expirations
+                        .entry(next_expiry)
+                        .or_default()
+                        .insert(client);
+                } else {
+                    self.attempts.remove(&client);
+                }
+            }
+        }
+    }
+
+    fn remove_expiry(&mut self, client: IpAddr, expires: Duration) {
+        if let Some(clients) = self.expirations.get_mut(&expires) {
+            clients.remove(&client);
+            if clients.is_empty() {
+                self.expirations.remove(&expires);
+            }
+        }
+    }
 }
 
 impl Default for MemoryLoginAttemptLimiter {
     fn default() -> Self {
         Self {
             clock: Arc::new(ProcessMonotonicClock::default()),
-            attempts: Mutex::new(HashMap::new()),
+            state: Mutex::new(LimiterState::new(MAX_CLIENTS)),
         }
     }
 }
@@ -46,9 +107,14 @@ impl MonotonicClock for ProcessMonotonicClock {
 impl MemoryLoginAttemptLimiter {
     #[cfg(test)]
     fn with_clock(clock: Arc<dyn MonotonicClock>) -> Self {
+        Self::with_clock_and_capacity(clock, MAX_CLIENTS)
+    }
+
+    #[cfg(test)]
+    fn with_clock_and_capacity(clock: Arc<dyn MonotonicClock>, capacity: usize) -> Self {
         Self {
             clock,
-            attempts: Mutex::new(HashMap::new()),
+            state: Mutex::new(LimiterState::new(capacity)),
         }
     }
 }
@@ -56,35 +122,46 @@ impl MemoryLoginAttemptLimiter {
 #[async_trait]
 impl LoginAttemptLimiter for MemoryLoginAttemptLimiter {
     async fn reserve(&self, client: IpAddr) -> LoginAdmission {
-        const WINDOW: Duration = Duration::from_secs(300);
         let now = self.clock.elapsed();
-        let Ok(mut attempts) = self.attempts.lock() else {
+        let Ok(mut state) = self.state.lock() else {
             return LoginAdmission::RetryAfter(WINDOW.as_secs());
         };
-        attempts.retain(|_, values| {
-            while values
-                .front()
-                .is_some_and(|time| now.saturating_sub(*time) >= WINDOW)
-            {
-                values.pop_front();
+        state.prune_expired(now);
+        if let Some(values) = state.attempts.get_mut(&client) {
+            if values.len() >= 5 {
+                let retry = values.front().map_or(1, |time| {
+                    ceil_seconds(WINDOW.saturating_sub(now.saturating_sub(*time)))
+                });
+                return LoginAdmission::RetryAfter(retry);
             }
-            !values.is_empty()
-        });
-        let values = attempts.entry(client).or_default();
-        if values.len() >= 5 {
-            let retry = values.front().map_or(1, |time| {
-                ceil_seconds(WINDOW.saturating_sub(now.saturating_sub(*time)))
-            });
-            LoginAdmission::RetryAfter(retry)
-        } else {
             values.push_back(now);
-            LoginAdmission::Allowed
+            return LoginAdmission::Allowed;
         }
+        if state.attempts.len() >= state.capacity {
+            let retry = state
+                .expirations
+                .first_key_value()
+                .map_or(WINDOW.as_secs(), |(expires, _)| {
+                    ceil_seconds(expires.saturating_sub(now))
+                });
+            return LoginAdmission::RetryAfter(retry.max(1));
+        }
+        state.attempts.insert(client, VecDeque::from([now]));
+        state
+            .expirations
+            .entry(now.saturating_add(WINDOW))
+            .or_default()
+            .insert(client);
+        LoginAdmission::Allowed
     }
 
     async fn reset(&self, client: IpAddr) {
-        if let Ok(mut attempts) = self.attempts.lock() {
-            attempts.remove(&client);
+        if let Ok(mut state) = self.state.lock() {
+            if let Some(values) = state.attempts.remove(&client) {
+                if let Some(first) = values.front() {
+                    state.remove_expiry(client, first.saturating_add(WINDOW));
+                }
+            }
         }
     }
 }
@@ -136,7 +213,6 @@ mod tests {
             limiter.reserve(client).await,
             LoginAdmission::RetryAfter(300)
         );
-
         clock.set(Duration::from_nanos(1));
         assert_eq!(
             limiter.reserve(client).await,
@@ -149,7 +225,6 @@ mod tests {
         );
         clock.set(Duration::from_secs(300));
         assert_eq!(limiter.reserve(client).await, LoginAdmission::Allowed);
-
         limiter.reset(client).await;
         assert_eq!(limiter.reserve(client).await, LoginAdmission::Allowed);
     }
@@ -159,11 +234,9 @@ mod tests {
         let limiter = MemoryLoginAttemptLimiter::default();
         let first: IpAddr = "192.0.2.25".parse().expect("valid test IP");
         let second: IpAddr = "192.0.2.26".parse().expect("valid test IP");
-
         for _ in 0..5 {
             assert_eq!(limiter.reserve(first).await, LoginAdmission::Allowed);
         }
-
         assert_eq!(limiter.reserve(second).await, LoginAdmission::Allowed);
     }
 
@@ -173,7 +246,6 @@ mod tests {
         let barrier = Arc::new(Barrier::new(11));
         let client: IpAddr = "192.0.2.25".parse().expect("valid test IP");
         let mut tasks = Vec::new();
-
         for _ in 0..10 {
             let limiter = limiter.clone();
             let barrier = barrier.clone();
@@ -183,7 +255,6 @@ mod tests {
             }));
         }
         barrier.wait().await;
-
         let mut allowed = 0;
         for task in tasks {
             if task.await.expect("reservation task") == LoginAdmission::Allowed {
@@ -194,18 +265,57 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prunes_expired_clients_on_subsequent_reservations() {
+    async fn fails_closed_at_capacity_and_recovers_at_earliest_expiry() {
         let clock = Arc::new(TestClock::default());
-        let limiter = MemoryLoginAttemptLimiter::with_clock(clock.clone());
+        let limiter = MemoryLoginAttemptLimiter::with_clock_and_capacity(clock.clone(), 2);
+        let first: IpAddr = "192.0.2.25".parse().expect("valid test IP");
+        let second: IpAddr = "192.0.2.26".parse().expect("valid test IP");
+        let unseen: IpAddr = "192.0.2.27".parse().expect("valid test IP");
+        assert_eq!(limiter.reserve(first).await, LoginAdmission::Allowed);
+        clock.set(Duration::from_secs(1));
+        assert_eq!(limiter.reserve(second).await, LoginAdmission::Allowed);
+        assert_eq!(
+            limiter.reserve(unseen).await,
+            LoginAdmission::RetryAfter(299)
+        );
+        assert_eq!(limiter.reserve(first).await, LoginAdmission::Allowed);
+        clock.set(Duration::from_secs(300));
+        assert_eq!(limiter.reserve(unseen).await, LoginAdmission::RetryAfter(1));
+        clock.set(Duration::from_secs(301));
+        assert_eq!(limiter.reserve(unseen).await, LoginAdmission::Allowed);
+    }
+
+    #[tokio::test]
+    async fn existing_key_remains_admitted_when_capacity_is_full() {
+        let clock = Arc::new(TestClock::default());
+        let limiter = MemoryLoginAttemptLimiter::with_clock_and_capacity(clock, 1);
+        let existing: IpAddr = "192.0.2.25".parse().expect("valid test IP");
+        let unseen: IpAddr = "192.0.2.26".parse().expect("valid test IP");
+        assert_eq!(limiter.reserve(existing).await, LoginAdmission::Allowed);
+        assert_eq!(limiter.reserve(existing).await, LoginAdmission::Allowed);
+        assert_eq!(
+            limiter.reserve(unseen).await,
+            LoginAdmission::RetryAfter(300)
+        );
+        limiter.reset(existing).await;
+        assert_eq!(limiter.reserve(unseen).await, LoginAdmission::Allowed);
+        let state = limiter.state.lock().expect("limiter state");
+        assert_eq!(state.attempts.len(), 1);
+        assert_eq!(state.expirations.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn prunes_expired_clients_without_scanning_unrelated_keys() {
+        let clock = Arc::new(TestClock::default());
+        let limiter = MemoryLoginAttemptLimiter::with_clock_and_capacity(clock.clone(), 2);
         let expired: IpAddr = "192.0.2.25".parse().expect("valid test IP");
         let current: IpAddr = "192.0.2.26".parse().expect("valid test IP");
-
         assert_eq!(limiter.reserve(expired).await, LoginAdmission::Allowed);
         clock.set(Duration::from_secs(300));
         assert_eq!(limiter.reserve(current).await, LoginAdmission::Allowed);
-
-        let attempts = limiter.attempts.lock().expect("limiter lock");
-        assert!(!attempts.contains_key(&expired));
-        assert!(attempts.contains_key(&current));
+        let state = limiter.state.lock().expect("limiter state");
+        assert!(!state.attempts.contains_key(&expired));
+        assert!(state.attempts.contains_key(&current));
+        assert_eq!(state.expirations.len(), 1);
     }
 }

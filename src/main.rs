@@ -5,10 +5,10 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use debtor_application::{
-    Clock, DebtService, DebtUseCases, GroupReader, GroupRepository, GroupService, GroupUseCases,
-    LedgerSnapshotReader, ParticipantRepository, ParticipantService, ParticipantUseCases,
-    PasswordVerifier, SpendingReader, SpendingRepository, SpendingService, SpendingUseCases,
-    UtcClock,
+    AuthenticationService, AuthenticationUseCases, Clock, DebtService, DebtUseCases, GroupReader,
+    GroupRepository, GroupService, GroupUseCases, LedgerSnapshotReader, ParticipantRepository,
+    ParticipantService, ParticipantUseCases, SpendingReader, SpendingRepository, SpendingService,
+    SpendingUseCases, UtcClock,
 };
 use debtor_infra::auth::{ArgonPasswordGate, MemoryLoginAttemptLimiter};
 use debtor_infra::db::repos::SqliteLedgerStore;
@@ -65,16 +65,17 @@ async fn main() -> Result<()> {
     let clock: Arc<dyn Clock> = Arc::new(UtcClock);
     let debts: Arc<dyn DebtUseCases> =
         Arc::new(DebtService::new(snapshot_reader, rates, clock.clone()));
-    let password: Arc<dyn PasswordVerifier> =
-        Arc::new(ArgonPasswordGate::new(config.password_hash)?);
+    let password = Arc::new(ArgonPasswordGate::new(config.password_hash)?);
+    let limiter = Arc::new(MemoryLoginAttemptLimiter::default());
+    let authentication: Arc<dyn AuthenticationUseCases> =
+        Arc::new(AuthenticationService::new(limiter, password));
     let state = AppState {
         groups,
         participants,
         spendings,
         debts,
-        password,
+        authentication,
         clock,
-        limiter: Arc::new(MemoryLoginAttemptLimiter::default()),
         proxy,
     };
     let sessions = SessionManagerLayer::new(MemoryStore::default())

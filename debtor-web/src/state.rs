@@ -9,7 +9,7 @@ use std::{
 };
 
 use debtor_application::{
-    Clock, DebtUseCases, GroupUseCases, LoginAttemptLimiter, ParticipantUseCases, PasswordVerifier,
+    AuthenticationUseCases, Clock, DebtUseCases, GroupUseCases, ParticipantUseCases,
     SpendingUseCases,
 };
 
@@ -24,12 +24,10 @@ pub struct AppState {
     pub spendings: Arc<dyn SpendingUseCases>,
     /// Debt workflows.
     pub debts: Arc<dyn DebtUseCases>,
-    /// Password gate verifier.
-    pub password: Arc<dyn PasswordVerifier>,
+    /// Authentication policy and password gate.
+    pub authentication: Arc<dyn AuthenticationUseCases>,
     /// Shared UTC clock for deterministic form defaults.
     pub clock: Arc<dyn Clock>,
-    /// Login attempt limiter.
-    pub limiter: Arc<dyn LoginAttemptLimiter>,
     /// Trusted reverse-proxy client-IP policy.
     pub proxy: TrustedProxyConfig,
 }

@@ -172,6 +172,68 @@ pub trait LoginAttemptLimiter: Send + Sync {
     async fn reset(&self, client: std::net::IpAddr);
 }
 
+/// Result of one admitted password attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthenticationAttempt {
+    /// The password was valid and the caller may establish a session.
+    Authenticated,
+    /// The password was invalid.
+    InvalidPassword,
+    /// The client must wait before another attempt.
+    RetryAfter(u64),
+}
+
+/// Inbound authentication policy.
+#[async_trait]
+pub trait AuthenticationUseCases: Send + Sync {
+    /// Applies login admission and verifies one submitted password.
+    async fn attempt(
+        &self,
+        client: std::net::IpAddr,
+        password: &str,
+    ) -> Result<AuthenticationAttempt, ApplicationError>;
+    /// Clears the client's limiter state after durable session establishment.
+    async fn complete_login(&self, client: std::net::IpAddr);
+}
+
+/// Authentication workflow implementation.
+pub struct AuthenticationService {
+    limiter: Arc<dyn LoginAttemptLimiter>,
+    password: Arc<dyn PasswordVerifier>,
+}
+
+impl AuthenticationService {
+    /// Creates an authentication service with injected policy adapters.
+    pub fn new(limiter: Arc<dyn LoginAttemptLimiter>, password: Arc<dyn PasswordVerifier>) -> Self {
+        Self { limiter, password }
+    }
+}
+
+#[async_trait]
+impl AuthenticationUseCases for AuthenticationService {
+    async fn attempt(
+        &self,
+        client: std::net::IpAddr,
+        password: &str,
+    ) -> Result<AuthenticationAttempt, ApplicationError> {
+        match self.limiter.reserve(client).await {
+            LoginAdmission::Allowed => {}
+            LoginAdmission::RetryAfter(seconds) => {
+                return Ok(AuthenticationAttempt::RetryAfter(seconds));
+            }
+        }
+        if self.password.verify(password).await? {
+            Ok(AuthenticationAttempt::Authenticated)
+        } else {
+            Ok(AuthenticationAttempt::InvalidPassword)
+        }
+    }
+
+    async fn complete_login(&self, client: std::net::IpAddr) {
+        self.limiter.reset(client).await;
+    }
+}
+
 /// Reads group records.
 #[async_trait]
 pub trait GroupReader: Send + Sync {
@@ -933,6 +995,77 @@ mod tests {
     const GROUP_ID: EntityId = 10;
     const PARTICIPANT_ONE: EntityId = 1;
     const PARTICIPANT_TWO: EntityId = 2;
+
+    struct AuthPassword(bool);
+
+    #[async_trait]
+    impl PasswordVerifier for AuthPassword {
+        async fn verify(&self, _: &str) -> Result<bool, ApplicationError> {
+            Ok(self.0)
+        }
+    }
+
+    struct AuthLimiter {
+        admission: LoginAdmission,
+        resets: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl LoginAttemptLimiter for AuthLimiter {
+        async fn reserve(&self, _: std::net::IpAddr) -> LoginAdmission {
+            self.admission
+        }
+
+        async fn reset(&self, _: std::net::IpAddr) {
+            self.resets.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test]
+    async fn authentication_resets_only_after_completion() {
+        let limiter = Arc::new(AuthLimiter {
+            admission: LoginAdmission::Allowed,
+            resets: AtomicUsize::new(0),
+        });
+        let service = AuthenticationService::new(limiter.clone(), Arc::new(AuthPassword(true)));
+        let client: std::net::IpAddr = "192.0.2.25".parse().unwrap();
+
+        assert_eq!(
+            service.attempt(client, "secret").await.unwrap(),
+            AuthenticationAttempt::Authenticated
+        );
+        assert_eq!(limiter.resets.load(Ordering::SeqCst), 0);
+        service.complete_login(client).await;
+        assert_eq!(limiter.resets.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn authentication_distinguishes_invalid_and_rate_limited_attempts() {
+        let client: std::net::IpAddr = "192.0.2.25".parse().unwrap();
+        let invalid = AuthenticationService::new(
+            Arc::new(AuthLimiter {
+                admission: LoginAdmission::Allowed,
+                resets: AtomicUsize::new(0),
+            }),
+            Arc::new(AuthPassword(false)),
+        );
+        assert_eq!(
+            invalid.attempt(client, "wrong").await.unwrap(),
+            AuthenticationAttempt::InvalidPassword
+        );
+
+        let limited = AuthenticationService::new(
+            Arc::new(AuthLimiter {
+                admission: LoginAdmission::RetryAfter(17),
+                resets: AtomicUsize::new(0),
+            }),
+            Arc::new(AuthPassword(true)),
+        );
+        assert_eq!(
+            limited.attempt(client, "secret").await.unwrap(),
+            AuthenticationAttempt::RetryAfter(17)
+        );
+    }
 
     fn date(day: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 7, day).unwrap()

@@ -1,12 +1,14 @@
 #![allow(clippy::expect_used, clippy::fn_params_excessive_bools)]
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use debtor_application::{
-    ApplicationError, Clock, DebtResult, DebtUseCases, EqualSpendingCommand, ExactSpendingCommand,
-    GroupUseCases, LoginAdmission, LoginAttemptLimiter, ParticipantUseCases, PasswordVerifier,
-    RateMode, SpendingUseCases, UtcClock,
+    ApplicationError, AuthenticationService, AuthenticationUseCases, Clock, DebtResult,
+    DebtUseCases, EqualSpendingCommand, ExactSpendingCommand, GroupUseCases, LoginAdmission,
+    LoginAttemptLimiter, ParticipantUseCases, PasswordVerifier, RateMode, SpendingUseCases,
+    UtcClock,
 };
 use debtor_domain::{
     currency::Currency,
@@ -18,6 +20,7 @@ use crate::state::{AppState, TrustedProxyConfig};
 pub(crate) struct TestState {
     pub(crate) app: AppState,
     pub(crate) groups: Arc<FakeGroups>,
+    pub(crate) auth_resets: Arc<AtomicUsize>,
 }
 
 pub(crate) struct FakeGroups {
@@ -79,7 +82,12 @@ pub(crate) fn state_with_errors(
     let spendings: Arc<dyn SpendingUseCases> = Arc::new(FakeSpendings);
     let debts: Arc<dyn DebtUseCases> = Arc::new(FakeDebts);
     let password: Arc<dyn PasswordVerifier> = Arc::new(FakePassword { valid: true });
-    let limiter: Arc<dyn LoginAttemptLimiter> = Arc::new(FakeLimiter);
+    let auth_resets = Arc::new(AtomicUsize::new(0));
+    let limiter: Arc<dyn LoginAttemptLimiter> = Arc::new(FakeLimiter {
+        resets: auth_resets.clone(),
+    });
+    let authentication: Arc<dyn AuthenticationUseCases> =
+        Arc::new(AuthenticationService::new(limiter, password));
     let clock: Arc<dyn Clock> = Arc::new(UtcClock);
     let groups_use_cases: Arc<dyn GroupUseCases> = groups.clone();
     let participants_use_cases: Arc<dyn ParticipantUseCases> = participants.clone();
@@ -89,12 +97,12 @@ pub(crate) fn state_with_errors(
             participants: participants_use_cases,
             spendings,
             debts,
-            password,
+            authentication,
             clock,
-            limiter,
             proxy: TrustedProxyConfig::default(),
         },
         groups,
+        auth_resets,
     }
 }
 
@@ -297,7 +305,9 @@ impl PasswordVerifier for FakePassword {
     }
 }
 
-struct FakeLimiter;
+struct FakeLimiter {
+    resets: Arc<AtomicUsize>,
+}
 
 #[async_trait]
 impl LoginAttemptLimiter for FakeLimiter {
@@ -305,5 +315,7 @@ impl LoginAttemptLimiter for FakeLimiter {
         LoginAdmission::Allowed
     }
 
-    async fn reset(&self, _: std::net::IpAddr) {}
+    async fn reset(&self, _: std::net::IpAddr) {
+        self.resets.fetch_add(1, Ordering::SeqCst);
+    }
 }

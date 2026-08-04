@@ -3,7 +3,7 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Redirect, Response},
 };
-use debtor_application::LoginAdmission;
+use debtor_application::AuthenticationAttempt;
 use tower_sessions::Session;
 
 use super::response::error_response;
@@ -46,27 +46,30 @@ pub(crate) async fn login(
         Ok(ip) => ip,
         Err(message) => return error_response(StatusCode::BAD_REQUEST, &message),
     };
-    if let LoginAdmission::RetryAfter(seconds) = state.limiter.reserve(client).await {
-        let mut response = error_response(
-            StatusCode::TOO_MANY_REQUESTS,
-            "Too many login attempts. Try again later.",
-        );
-        response.headers_mut().insert(
-            "retry-after",
-            HeaderValue::from_str(&seconds.to_string()).unwrap_or(HeaderValue::from_static("300")),
-        );
-        return response;
-    }
-    match state.password.verify(password).await {
-        Ok(true) => {
+    match state.authentication.attempt(client, password).await {
+        Ok(AuthenticationAttempt::RetryAfter(seconds)) => {
+            let mut response = error_response(
+                StatusCode::TOO_MANY_REQUESTS,
+                "Too many login attempts. Try again later.",
+            );
+            response.headers_mut().insert(
+                "retry-after",
+                HeaderValue::from_str(&seconds.to_string())
+                    .unwrap_or(HeaderValue::from_static("300")),
+            );
+            response
+        }
+        Ok(AuthenticationAttempt::Authenticated) => {
             if session::establish(&session).await.is_err() {
                 let _ = session::flush(&session).await;
                 return super::response::session_error();
             }
-            state.limiter.reset(client).await;
+            state.authentication.complete_login(client).await;
             Redirect::to("/groups").into_response()
         }
-        Ok(false) => login_page(&session, Some("Invalid password.")).await,
+        Ok(AuthenticationAttempt::InvalidPassword) => {
+            login_page(&session, Some("Invalid password.")).await
+        }
         Err(_) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Authentication service unavailable.",
