@@ -53,6 +53,12 @@ pub(super) fn map_error(error: debtor_application::ApplicationError) -> Response
             StatusCode::INTERNAL_SERVER_ERROR,
             "Authentication service unavailable.",
         ),
+        debtor_application::ApplicationError::Unavailable(
+            debtor_application::UnavailableReason::RuntimeSupervisor,
+        ) => error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Runtime supervisor unavailable.",
+        ),
         debtor_application::ApplicationError::Storage(
             debtor_application::StorageReason::Contention,
         ) => error_response(
@@ -96,6 +102,10 @@ mod tests {
             (
                 ApplicationError::Unavailable(UnavailableReason::Authentication),
                 StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                ApplicationError::Unavailable(UnavailableReason::RuntimeSupervisor),
+                StatusCode::SERVICE_UNAVAILABLE,
             ),
             (
                 ApplicationError::Storage(StorageReason::Contention),

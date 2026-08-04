@@ -1,0 +1,32 @@
+{
+  "db_name": "SQLite",
+  "query": "PRAGMA wal_checkpoint(TRUNCATE)",
+  "describe": {
+    "columns": [
+      {
+        "name": "busy",
+        "ordinal": 0,
+        "type_info": "Null"
+      },
+      {
+        "name": "log",
+        "ordinal": 1,
+        "type_info": "Null"
+      },
+      {
+        "name": "checkpointed",
+        "ordinal": 2,
+        "type_info": "Null"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "3f8c1957616c4f2aeae576e5387c4f92e23662a3f612420c3747608c4d3aed1f"
+}
