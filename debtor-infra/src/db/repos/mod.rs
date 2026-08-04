@@ -4,6 +4,8 @@
 
 use std::collections::BTreeSet;
 use std::str::FromStr;
+use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use debtor_application::{
@@ -17,10 +19,14 @@ use debtor_domain::model::{
 };
 use debtor_domain::money::{format_decimal, parse_decimal};
 use sqlx::SqlitePool;
+use tokio::sync::Mutex;
+
+const WRITE_GATE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// SQLite-backed ledger persistence adapter.
 pub struct SqliteLedgerStore {
     pool: SqlitePool,
+    write_gate: Arc<Mutex<()>>,
 }
 
 struct DbGroup {
@@ -60,8 +66,24 @@ struct DbAllocation {
 
 impl SqliteLedgerStore {
     /// Creates an adapter from a configured pool.
-    pub const fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+    pub fn new(pool: SqlitePool) -> Self {
+        Self {
+            pool,
+            write_gate: Arc::new(Mutex::new(())),
+        }
+    }
+
+    async fn write_guard(&self) -> Result<tokio::sync::OwnedMutexGuard<()>, ApplicationError> {
+        self.write_guard_with_timeout(WRITE_GATE_TIMEOUT).await
+    }
+
+    async fn write_guard_with_timeout(
+        &self,
+        timeout: Duration,
+    ) -> Result<tokio::sync::OwnedMutexGuard<()>, ApplicationError> {
+        tokio::time::timeout(timeout, self.write_gate.clone().lock_owned())
+            .await
+            .map_err(|_| ApplicationError::Storage(StorageReason::Contention))
     }
 
     async fn group_mutable(&self, id: EntityId) -> Result<(), ApplicationError> {
@@ -139,6 +161,7 @@ impl GroupRepository for SqliteLedgerStore {
         name: Name,
         currency: Currency,
     ) -> Result<Group, ApplicationError> {
+        let _write_guard = self.write_guard().await?;
         let name = name.as_str();
         let currency = currency.code();
         let id = sqlx::query!(
@@ -159,6 +182,7 @@ impl GroupRepository for SqliteLedgerStore {
         name: Name,
         currency: Currency,
     ) -> Result<Group, ApplicationError> {
+        let _write_guard = self.write_guard().await?;
         let name = name.as_str();
         let currency = currency.code();
         changed(sqlx::query!("UPDATE groups SET name = ?, currency = ?, updated_at = datetime('now') WHERE id = ? AND is_archived = 0", name, currency, id)
@@ -173,6 +197,7 @@ impl GroupRepository for SqliteLedgerStore {
         id: EntityId,
         archived: bool,
     ) -> Result<(), ApplicationError> {
+        let _write_guard = self.write_guard().await?;
         let archived = i64::from(archived);
         changed(
             sqlx::query!(
@@ -187,6 +212,7 @@ impl GroupRepository for SqliteLedgerStore {
     }
 
     async fn delete_empty_group(&self, id: EntityId) -> Result<(), ApplicationError> {
+        let _write_guard = self.write_guard().await?;
         let result = sqlx::query!("DELETE FROM groups WHERE id = ? AND is_archived = 0 AND NOT EXISTS (SELECT 1 FROM spendings WHERE group_id = ?)", id, id)
             .execute(&self.pool)
             .await
@@ -222,6 +248,7 @@ impl ParticipantRepository for SqliteLedgerStore {
         name: Name,
         color: Color,
     ) -> Result<Participant, ApplicationError> {
+        let _write_guard = self.write_guard().await?;
         let name = name.as_str();
         let color = color.as_str();
         let id = sqlx::query!(
@@ -246,6 +273,7 @@ impl ParticipantRepository for SqliteLedgerStore {
         name: Name,
         color: Color,
     ) -> Result<Participant, ApplicationError> {
+        let _write_guard = self.write_guard().await?;
         let mut tx = self.pool.begin().await.map_err(storage)?;
         let name = name.as_str();
         let color = color.as_str();
@@ -281,6 +309,7 @@ impl ParticipantRepository for SqliteLedgerStore {
         name: Name,
         color: Color,
     ) -> Result<Participant, ApplicationError> {
+        let _write_guard = self.write_guard().await?;
         let name = name.as_str();
         let color = color.as_str();
         let result = sqlx::query!("UPDATE participants SET name = ?, color = ?, updated_at = datetime('now') WHERE id = ? AND is_archived = 0", name, color, id)
@@ -303,6 +332,7 @@ impl ParticipantRepository for SqliteLedgerStore {
         id: EntityId,
         archived: bool,
     ) -> Result<(), ApplicationError> {
+        let _write_guard = self.write_guard().await?;
         let archived = i64::from(archived);
         changed(sqlx::query!("UPDATE participants SET is_archived = ?, updated_at = datetime('now') WHERE id = ?", archived, id)
             .execute(&self.pool)
@@ -332,6 +362,7 @@ impl ParticipantRepository for SqliteLedgerStore {
         group_id: EntityId,
         participant_id: EntityId,
     ) -> Result<(), ApplicationError> {
+        let _write_guard = self.write_guard().await?;
         let result = sqlx::query!("INSERT INTO group_members (group_id, participant_id) SELECT ?, ? WHERE EXISTS (SELECT 1 FROM groups WHERE id = ? AND is_archived = 0) AND EXISTS (SELECT 1 FROM participants WHERE id = ? AND is_archived = 0) ON CONFLICT(group_id, participant_id) DO UPDATE SET is_active = 1", group_id, participant_id, group_id, participant_id)
             .execute(&self.pool)
             .await
@@ -350,6 +381,7 @@ impl ParticipantRepository for SqliteLedgerStore {
         participant_id: EntityId,
         active: bool,
     ) -> Result<(), ApplicationError> {
+        let _write_guard = self.write_guard().await?;
         let active = i64::from(active);
         changed(sqlx::query!("UPDATE group_members SET is_active = ? WHERE group_id = ? AND participant_id = ? AND EXISTS (SELECT 1 FROM groups WHERE id = ? AND is_archived = 0)", active, group_id, participant_id, group_id)
             .execute(&self.pool)
@@ -388,10 +420,12 @@ impl SpendingReader for SqliteLedgerStore {
 #[async_trait]
 impl SpendingRepository for SqliteLedgerStore {
     async fn create_spending(&self, spending: Spending) -> Result<Spending, ApplicationError> {
+        let _write_guard = self.write_guard().await?;
         save_spending(&self.pool, spending, false).await
     }
 
     async fn update_spending(&self, spending: Spending) -> Result<Spending, ApplicationError> {
+        let _write_guard = self.write_guard().await?;
         save_spending(&self.pool, spending, true).await
     }
 
@@ -400,6 +434,7 @@ impl SpendingRepository for SqliteLedgerStore {
         group_id: EntityId,
         spending_id: EntityId,
     ) -> Result<(), ApplicationError> {
+        let _write_guard = self.write_guard().await?;
         let result = sqlx::query!(
             "DELETE FROM spendings WHERE id = ? AND group_id = ? AND EXISTS (SELECT 1 FROM groups WHERE id = ? AND is_archived = 0)",
             spending_id,
@@ -417,8 +452,20 @@ impl SpendingRepository for SqliteLedgerStore {
     }
 }
 
-fn storage(_error: sqlx::Error) -> ApplicationError {
-    ApplicationError::Storage(StorageReason::Unexpected)
+fn storage(error: sqlx::Error) -> ApplicationError {
+    if is_sqlite_contention(&error) {
+        ApplicationError::Storage(StorageReason::Contention)
+    } else {
+        ApplicationError::Storage(StorageReason::Unexpected)
+    }
+}
+
+fn is_sqlite_contention(error: &sqlx::Error) -> bool {
+    let sqlx::Error::Database(database_error) = error else {
+        return false;
+    };
+    matches!(database_error.code().as_deref(), Some("5" | "6"))
+        || database_error.message().contains("database is locked")
 }
 
 fn changed(result: sqlx::sqlite::SqliteQueryResult) -> Result<(), ApplicationError> {
@@ -664,4 +711,26 @@ async fn save_spending(
     }
     tx.commit().await.map_err(storage)?;
     load_spending(pool, spending.group_id, id).await
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn write_gate_timeout_is_contention_before_database_work() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("test pool");
+        let store = SqliteLedgerStore::new(pool);
+        let _held = store.write_gate.clone().lock_owned().await;
+
+        assert!(matches!(
+            store
+                .write_guard_with_timeout(Duration::from_millis(10))
+                .await,
+            Err(ApplicationError::Storage(StorageReason::Contention))
+        ));
+    }
 }
