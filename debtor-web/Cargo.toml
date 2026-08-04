@@ -10,6 +10,7 @@ rust-version.workspace = true
 debtor-domain = { path = "../debtor-domain" }
 debtor-application = { path = "../debtor-application" }
 axum = { workspace = true }
+tower = { workspace = true }
 tower-sessions = { workspace = true }
 tower-http = { workspace = true }
 askama = { workspace = true }

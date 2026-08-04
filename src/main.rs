@@ -4,6 +4,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use axum::error_handling::HandleErrorLayer;
 use debtor_application::{
     AuthenticationService, AuthenticationUseCases, Clock, DebtService, DebtUseCases, GroupReader,
     GroupRepository, GroupService, GroupUseCases, LedgerSnapshotReader, ParticipantRepository,
@@ -14,7 +15,11 @@ use debtor_infra::auth::{ArgonPasswordGate, MemoryLoginAttemptLimiter};
 use debtor_infra::db::repos::SqliteLedgerStore;
 use debtor_infra::exchange_rates::FrankfurterClient;
 use debtor_web::state::{AppState, TrustedProxyConfig};
+use tokio::sync::Semaphore;
+use tower::limit::concurrency::GlobalConcurrencyLimitLayer;
+use tower::{BoxError, ServiceBuilder};
 use tower_http::services::ServeDir;
+use tower_http::timeout::TimeoutLayer;
 use tower_sessions::{Expiry, MemoryStore, SessionManagerLayer};
 
 mod config;
@@ -86,8 +91,25 @@ async fn main() -> Result<()> {
         .with_path("/")
         .with_always_save(true)
         .with_expiry(Expiry::OnInactivity(time::Duration::days(30)));
-    let app = debtor_web::router::router_with_sessions(state, sessions)
-        .nest_service("/static", ServeDir::new("static"));
+    let user_limit = Arc::new(Semaphore::new(64));
+    let static_service = ServiceBuilder::new()
+        .layer(HandleErrorLayer::new(|_: BoxError| async {
+            (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "Service temporarily unavailable.",
+            )
+        }))
+        .load_shed()
+        .layer(GlobalConcurrencyLimitLayer::with_semaphore(
+            user_limit.clone(),
+        ))
+        .layer(TimeoutLayer::with_status_code(
+            axum::http::StatusCode::GATEWAY_TIMEOUT,
+            std::time::Duration::from_secs(30),
+        ))
+        .service(ServeDir::new("static"));
+    let app = debtor_web::router::router_with_sessions(state, sessions, user_limit)
+        .nest_service("/static", static_service);
     let listener = tokio::net::TcpListener::bind(config.bind)
         .await
         .context("unable to bind APP_BIND")?;

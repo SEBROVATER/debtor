@@ -1,9 +1,16 @@
 //! Axum route definitions.
 
 use axum::{
-    Router, middleware,
+    Router,
+    error_handling::HandleErrorLayer,
+    middleware,
     routing::{get, post},
 };
+use std::sync::Arc;
+use tokio::sync::Semaphore;
+use tower::ServiceBuilder;
+use tower::limit::concurrency::{ConcurrencyLimitLayer, GlobalConcurrencyLimitLayer};
+use tower_http::limit::RequestBodyLimitLayer;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 
 use crate::{handlers, middleware as app_middleware, state::AppState};
@@ -15,18 +22,38 @@ pub fn router(state: AppState) -> Router {
         SessionManagerLayer::new(MemoryStore::default())
             .with_secure(false)
             .with_always_save(true),
+        Arc::new(Semaphore::new(64)),
     )
 }
 
 /// Builds the application router with the production-configured session layer.
-pub fn router_with_sessions(state: AppState, sessions: SessionManagerLayer<MemoryStore>) -> Router {
+pub fn router_with_sessions(
+    state: AppState,
+    sessions: SessionManagerLayer<MemoryStore>,
+    user_limit: Arc<Semaphore>,
+) -> Router {
     let public = Router::new()
         .route("/healthz", get(handlers::health))
-        .route("/readyz", get(handlers::health));
+        .route("/readyz", get(handlers::health))
+        .layer(middleware::from_fn(app_middleware::probe_timeout))
+        .layer(
+            ServiceBuilder::new()
+                .layer(HandleErrorLayer::new(app_middleware::overload_error))
+                .load_shed()
+                .layer(ConcurrencyLimitLayer::new(4)),
+        );
     let login = Router::new()
         .route("/login", get(handlers::login_form).post(handlers::login))
         .layer(middleware::from_fn(app_middleware::security_headers))
-        .layer(sessions.clone());
+        .layer(sessions.clone())
+        .layer(middleware::from_fn(app_middleware::login_timeout))
+        .layer(RequestBodyLimitLayer::new(8 * 1024))
+        .layer(
+            ServiceBuilder::new()
+                .layer(HandleErrorLayer::new(app_middleware::overload_error))
+                .load_shed()
+                .layer(ConcurrencyLimitLayer::new(4)),
+        );
     let protected = Router::new()
         .route("/", get(handlers::root))
         .route("/logout", post(handlers::logout))
@@ -87,7 +114,15 @@ pub fn router_with_sessions(state: AppState, sessions: SessionManagerLayer<Memor
         .route("/participants/{id}", post(handlers::update_participant))
         .layer(middleware::from_fn(app_middleware::security_headers))
         .layer(middleware::from_fn(app_middleware::require_authenticated))
-        .layer(sessions);
+        .layer(sessions)
+        .layer(middleware::from_fn(app_middleware::safe_read_timeout))
+        .layer(RequestBodyLimitLayer::new(256 * 1024))
+        .layer(
+            ServiceBuilder::new()
+                .layer(HandleErrorLayer::new(app_middleware::overload_error))
+                .load_shed()
+                .layer(GlobalConcurrencyLimitLayer::with_semaphore(user_limit)),
+        );
     public.merge(login).merge(protected).with_state(state)
 }
 
@@ -613,6 +648,40 @@ mod tests {
             .await
             .expect("authenticated response");
         assert_security_headers(&response);
+    }
+
+    #[tokio::test]
+    async fn fixed_body_limits_reject_login_and_protected_forms_before_handlers() {
+        let test_state = state(false);
+        let app = app(&test_state);
+        let oversized_login = format!("password={}", "x".repeat(9 * 1024));
+        let response = app
+            .clone()
+            .oneshot(request(Method::POST, "/login", &oversized_login, None))
+            .await
+            .expect("oversized login response");
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+        let session_cookie = login(&app).await;
+        let oversized_form = format!("csrf=wrong&name={}", "x".repeat(256 * 1024));
+        let response = app
+            .oneshot(request(
+                Method::POST,
+                "/groups",
+                &oversized_form,
+                Some(&session_cookie),
+            ))
+            .await
+            .expect("oversized protected response");
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert!(
+            test_state
+                .groups
+                .created
+                .lock()
+                .expect("group calls")
+                .is_empty()
+        );
     }
 
     fn assert_security_headers(response: &Response) {

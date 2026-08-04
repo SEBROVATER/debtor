@@ -33,6 +33,8 @@ Copy `.env.example` to `.env`, generate `APP_ADMIN_PASSWORD_HASH` with `cargo ru
 
 The database schema is pre-release. After migration or canonical monetary-persistence changes, stop the server and delete the local SQLite database so `cargo run` can recreate it; live database compatibility is not promised.
 
+The server enforces fixed request budgets: 8 KiB login bodies, 256 KiB other form bodies, 64 shared in-flight permits for user and static traffic, four login permits, and four separate probe permits. Safe reads and login have a 30-second budget; debt reads have 90 seconds. An admitted ledger mutation is not cut off by the generic read timeout and must receive a definitive commit or rollback response, so the production reverse proxy must not impose a shorter mutation timeout.
+
 ## License
 
 MIT OR Apache-2.0
