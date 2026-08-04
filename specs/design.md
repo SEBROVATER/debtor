@@ -56,6 +56,7 @@ External effects MUST be constructor-injected through application-owned ports. U
 - Historical spending detail MUST remain readable for archived groups and resolve current participant names for inactive identities. Spending CRUD, group settings, empty-group deletion, participant editing, and reversible membership deactivation are server-rendered and CSRF protected.
 - Validation failures on group, participant, create-and-join, and spending forms MUST return `422` with an inline error and all submitted values retained. Archived group pages MUST hide mutation/settings controls, and direct archived mutation or form routes MUST return `409` without invoking a use case.
 - Domain and repository Rust code owns exact `Decimal` parsing, canonical formatting, precision, positivity, allocation equality, and monetary aggregation. SQLite stores monetary values as `TEXT` and MUST NOT parse, convert with floating point, or aggregate monetary values.
+- SQLite MUST structurally restrict referenced group deletion, supported currency/category codes, boolean flags, bounded non-empty text, valid participant color shape, and ISO spending dates on or after `2025-01-01`. These checks MUST NOT duplicate Rust monetary arithmetic or Unicode trimming rules.
 
 ## Rates And Settlements
 

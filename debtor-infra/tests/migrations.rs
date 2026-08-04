@@ -277,7 +277,7 @@ async fn foreign_keys_are_enforced(pool: SqlitePool) {
         .expect("enable FK");
 
     let result = sqlx::query(
-        "INSERT INTO spendings (group_id, description, total_amount, currency, spent_date) VALUES (9999, 'test', '10.00', 'USD', '2026-01-01')",
+        "INSERT INTO spendings (group_id, description, total_amount, currency, spent_date) VALUES (9999, 'test', '10', 'USD', '2026-01-01')",
     )
     .execute(&pool)
     .await;
@@ -286,6 +286,106 @@ async fn foreign_keys_are_enforced(pool: SqlitePool) {
         result.is_err(),
         "expected FK violation for non-existent group_id"
     );
+}
+
+#[sqlx::test(migrations = "../migrations")]
+async fn structural_checks_reject_invalid_values(pool: SqlitePool) {
+    sqlx::query("INSERT INTO groups (name, currency) VALUES ('G', 'USD')")
+        .execute(&pool)
+        .await
+        .expect("insert group");
+
+    assert!(
+        sqlx::query("INSERT INTO groups (name, currency) VALUES ('G', 'XXX')")
+            .execute(&pool)
+            .await
+            .is_err()
+    );
+    assert!(
+        sqlx::query("INSERT INTO groups (name, currency) VALUES ('', 'USD')")
+            .execute(&pool)
+            .await
+            .is_err()
+    );
+    assert!(
+        sqlx::query("INSERT INTO groups (name, currency, is_archived) VALUES ('G', 'USD', 2)")
+            .execute(&pool)
+            .await
+            .is_err()
+    );
+    let long_name = "x".repeat(101);
+    assert!(
+        sqlx::query("INSERT INTO groups (name, currency) VALUES (?, 'USD')")
+            .bind(long_name)
+            .execute(&pool)
+            .await
+            .is_err()
+    );
+
+    assert!(
+        sqlx::query("INSERT INTO participants (name, color) VALUES ('Alice', '#12345')")
+            .execute(&pool)
+            .await
+            .is_err()
+    );
+    assert!(
+        sqlx::query("INSERT INTO participants (name, color) VALUES ('Alice', '1234567')")
+            .execute(&pool)
+            .await
+            .is_err()
+    );
+    assert!(
+        sqlx::query(
+            "INSERT INTO participants (name, color, is_archived) VALUES ('Alice', '#123456', 2)"
+        )
+        .execute(&pool)
+        .await
+        .is_err()
+    );
+    sqlx::query("INSERT INTO participants (name, color) VALUES ('Alice', '#123456')")
+        .execute(&pool)
+        .await
+        .expect("insert participant");
+
+    assert!(
+        sqlx::query(
+            "INSERT INTO group_members (group_id, participant_id, is_active) VALUES (1, 1, 2)"
+        )
+        .execute(&pool)
+        .await
+        .is_err()
+    );
+    sqlx::query("INSERT INTO group_members (group_id, participant_id) VALUES (1, 1)")
+        .execute(&pool)
+        .await
+        .expect("insert membership");
+
+    for (currency, spending_type, spent_date, description) in [
+        ("XXX", "food", "2026-01-01", "Dinner"),
+        ("USD", "unknown", "2026-01-01", "Dinner"),
+        ("USD", "food", "2024-12-31", "Dinner"),
+        ("USD", "food", "20260101", "Dinner"),
+        ("USD", "food", "2026-01-01", ""),
+    ] {
+        assert!(sqlx::query(
+            "INSERT INTO spendings (group_id, description, total_amount, currency, spending_type, spent_date) VALUES (1, ?, '10', ?, ?, ?)"
+        )
+        .bind(description)
+        .bind(currency)
+        .bind(spending_type)
+        .bind(spent_date)
+        .execute(&pool)
+        .await
+        .is_err());
+    }
+    let long_description = "x".repeat(201);
+    assert!(sqlx::query(
+        "INSERT INTO spendings (group_id, description, total_amount, currency, spent_date) VALUES (1, ?, '10', 'USD', '2026-01-01')"
+    )
+    .bind(long_description)
+    .execute(&pool)
+    .await
+    .is_err());
 }
 
 #[sqlx::test(migrations = "../migrations")]
@@ -329,7 +429,7 @@ async fn group_members_cascade_on_group_delete(pool: SqlitePool) {
 }
 
 #[sqlx::test(migrations = "../migrations")]
-async fn spendings_cascade_on_group_delete(pool: SqlitePool) {
+async fn spendings_restrict_group_delete_and_preserve_history(pool: SqlitePool) {
     sqlx::query("PRAGMA foreign_keys = ON")
         .execute(&pool)
         .await
@@ -340,21 +440,57 @@ async fn spendings_cascade_on_group_delete(pool: SqlitePool) {
         .await
         .expect("insert group");
 
-    sqlx::query("INSERT INTO spendings (group_id, description, total_amount, currency, spent_date) VALUES (1, 'Dinner', '50.00', 'USD', '2026-01-01')")
+    sqlx::query("INSERT INTO participants (name, color) VALUES ('Alice', '#FF0000')")
+        .execute(&pool)
+        .await
+        .expect("insert participant");
+
+    sqlx::query("INSERT INTO group_members (group_id, participant_id) VALUES (1, 1)")
+        .execute(&pool)
+        .await
+        .expect("insert group_member");
+
+    sqlx::query("INSERT INTO spendings (group_id, description, total_amount, currency, spent_date) VALUES (1, 'Dinner', '50', 'USD', '2026-01-01')")
         .execute(&pool)
         .await
         .expect("insert spending");
 
-    sqlx::query("DELETE FROM groups WHERE id = 1")
+    sqlx::query("INSERT INTO spending_payers (spending_id, participant_id, paid_amount) VALUES (1, 1, '50')")
         .execute(&pool)
         .await
-        .expect("delete group");
+        .expect("insert payer");
 
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM spendings")
-        .fetch_one(&pool)
+    sqlx::query("INSERT INTO spending_shares (spending_id, participant_id, share_amount) VALUES (1, 1, '50')")
+        .execute(&pool)
         .await
-        .expect("count after delete");
-    assert_eq!(count, 0);
+        .expect("insert share");
+
+    let result = sqlx::query("DELETE FROM groups WHERE id = 1")
+        .execute(&pool)
+        .await;
+    assert!(result.is_err(), "referenced groups must not be deleted");
+
+    let result = sqlx::query("DELETE FROM participants WHERE id = 1")
+        .execute(&pool)
+        .await;
+    assert!(
+        result.is_err(),
+        "referenced participants must not be deleted"
+    );
+
+    for table in [
+        "groups",
+        "group_members",
+        "spendings",
+        "spending_payers",
+        "spending_shares",
+    ] {
+        let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
+            .fetch_one(&pool)
+            .await
+            .expect("count after rejected delete");
+        assert_eq!(count, 1, "history row missing from {table}");
+    }
 }
 
 #[sqlx::test(migrations = "../migrations")]
@@ -374,12 +510,12 @@ async fn spending_payers_cascade_on_spending_delete(pool: SqlitePool) {
         .await
         .expect("insert participant");
 
-    sqlx::query("INSERT INTO spendings (group_id, description, total_amount, currency, spent_date) VALUES (1, 'Dinner', '50.00', 'USD', '2026-01-01')")
+    sqlx::query("INSERT INTO spendings (group_id, description, total_amount, currency, spent_date) VALUES (1, 'Dinner', '50', 'USD', '2026-01-01')")
         .execute(&pool)
         .await
         .expect("insert spending");
 
-    sqlx::query("INSERT INTO spending_payers (spending_id, participant_id, paid_amount) VALUES (1, 1, '50.00')")
+    sqlx::query("INSERT INTO spending_payers (spending_id, participant_id, paid_amount) VALUES (1, 1, '50')")
         .execute(&pool)
         .await
         .expect("insert payer");
@@ -413,12 +549,12 @@ async fn spending_shares_cascade_on_spending_delete(pool: SqlitePool) {
         .await
         .expect("insert participant");
 
-    sqlx::query("INSERT INTO spendings (group_id, description, total_amount, currency, spent_date) VALUES (1, 'Dinner', '50.00', 'USD', '2026-01-01')")
+    sqlx::query("INSERT INTO spendings (group_id, description, total_amount, currency, spent_date) VALUES (1, 'Dinner', '50', 'USD', '2026-01-01')")
         .execute(&pool)
         .await
         .expect("insert spending");
 
-    sqlx::query("INSERT INTO spending_shares (spending_id, participant_id, share_amount) VALUES (1, 1, '50.00')")
+    sqlx::query("INSERT INTO spending_shares (spending_id, participant_id, share_amount) VALUES (1, 1, '50')")
         .execute(&pool)
         .await
         .expect("insert share");
@@ -490,7 +626,7 @@ async fn spendings_spending_type_defaults_to_other(pool: SqlitePool) {
         .await
         .expect("insert group");
 
-    sqlx::query("INSERT INTO spendings (group_id, description, total_amount, currency, spent_date) VALUES (1, 'Test', '10.00', 'USD', '2026-01-01')")
+    sqlx::query("INSERT INTO spendings (group_id, description, total_amount, currency, spent_date) VALUES (1, 'Test', '10', 'USD', '2026-01-01')")
         .execute(&pool)
         .await
         .expect("insert spending without spending_type");

@@ -31,6 +31,8 @@ CI runs equivalent formatting, lint, and test checks for both the production wor
 
 Copy `.env.example` to `.env`, generate `APP_ADMIN_PASSWORD_HASH` with `cargo run --manifest-path tools/password-hash/Cargo.toml`, then run `cargo run`. Startup creates/connects SQLite, applies migrations, and serves the application. The complete local-run contract is specified in [specs/design.md](specs/design.md).
 
+The database schema is pre-release. After migration or canonical monetary-persistence changes, stop the server and delete the local SQLite database so `cargo run` can recreate it; live database compatibility is not promised.
+
 ## License
 
 MIT OR Apache-2.0

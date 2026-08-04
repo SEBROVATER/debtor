@@ -5,6 +5,7 @@
 use chrono::NaiveDate;
 use debtor_application::{
     ApplicationError, GroupRepository, ParticipantRepository, SpendingReader, SpendingRepository,
+    StorageReason,
 };
 use debtor_domain::currency::Currency;
 use debtor_domain::model::{Allocation, Color, Description, Name, Spending, SpendingType};
@@ -172,4 +173,28 @@ async fn archived_participant_rejects_direct_update(pool: SqlitePool) {
             .as_str(),
         "Ari"
     );
+}
+
+#[sqlx::test(migrations = "../migrations")]
+async fn corrupted_persisted_money_is_rejected(pool: SqlitePool) {
+    let (store, group_id, participant_id) = active_group_and_participant(&pool).await;
+    store
+        .add_member(group_id, participant_id)
+        .await
+        .expect("add member");
+    let created = store
+        .create_spending(spending(group_id, participant_id))
+        .await
+        .expect("create spending");
+
+    sqlx::query("UPDATE spendings SET total_amount = '10.00' WHERE id = ?")
+        .bind(created.id)
+        .execute(&pool)
+        .await
+        .expect("corrupt spending amount");
+
+    assert!(matches!(
+        store.spending(group_id, created.id).await,
+        Err(ApplicationError::Storage(StorageReason::InvalidData))
+    ));
 }
