@@ -6,7 +6,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, Utc};
 use debtor_domain::currency::Currency;
-use debtor_domain::debts::{Transfer, add_converted_spending, quantize_balances, simplify};
+use debtor_domain::debts::{
+    CalculationError, Transfer, add_converted_spending, quantize_balances, simplify,
+};
 use debtor_domain::expenses::splitting::equal_split;
 use debtor_domain::model::{
     Color, Description, EntityId, Group, GroupMember, Name, Participant, Spending, SpendingType,
@@ -48,6 +50,20 @@ pub enum ConfigurationError {
     InvalidPasswordHash,
 }
 
+/// Safe categories for debt calculation failures.
+#[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
+pub enum CalculationReason {
+    /// A checked Decimal operation overflowed.
+    #[error("debt arithmetic overflow")]
+    ArithmeticOverflow,
+    /// A balance set was not exactly zero-sum.
+    #[error("invalid debt balance sum")]
+    NonZeroSum,
+    /// Settlement could not satisfy its deterministic invariants.
+    #[error("invalid settlement result")]
+    SettlementInvariant,
+}
+
 /// Application-level failures suitable for HTTP mapping.
 #[derive(Debug, Error)]
 pub enum ApplicationError {
@@ -69,6 +85,9 @@ pub enum ApplicationError {
     /// Startup configuration is invalid.
     #[error("invalid application configuration: {0}")]
     Configuration(ConfigurationError),
+    /// Debt arithmetic or settlement failed a safe calculation invariant.
+    #[error("debt calculation failed: {0}")]
+    Calculation(CalculationReason),
 }
 
 /// Rate selection requested by the debts view.
@@ -542,6 +561,19 @@ impl DebtService {
     }
 }
 
+fn calculation_error(error: CalculationError) -> ApplicationError {
+    let reason = match error {
+        CalculationError::ArithmeticOverflow | CalculationError::NonIntegralResidual => {
+            CalculationReason::ArithmeticOverflow
+        }
+        CalculationError::NonZeroSum => CalculationReason::NonZeroSum,
+        CalculationError::UnsettledBalances | CalculationError::SettlementInvariant => {
+            CalculationReason::SettlementInvariant
+        }
+    };
+    ApplicationError::Calculation(reason)
+}
+
 #[async_trait]
 impl DebtUseCases for DebtService {
     async fn calculate(
@@ -563,15 +595,17 @@ impl DebtUseCases for DebtService {
                 .rates
                 .rate(spending.currency, group.currency, requested_date, today)
                 .await?;
-            add_converted_spending(&mut balances, &spending, quote.rate);
+            add_converted_spending(&mut balances, &spending, quote.rate)
+                .map_err(calculation_error)?;
             if !rates.contains(&quote) {
                 rates.push(quote);
             }
         }
-        quantize_balances(&mut balances, group.currency);
+        quantize_balances(&mut balances, group.currency).map_err(calculation_error)?;
+        let transfers = simplify(&balances).map_err(calculation_error)?;
         Ok(DebtResult {
             currency: group.currency,
-            transfers: simplify(&balances),
+            transfers,
             balances,
             rates,
             calculated_at,
@@ -1330,6 +1364,51 @@ mod tests {
         assert!(matches!(
             error,
             ApplicationError::Unavailable(UnavailableReason::ExchangeRates)
+        ));
+    }
+
+    #[tokio::test]
+    async fn debt_service_maps_calculation_failures_to_safe_reasons() {
+        let spending = Spending {
+            id: 1,
+            group_id: GROUP_ID,
+            description: Description::new("Overflow").unwrap(),
+            total: Decimal::MAX,
+            currency: Currency::Eur,
+            spending_type: SpendingType::Food,
+            spent_date: date(4),
+            payers: vec![
+                Allocation {
+                    participant_id: PARTICIPANT_ONE,
+                    amount: Decimal::MAX,
+                },
+                Allocation {
+                    participant_id: PARTICIPANT_ONE,
+                    amount: Decimal::MAX,
+                },
+            ],
+            shares: vec![Allocation {
+                participant_id: PARTICIPANT_TWO,
+                amount: Decimal::ONE,
+            }],
+        };
+        let service = DebtService::new(
+            Arc::new(DebtGroups),
+            Arc::new(DebtSpendings(vec![spending])),
+            Arc::new(RateFake(Mutex::new(Vec::new()))),
+            Arc::new(FixedClock(
+                Utc.with_ymd_and_hms(2026, 7, 8, 12, 30, 0).unwrap(),
+            )),
+        );
+
+        let error = service
+            .calculate(GROUP_ID, RateMode::Historical)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ApplicationError::Calculation(CalculationReason::ArithmeticOverflow)
         ));
     }
 }

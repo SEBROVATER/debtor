@@ -62,6 +62,10 @@ pub(super) fn map_error(error: debtor_application::ApplicationError) -> Response
             StatusCode::INTERNAL_SERVER_ERROR,
             "Application configuration error.",
         ),
+        debtor_application::ApplicationError::Calculation(_) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Unable to calculate debts.",
+        ),
     }
 }
 
@@ -70,7 +74,7 @@ pub(super) fn map_error(error: debtor_application::ApplicationError) -> Response
 mod tests {
     use axum::{body::to_bytes, http::StatusCode};
     use debtor_application::{
-        ApplicationError, ConfigurationError, StorageReason, UnavailableReason,
+        ApplicationError, CalculationReason, ConfigurationError, StorageReason, UnavailableReason,
     };
 
     use super::map_error;
@@ -100,6 +104,10 @@ mod tests {
             ),
             (
                 ApplicationError::Configuration(ConfigurationError::InvalidPasswordHash),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                ApplicationError::Calculation(CalculationReason::ArithmeticOverflow),
                 StatusCode::INTERNAL_SERVER_ERROR,
             ),
         ];

@@ -75,6 +75,9 @@ pub enum ValidationError {
         /// Allocation type whose sum differs.
         field: &'static str,
     },
+    /// A decimal aggregation exceeded the representable range.
+    #[error("decimal aggregation overflowed")]
+    ArithmeticOverflow,
 }
 
 /// A trimmed display name.
@@ -341,15 +344,26 @@ impl Spending {
     }
 
     /// Returns paid-minus-owed participant nets in source currency.
-    pub fn source_nets(&self) -> BTreeMap<EntityId, Decimal> {
-        let mut result = BTreeMap::new();
+    ///
+    /// # Errors
+    ///
+    /// Returns an arithmetic overflow error when allocation aggregation exceeds
+    /// the Decimal representation.
+    pub fn source_nets(&self) -> Result<BTreeMap<EntityId, Decimal>, ValidationError> {
+        let mut result: BTreeMap<EntityId, Decimal> = BTreeMap::new();
         for value in &self.payers {
-            *result.entry(value.participant_id).or_default() += value.amount;
+            let net = result.entry(value.participant_id).or_default();
+            *net = net
+                .checked_add(value.amount)
+                .ok_or(ValidationError::ArithmeticOverflow)?;
         }
         for value in &self.shares {
-            *result.entry(value.participant_id).or_default() -= value.amount;
+            let net = result.entry(value.participant_id).or_default();
+            *net = net
+                .checked_sub(value.amount)
+                .ok_or(ValidationError::ArithmeticOverflow)?;
         }
-        result
+        Ok(result)
     }
 }
 
@@ -393,7 +407,9 @@ fn validate_allocations(
             });
         }
         validate_amount(value.amount, currency, field)?;
-        sum += value.amount;
+        sum = sum
+            .checked_add(value.amount)
+            .ok_or(ValidationError::ArithmeticOverflow)?;
     }
     if sum != total {
         return Err(ValidationError::AllocationTotalMismatch { field });

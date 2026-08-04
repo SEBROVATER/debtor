@@ -6,17 +6,33 @@ use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
 
 use crate::currency::Currency;
+use crate::debts::CalculationError;
 use crate::model::{EntityId, Spending};
 
 /// Adds source-currency nets from a spending after multiplying by its rate.
+///
+/// # Errors
+///
+/// Returns a calculation error when source-net or converted-balance arithmetic
+/// overflows the Decimal representation.
 pub fn add_converted_spending(
     balances: &mut BTreeMap<EntityId, Decimal>,
     spending: &Spending,
     rate: Decimal,
-) {
-    for (participant_id, net) in spending.source_nets() {
-        *balances.entry(participant_id).or_default() += net * rate;
+) -> Result<(), CalculationError> {
+    for (participant_id, net) in spending
+        .source_nets()
+        .map_err(|_| CalculationError::ArithmeticOverflow)?
+    {
+        let converted = net
+            .checked_mul(rate)
+            .ok_or(CalculationError::ArithmeticOverflow)?;
+        let current = balances.entry(participant_id).or_default();
+        *current = current
+            .checked_add(converted)
+            .ok_or(CalculationError::ArithmeticOverflow)?;
     }
+    Ok(())
 }
 
 /// Quantizes zero-sum balances to the target currency's minor units.
@@ -27,25 +43,58 @@ pub fn add_converted_spending(
 /// ascending signed fractional remainders. Participant IDs break equal
 /// remainder ties, and the resulting balances sum to exactly zero.
 ///
-/// # Panics
+/// # Errors
 ///
-/// This function does not panic for valid `BTreeMap` inputs.
-pub fn quantize_balances(balances: &mut BTreeMap<EntityId, Decimal>, currency: Currency) {
+/// Returns a calculation error for non-zero-sum input, overflow, a non-integral
+/// residual, or an impossible settlement adjustment.
+pub fn quantize_balances(
+    balances: &mut BTreeMap<EntityId, Decimal>,
+    currency: Currency,
+) -> Result<(), CalculationError> {
     let unit = Decimal::new(1, currency.minor_unit_scale());
     let mut remainders = Vec::with_capacity(balances.len());
     let mut quantized = BTreeMap::new();
+    let mut original_sum = Decimal::ZERO;
 
     for (&participant_id, &amount) in balances.iter() {
+        original_sum = original_sum
+            .checked_add(amount)
+            .ok_or(CalculationError::ArithmeticOverflow)?;
         let truncated = amount.trunc_with_scale(currency.minor_unit_scale());
-        remainders.push((participant_id, amount - truncated));
+        remainders.push((
+            participant_id,
+            amount
+                .checked_sub(truncated)
+                .ok_or(CalculationError::ArithmeticOverflow)?,
+        ));
         quantized.insert(participant_id, truncated);
     }
+    if !original_sum.is_zero() {
+        return Err(CalculationError::NonZeroSum);
+    }
 
-    let residual = -quantized.values().copied().sum::<Decimal>();
-    let residual_units = (residual / unit).to_i128().unwrap_or_default();
+    let quantized_sum = quantized.values().try_fold(Decimal::ZERO, |sum, value| {
+        sum.checked_add(*value)
+            .ok_or(CalculationError::ArithmeticOverflow)
+    })?;
+    let residual = Decimal::ZERO
+        .checked_sub(quantized_sum)
+        .ok_or(CalculationError::ArithmeticOverflow)?;
+    let residual_units_decimal = residual
+        .checked_div(unit)
+        .ok_or(CalculationError::ArithmeticOverflow)?;
+    let residual_units = residual_units_decimal
+        .to_i128()
+        .ok_or(CalculationError::ArithmeticOverflow)?;
+    let reconstructed_residual = unit
+        .checked_mul(Decimal::from_i128_with_scale(residual_units, 0))
+        .ok_or(CalculationError::ArithmeticOverflow)?;
+    if reconstructed_residual != residual {
+        return Err(CalculationError::NonIntegralResidual);
+    }
     if residual_units == 0 || remainders.is_empty() {
         *balances = quantized;
-        return;
+        return Ok(());
     }
 
     if residual_units.is_positive() {
@@ -59,25 +108,41 @@ pub fn quantize_balances(balances: &mut BTreeMap<EntityId, Decimal>, currency: C
     } else {
         -unit
     };
-    let units = residual_units.unsigned_abs() as usize;
+    let units = usize::try_from(residual_units.unsigned_abs())
+        .map_err(|_| CalculationError::ArithmeticOverflow)?;
+    if units > remainders.len() {
+        return Err(CalculationError::SettlementInvariant);
+    }
     for index in 0..units {
         let participant_id = remainders[index % remainders.len()].0;
         if let Some(value) = quantized.get_mut(&participant_id) {
-            *value += adjustment;
+            *value = value
+                .checked_add(adjustment)
+                .ok_or(CalculationError::ArithmeticOverflow)?;
         }
     }
 
+    let final_sum = quantized.values().try_fold(Decimal::ZERO, |sum, value| {
+        sum.checked_add(*value)
+            .ok_or(CalculationError::ArithmeticOverflow)
+    })?;
+    if !final_sum.is_zero() {
+        return Err(CalculationError::SettlementInvariant);
+    }
     *balances = quantized;
+    Ok(())
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use std::collections::BTreeMap;
 
     use rust_decimal::Decimal;
 
-    use super::quantize_balances;
+    use super::{add_converted_spending, quantize_balances};
     use crate::currency::Currency;
+    use crate::model::{Allocation, Description, Spending, SpendingType};
 
     fn sum(balances: &BTreeMap<i64, Decimal>) -> Decimal {
         balances.values().copied().sum()
@@ -92,7 +157,7 @@ mod tests {
             (4, Decimal::new(-6_027, 3)),
         ]);
 
-        quantize_balances(&mut balances, Currency::Usd);
+        quantize_balances(&mut balances, Currency::Usd).unwrap();
 
         assert_eq!(
             balances,
@@ -115,7 +180,7 @@ mod tests {
             (4, Decimal::new(6_027, 3)),
         ]);
 
-        quantize_balances(&mut balances, Currency::Usd);
+        quantize_balances(&mut balances, Currency::Usd).unwrap();
 
         assert_eq!(
             balances,
@@ -137,7 +202,7 @@ mod tests {
             (4, Decimal::new(-3_010, 3)),
         ]);
 
-        quantize_balances(&mut balances, Currency::Usd);
+        quantize_balances(&mut balances, Currency::Usd).unwrap();
 
         assert_eq!(balances[&2], Decimal::new(201, 2));
         assert_eq!(balances[&9], Decimal::new(100, 2));
@@ -154,7 +219,7 @@ mod tests {
             (4, Decimal::new(-78, 1)),
         ]);
 
-        quantize_balances(&mut balances, Currency::Jpy);
+        quantize_balances(&mut balances, Currency::Jpy).unwrap();
 
         assert_eq!(
             balances,
@@ -177,7 +242,7 @@ mod tests {
             (4, Decimal::new(-60_018, 4)),
         ]);
 
-        quantize_balances(&mut balances, Currency::Omr);
+        quantize_balances(&mut balances, Currency::Omr).unwrap();
 
         assert_eq!(
             balances,
@@ -189,5 +254,52 @@ mod tests {
             ])
         );
         assert_eq!(sum(&balances), Decimal::ZERO);
+    }
+
+    #[test]
+    fn rejects_non_zero_balance_inputs() {
+        let mut balances = BTreeMap::from([(1, Decimal::ONE)]);
+
+        assert_eq!(
+            quantize_balances(&mut balances, Currency::Usd),
+            Err(super::CalculationError::NonZeroSum)
+        );
+    }
+
+    #[test]
+    fn rejects_quantization_sum_overflow() {
+        let mut balances = BTreeMap::from([(1, Decimal::MAX), (2, Decimal::MAX)]);
+
+        assert_eq!(
+            quantize_balances(&mut balances, Currency::Usd),
+            Err(super::CalculationError::ArithmeticOverflow)
+        );
+    }
+
+    #[test]
+    fn rejects_conversion_overflow() {
+        let spending = Spending {
+            id: 1,
+            group_id: 1,
+            description: Description::new("Overflow").unwrap(),
+            total: Decimal::MAX,
+            currency: Currency::Usd,
+            spending_type: SpendingType::Other,
+            spent_date: chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+            payers: vec![Allocation {
+                participant_id: 1,
+                amount: Decimal::MAX,
+            }],
+            shares: vec![Allocation {
+                participant_id: 2,
+                amount: Decimal::ONE,
+            }],
+        };
+        let mut balances = BTreeMap::new();
+
+        assert_eq!(
+            add_converted_spending(&mut balances, &spending, Decimal::TWO),
+            Err(super::CalculationError::ArithmeticOverflow)
+        );
     }
 }
