@@ -1,6 +1,6 @@
 //! Application use cases and mockable ports for debtor.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -14,6 +14,7 @@ use debtor_domain::model::{
     Color, Description, EntityId, Group, GroupMember, Name, Participant, Spending, SpendingType,
     ValidationError,
 };
+use futures::stream::{self, StreamExt};
 use rust_decimal::Decimal;
 use thiserror::Error;
 
@@ -544,6 +545,31 @@ pub struct DebtService {
     clock: Arc<dyn Clock>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RateContext {
+    base: Currency,
+    quote: Currency,
+    requested_date: NaiveDate,
+    today: NaiveDate,
+}
+
+impl Ord for RateContext {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.base
+            .code()
+            .cmp(other.base.code())
+            .then_with(|| self.quote.code().cmp(other.quote.code()))
+            .then_with(|| self.requested_date.cmp(&other.requested_date))
+            .then_with(|| self.today.cmp(&other.today))
+    }
+}
+
+impl PartialOrd for RateContext {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 impl DebtService {
     /// Creates a service with injected dependencies.
     pub fn new(
@@ -584,22 +610,81 @@ impl DebtUseCases for DebtService {
         let group = self.groups.group(group_id).await?;
         let calculated_at = self.clock.now();
         let today = calculated_at.date_naive();
-        let mut balances = BTreeMap::new();
-        let mut rates = Vec::new();
-        for spending in self.spendings.spendings(group_id).await? {
+        let spendings = self.spendings.spendings(group_id).await?;
+        let mut context_set = BTreeSet::new();
+        let mut contexts = Vec::new();
+        for spending in &spendings {
             let requested_date = match mode {
                 RateMode::Historical => spending.spent_date,
                 RateMode::Current => today,
             };
+            let context = RateContext {
+                base: spending.currency,
+                quote: group.currency,
+                requested_date,
+                today,
+            };
+            if context_set.insert(context) {
+                contexts.push(context);
+            }
+        }
+        contexts.sort_unstable();
+
+        let mut fetched_rates = stream::iter(contexts.iter().copied().map(|context| async move {
             let quote = self
                 .rates
-                .rate(spending.currency, group.currency, requested_date, today)
+                .rate(
+                    context.base,
+                    context.quote,
+                    context.requested_date,
+                    context.today,
+                )
                 .await?;
-            add_converted_spending(&mut balances, &spending, quote.rate)
-                .map_err(calculation_error)?;
-            if !rates.contains(&quote) {
-                rates.push(quote);
+            if quote.base != context.base
+                || quote.quote != context.quote
+                || quote.requested_date != context.requested_date
+            {
+                return Err(ApplicationError::Unavailable(
+                    UnavailableReason::ExchangeRates,
+                ));
             }
+            Ok::<_, ApplicationError>((context, quote))
+        }))
+        .buffer_unordered(4);
+        let mut quotes = BTreeMap::new();
+        while let Some(result) = fetched_rates.next().await {
+            let (context, quote) = result?;
+            quotes.insert(context, quote);
+        }
+
+        let mut balances = BTreeMap::new();
+        let rates = contexts
+            .iter()
+            .map(|context| {
+                quotes
+                    .get(context)
+                    .cloned()
+                    .ok_or(ApplicationError::Calculation(
+                        CalculationReason::SettlementInvariant,
+                    ))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        for spending in &spendings {
+            let requested_date = match mode {
+                RateMode::Historical => spending.spent_date,
+                RateMode::Current => today,
+            };
+            let context = RateContext {
+                base: spending.currency,
+                quote: group.currency,
+                requested_date,
+                today,
+            };
+            let quote = quotes.get(&context).ok_or(ApplicationError::Calculation(
+                CalculationReason::SettlementInvariant,
+            ))?;
+            add_converted_spending(&mut balances, spending, quote.rate)
+                .map_err(calculation_error)?;
         }
         quantize_balances(&mut balances, group.currency).map_err(calculation_error)?;
         let transfers = simplify(&balances).map_err(calculation_error)?;
@@ -822,8 +907,10 @@ impl SpendingUseCases for SpendingService {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
 
-    use chrono::TimeZone;
+    use chrono::{Datelike, TimeZone};
     use debtor_domain::model::Allocation;
 
     use super::*;
@@ -1276,6 +1363,44 @@ mod tests {
         }
     }
 
+    struct BoundedRateFake {
+        calls: Mutex<Vec<NaiveDate>>,
+        active: AtomicUsize,
+        maximum: AtomicUsize,
+        reverse: bool,
+    }
+
+    #[async_trait]
+    impl ExchangeRateProvider for BoundedRateFake {
+        async fn rate(
+            &self,
+            base: Currency,
+            quote: Currency,
+            requested_date: NaiveDate,
+            today: NaiveDate,
+        ) -> Result<RateQuote, ApplicationError> {
+            self.calls.lock().unwrap().push(requested_date);
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.maximum.fetch_max(active, Ordering::SeqCst);
+            let delay = if self.reverse {
+                10 - requested_date.day()
+            } else {
+                requested_date.day()
+            };
+            tokio::time::sleep(Duration::from_millis(u64::from(delay))).await;
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            Ok(RateQuote {
+                base,
+                quote,
+                requested_date,
+                effective_date: requested_date,
+                rate: Decimal::ONE,
+                is_stale: false,
+                is_provisional: requested_date > today,
+            })
+        }
+    }
+
     struct FailingRates;
     #[async_trait]
     impl ExchangeRateProvider for FailingRates {
@@ -1410,5 +1535,80 @@ mod tests {
             error,
             ApplicationError::Calculation(CalculationReason::ArithmeticOverflow)
         ));
+    }
+
+    #[tokio::test]
+    async fn debt_service_deduplicates_rates_and_bounds_concurrency_deterministically() {
+        let spendings = (1..=6)
+            .map(|id| Spending {
+                id,
+                group_id: GROUP_ID,
+                description: Description::new("Lunch").unwrap(),
+                total: Decimal::ONE,
+                currency: Currency::Eur,
+                spending_type: SpendingType::Food,
+                spent_date: date(u32::try_from(id.min(5)).expect("test day fits")),
+                payers: vec![Allocation {
+                    participant_id: PARTICIPANT_ONE,
+                    amount: Decimal::ONE,
+                }],
+                shares: vec![Allocation {
+                    participant_id: PARTICIPANT_TWO,
+                    amount: Decimal::ONE,
+                }],
+            })
+            .collect::<Vec<_>>();
+        let clock_time = Utc.with_ymd_and_hms(2026, 7, 8, 12, 30, 0).unwrap();
+        let first_rates = Arc::new(BoundedRateFake {
+            calls: Mutex::new(Vec::new()),
+            active: AtomicUsize::new(0),
+            maximum: AtomicUsize::new(0),
+            reverse: false,
+        });
+        let first_service = DebtService::new(
+            Arc::new(DebtGroups),
+            Arc::new(DebtSpendings(spendings.clone())),
+            first_rates.clone(),
+            Arc::new(FixedClock(clock_time)),
+        );
+        let first = first_service
+            .calculate(GROUP_ID, RateMode::Historical)
+            .await
+            .unwrap();
+
+        let second_rates = Arc::new(BoundedRateFake {
+            calls: Mutex::new(Vec::new()),
+            active: AtomicUsize::new(0),
+            maximum: AtomicUsize::new(0),
+            reverse: true,
+        });
+        let second_service = DebtService::new(
+            Arc::new(DebtGroups),
+            Arc::new(DebtSpendings(spendings)),
+            second_rates.clone(),
+            Arc::new(FixedClock(clock_time)),
+        );
+        let second = second_service
+            .calculate(GROUP_ID, RateMode::Historical)
+            .await
+            .unwrap();
+
+        let mut first_calls = first_rates.calls.lock().unwrap().clone();
+        first_calls.sort_unstable();
+        first_calls.dedup();
+        assert_eq!(first_calls.len(), 5);
+        assert!(first_rates.maximum.load(Ordering::SeqCst) <= 4);
+        assert_eq!(
+            first
+                .rates
+                .iter()
+                .map(|rate| rate.requested_date)
+                .collect::<Vec<_>>(),
+            (1..=5).map(date).collect::<Vec<_>>()
+        );
+        assert_eq!(first.balances, second.balances);
+        assert_eq!(first.transfers, second.transfers);
+        assert_eq!(first.rates, second.rates);
+        assert!(second_rates.maximum.load(Ordering::SeqCst) <= 4);
     }
 }

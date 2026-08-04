@@ -20,6 +20,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
 chrono = { workspace = true }
+futures = { workspace = true }
 
 [dev-dependencies]
 sqlx = { workspace = true, features = ["migrate"] }

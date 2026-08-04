@@ -13,6 +13,7 @@ test-support = []
 async-trait = { workspace = true }
 chrono = { workspace = true }
 debtor-domain = { workspace = true }
+futures = { workspace = true }
 rust_decimal = { workspace = true }
 thiserror = { workspace = true }
 
