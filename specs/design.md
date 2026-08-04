@@ -70,7 +70,7 @@ Trusted proxies MUST strip untrusted forwarding input or append their immediate 
 
 ## Local Run Contract
 
-After copying `.env.example` to `.env` and supplying a valid `APP_ADMIN_PASSWORD_HASH`, `cargo run` MUST be sufficient to run the complete local application. It MUST load configuration, create/connect and migrate SQLite, enable foreign keys, compose adapters and services, bind the configured address, log the local URL without secrets, and shut down gracefully. The independent password helper is run with `cargo run --manifest-path tools/password-hash/Cargo.toml`.
+After copying `.env.example` to `.env` and supplying a valid `APP_ADMIN_PASSWORD_HASH`, `cargo run` MUST be sufficient to run the complete local application. It MUST load configuration, create/connect and migrate SQLite, enable foreign keys, compose adapters and services, bind the configured address, log the local URL including its `http://` scheme without secrets, and shut down gracefully. The independent password helper is run with `cargo run --manifest-path tools/password-hash/Cargo.toml`.
 
 Local startup MUST NOT require Docker, a frontend build, manual migrations, SQLx metadata generation, or Frankfurter availability. Local monetary databases are pre-release and may need to be deleted and recreated after canonical persistence changes.
 

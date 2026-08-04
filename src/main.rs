@@ -93,7 +93,7 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(config.bind)
         .await
         .context("unable to bind APP_BIND")?;
-    tracing::info!(address = %config.bind, "debtor listening");
+    tracing::info!(url = %format!("http://{}", config.bind), "debtor listening");
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
