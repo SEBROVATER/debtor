@@ -14,13 +14,15 @@ use debtor_application::{
 use debtor_infra::auth::{ArgonPasswordGate, MemoryLoginAttemptLimiter};
 use debtor_infra::db::repos::SqliteLedgerStore;
 use debtor_infra::exchange_rates::FrankfurterClient;
+use debtor_web::session;
+use debtor_web::session_store::ReapingMemoryStore;
 use debtor_web::state::{AppState, TrustedProxyConfig};
 use tokio::sync::Semaphore;
 use tower::limit::concurrency::GlobalConcurrencyLimitLayer;
 use tower::{BoxError, ServiceBuilder};
 use tower_http::services::ServeDir;
 use tower_http::timeout::TimeoutLayer;
-use tower_sessions::{Expiry, MemoryStore, SessionManagerLayer};
+use tower_sessions::SessionManagerLayer;
 
 mod config;
 
@@ -101,14 +103,14 @@ async fn build_app(config: Config) -> Result<axum::Router> {
         readiness,
         proxy,
     };
-    let sessions = SessionManagerLayer::new(MemoryStore::default())
+    let sessions = SessionManagerLayer::new(ReapingMemoryStore::default())
         .with_name(config.session_cookie_name)
         .with_secure(config.cookie_secure)
         .with_http_only(true)
         .with_same_site(tower_sessions::cookie::SameSite::Strict)
         .with_path("/")
         .with_always_save(true)
-        .with_expiry(Expiry::OnInactivity(time::Duration::days(30)));
+        .with_expiry(session::anonymous_expiry());
     let user_limit = Arc::new(Semaphore::new(64));
     let static_service = ServiceBuilder::new()
         .layer(HandleErrorLayer::new(|_: BoxError| async {

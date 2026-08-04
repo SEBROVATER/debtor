@@ -35,6 +35,8 @@ The database schema is pre-release. After migration or canonical monetary-persis
 
 The server enforces fixed request budgets: 8 KiB login bodies, 256 KiB other form bodies, 64 shared in-flight permits for user and static traffic, four login permits, and four separate probe permits. Safe reads and login have a 30-second budget; debt reads have 90 seconds. An admitted ledger mutation is not cut off by the generic read timeout and must receive a definitive commit or rollback response, so the production reverse proxy must not impose a shorter mutation timeout.
 
+Sessions are process-local and restart-invalidation is intentional. Anonymous login/CSRF sessions use a fixed 10-minute inactivity lifetime and are admitted up to 4,096 live records; authenticated sessions use a fixed 30-day inactivity lifetime and do not consume anonymous capacity. Expired records are removed lazily during load/admission, and the explicit expired-deletion pass is available without a periodic worker in this slice. Login session-capacity or storage failures return a retryable sanitized `503`; no session-capacity environment knobs are supported.
+
 `/healthz` is allocation-light process liveness and remains healthy while the process is running. `/readyz` is the local SQLite readiness probe: it acquires a pool connection and runs a trivial query with a one-second total budget, returning a sanitized `503` when SQLite is closed, unavailable, or contended. Both probes bypass sessions and use the dedicated four-request probe budget. Frankfurter availability, session counts, and ledger contents do not gate readiness. Use `/healthz` for process liveness and `/readyz` for local traffic admission or orchestrator readiness.
 
 ## License

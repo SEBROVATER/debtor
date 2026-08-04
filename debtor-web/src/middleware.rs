@@ -19,7 +19,10 @@ pub async fn require_authenticated(
     next: Next,
 ) -> Response {
     match session::authenticated(&session).await {
-        Ok(true) => next.run(request).await,
+        Ok(true) => {
+            session.set_expiry(Some(session::authenticated_expiry()));
+            next.run(request).await
+        }
         Ok(false) => Redirect::to("/login").into_response(),
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Session error.").into_response(),
     }

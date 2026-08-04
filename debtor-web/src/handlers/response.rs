@@ -22,6 +22,13 @@ pub(super) fn session_error() -> Response {
     error_response(StatusCode::INTERNAL_SERVER_ERROR, "Session error.")
 }
 
+pub(super) fn session_unavailable() -> Response {
+    error_response(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Session storage is temporarily unavailable. Try again.",
+    )
+}
+
 pub(super) fn map_error(error: debtor_application::ApplicationError) -> Response {
     match error {
         debtor_application::ApplicationError::NotFound => {

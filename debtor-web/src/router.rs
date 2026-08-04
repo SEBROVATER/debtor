@@ -11,25 +11,29 @@ use tokio::sync::Semaphore;
 use tower::ServiceBuilder;
 use tower::limit::concurrency::{ConcurrencyLimitLayer, GlobalConcurrencyLimitLayer};
 use tower_http::limit::RequestBodyLimitLayer;
-use tower_sessions::{MemoryStore, SessionManagerLayer};
+use tower_sessions::{SessionManagerLayer, SessionStore};
 
-use crate::{handlers, middleware as app_middleware, state::AppState};
+use crate::{
+    handlers, middleware as app_middleware, session, session_store::ReapingMemoryStore,
+    state::AppState,
+};
 
 /// Builds the application router from application-facing state.
 pub fn router(state: AppState) -> Router {
     router_with_sessions(
         state,
-        SessionManagerLayer::new(MemoryStore::default())
+        SessionManagerLayer::new(ReapingMemoryStore::default())
             .with_secure(false)
+            .with_expiry(session::anonymous_expiry())
             .with_always_save(true),
         Arc::new(Semaphore::new(64)),
     )
 }
 
 /// Builds the application router with the production-configured session layer.
-pub fn router_with_sessions(
+pub fn router_with_sessions<S: SessionStore + Clone>(
     state: AppState,
-    sessions: SessionManagerLayer<MemoryStore>,
+    sessions: SessionManagerLayer<S>,
     user_limit: Arc<Semaphore>,
 ) -> Router {
     let public = Router::new()

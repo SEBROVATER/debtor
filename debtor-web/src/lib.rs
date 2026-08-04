@@ -10,5 +10,6 @@ pub mod middleware;
 mod participant_color;
 pub mod router;
 pub mod session;
+pub mod session_store;
 pub mod state;
 pub mod templates;

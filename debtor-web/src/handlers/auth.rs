@@ -82,10 +82,14 @@ pub(crate) async fn logout(session: Session, form: CsrfValidatedForm) -> Respons
 }
 
 async fn login_page(session: &Session, error: Option<&str>) -> Response {
+    let new_session = session.id().is_none();
     let token = match csrf(session).await {
         Ok(token) => token,
         Err(response) => return response,
     };
+    if new_session && session.save().await.is_err() {
+        return super::response::session_unavailable();
+    }
     super::response::render(&LoginTemplate {
         error,
         csrf: &token,
@@ -104,4 +108,42 @@ pub(super) async fn csrf(session: &Session) -> Result<String, Response> {
     session::csrf_token(session)
         .await
         .map_err(|_| super::response::session_error())
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod tests {
+    use std::{collections::HashMap, sync::Arc};
+
+    use time::{Duration, OffsetDateTime};
+    use tower_sessions::{
+        Session, SessionStore,
+        session::{Id, Record},
+    };
+
+    use super::login_form;
+    use crate::{
+        session,
+        session_store::{ANONYMOUS_CAPACITY, ReapingMemoryStore},
+    };
+
+    #[tokio::test]
+    async fn login_page_saves_new_csrf_session_and_reports_capacity_as_503() {
+        let store = ReapingMemoryStore::default();
+        for _ in 0..ANONYMOUS_CAPACITY {
+            let mut record = Record {
+                id: Id::default(),
+                data: HashMap::default(),
+                expiry_date: OffsetDateTime::now_utc() + Duration::hours(1),
+            };
+            store.create(&mut record).await.expect("fill capacity");
+        }
+        let session = Session::new(None, Arc::new(store), Some(session::anonymous_expiry()));
+
+        let response = login_form(session).await;
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
 }
