@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!: i64\", description, total_amount, currency, spending_type, spent_date FROM spendings WHERE group_id = ? ORDER BY spent_date DESC, id DESC",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: i64",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "description",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "total_amount",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "currency",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "spending_type",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "spent_date",
+        "ordinal": 5,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "392846097c047675bf083a23425f344c479ab5603075de93d2b53ba6e5b3df51"
+}

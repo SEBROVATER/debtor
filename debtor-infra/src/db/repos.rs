@@ -2,15 +2,15 @@
 
 #![allow(clippy::needless_pass_by_value)]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use debtor_application::{
-    ApplicationError, GroupReader, GroupRepository, ParticipantRepository, SpendingReader,
-    SpendingRepository, StorageReason,
+    ApplicationError, GroupReader, GroupRepository, LedgerSnapshot, LedgerSnapshotReader,
+    ParticipantRepository, SpendingReader, SpendingRepository, StorageReason,
 };
 use debtor_domain::currency::Currency;
 use debtor_domain::model::{
@@ -59,7 +59,22 @@ struct DbSpending {
     spent_date: String,
 }
 
+struct DbSnapshotSpending {
+    id: i64,
+    description: String,
+    total_amount: String,
+    currency: String,
+    spending_type: String,
+    spent_date: String,
+}
+
 struct DbAllocation {
+    participant_id: i64,
+    amount: String,
+}
+
+struct DbSpendingAllocation {
+    spending_id: i64,
     participant_id: i64,
     amount: String,
 }
@@ -108,6 +123,90 @@ impl SqliteLedgerStore {
             Some(_) => Err(ApplicationError::Conflict),
             None => Err(ApplicationError::NotFound),
         }
+    }
+
+    async fn ledger_snapshot_impl(
+        &self,
+        group_id: EntityId,
+    ) -> Result<LedgerSnapshot, ApplicationError> {
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        let group = sqlx::query_as!(
+            DbGroup,
+            "SELECT id, name, currency, is_archived FROM groups WHERE id = ?",
+            group_id
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(storage)?
+        .ok_or(ApplicationError::NotFound)
+        .and_then(|row| {
+            group(row).map_err(|_| ApplicationError::Storage(StorageReason::InvalidData))
+        })?;
+
+        let parents = sqlx::query_as!(
+            DbSnapshotSpending,
+            "SELECT id AS \"id!: i64\", description, total_amount, currency, spending_type, spent_date FROM spendings WHERE group_id = ? ORDER BY spent_date DESC, id DESC",
+            group_id
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(storage)?;
+        let payer_rows = sqlx::query_as!(
+            DbSpendingAllocation,
+            "SELECT sp.id AS \"spending_id!: i64\", p.participant_id, p.paid_amount AS amount FROM spending_payers p JOIN spendings sp ON sp.id = p.spending_id WHERE sp.group_id = ? ORDER BY sp.id, p.participant_id",
+            group_id
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(storage)?;
+        let share_rows = sqlx::query_as!(
+            DbSpendingAllocation,
+            "SELECT sp.id AS \"spending_id!: i64\", s.participant_id, s.share_amount AS amount FROM spending_shares s JOIN spendings sp ON sp.id = s.spending_id WHERE sp.group_id = ? ORDER BY sp.id, s.participant_id",
+            group_id
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(storage)?;
+
+        let mut payers = BTreeMap::<EntityId, Vec<Allocation>>::new();
+        for row in payer_rows {
+            payers.entry(row.spending_id).or_default().push(Allocation {
+                participant_id: row.participant_id,
+                amount: canonical_decimal(&row.amount)?,
+            });
+        }
+        let mut shares = BTreeMap::<EntityId, Vec<Allocation>>::new();
+        for row in share_rows {
+            shares.entry(row.spending_id).or_default().push(Allocation {
+                participant_id: row.participant_id,
+                amount: canonical_decimal(&row.amount)?,
+            });
+        }
+
+        let mut spendings = Vec::with_capacity(parents.len());
+        for row in parents {
+            let spending = Spending {
+                id: row.id,
+                group_id,
+                description: Description::new(row.description)
+                    .map_err(|_| ApplicationError::Storage(StorageReason::InvalidData))?,
+                total: canonical_decimal(&row.total_amount)?,
+                currency: Currency::from_str(&row.currency)
+                    .map_err(|_| ApplicationError::Storage(StorageReason::InvalidData))?,
+                spending_type: SpendingType::from_str(&row.spending_type)
+                    .map_err(|_| ApplicationError::Storage(StorageReason::InvalidData))?,
+                spent_date: chrono::NaiveDate::parse_from_str(&row.spent_date, "%Y-%m-%d")
+                    .map_err(|_| ApplicationError::Storage(StorageReason::InvalidData))?,
+                payers: payers.remove(&row.id).unwrap_or_default(),
+                shares: shares.remove(&row.id).unwrap_or_default(),
+            };
+            spending
+                .validate()
+                .map_err(|_| ApplicationError::Storage(StorageReason::InvalidData))?;
+            spendings.push(spending);
+        }
+        tx.commit().await.map_err(storage)?;
+        Ok(LedgerSnapshot { group, spendings })
     }
 }
 
@@ -393,19 +492,7 @@ impl ParticipantRepository for SqliteLedgerStore {
 #[async_trait]
 impl SpendingReader for SqliteLedgerStore {
     async fn spendings(&self, group_id: EntityId) -> Result<Vec<Spending>, ApplicationError> {
-        self.group(group_id).await?;
-        let ids = sqlx::query_scalar!(
-            "SELECT id AS \"id!: i64\" FROM spendings WHERE group_id = ? ORDER BY spent_date DESC, id DESC",
-            group_id
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(storage)?;
-        let mut output = Vec::new();
-        for id in ids {
-            output.push(load_spending(&self.pool, group_id, id).await?);
-        }
-        Ok(output)
+        Ok(self.ledger_snapshot_impl(group_id).await?.spendings)
     }
 
     async fn spending(
@@ -413,7 +500,22 @@ impl SpendingReader for SqliteLedgerStore {
         group_id: EntityId,
         spending_id: EntityId,
     ) -> Result<Spending, ApplicationError> {
-        load_spending(&self.pool, group_id, spending_id).await
+        self.ledger_snapshot_impl(group_id)
+            .await?
+            .spendings
+            .into_iter()
+            .find(|spending| spending.id == spending_id)
+            .ok_or(ApplicationError::NotFound)
+    }
+}
+
+#[async_trait]
+impl LedgerSnapshotReader for SqliteLedgerStore {
+    async fn ledger_snapshot(
+        &self,
+        group_id: EntityId,
+    ) -> Result<LedgerSnapshot, ApplicationError> {
+        self.ledger_snapshot_impl(group_id).await
     }
 }
 

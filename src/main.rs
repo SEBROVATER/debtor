@@ -6,8 +6,9 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use debtor_application::{
     Clock, DebtService, DebtUseCases, GroupReader, GroupRepository, GroupService, GroupUseCases,
-    ParticipantRepository, ParticipantService, ParticipantUseCases, PasswordVerifier,
-    SpendingReader, SpendingRepository, SpendingService, SpendingUseCases, UtcClock,
+    LedgerSnapshotReader, ParticipantRepository, ParticipantService, ParticipantUseCases,
+    PasswordVerifier, SpendingReader, SpendingRepository, SpendingService, SpendingUseCases,
+    UtcClock,
 };
 use debtor_infra::auth::{ArgonPasswordGate, MemoryLoginAttemptLimiter};
 use debtor_infra::db::repos::SqliteLedgerStore;
@@ -50,6 +51,7 @@ async fn main() -> Result<()> {
     let group_repository: Arc<dyn GroupRepository> = store.clone();
     let participant_repository: Arc<dyn ParticipantRepository> = store.clone();
     let spending_reader: Arc<dyn SpendingReader> = store.clone();
+    let snapshot_reader: Arc<dyn LedgerSnapshotReader> = store.clone();
     let spending_repository: Arc<dyn SpendingRepository> = store;
     let groups: Arc<dyn GroupUseCases> =
         Arc::new(GroupService::new(group_reader.clone(), group_repository));
@@ -61,12 +63,8 @@ async fn main() -> Result<()> {
     ));
     let rates = Arc::new(FrankfurterClient::with_base_url(&config.exchange_base_url));
     let clock: Arc<dyn Clock> = Arc::new(UtcClock);
-    let debts: Arc<dyn DebtUseCases> = Arc::new(DebtService::new(
-        group_reader,
-        spending_reader,
-        rates,
-        clock.clone(),
-    ));
+    let debts: Arc<dyn DebtUseCases> =
+        Arc::new(DebtService::new(snapshot_reader, rates, clock.clone()));
     let password: Arc<dyn PasswordVerifier> =
         Arc::new(ArgonPasswordGate::new(config.password_hash)?);
     let state = AppState {

@@ -7,7 +7,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use debtor_application::{
-    ApplicationError, GroupRepository, ParticipantRepository, SpendingRepository, StorageReason,
+    ApplicationError, GroupRepository, LedgerSnapshotReader, ParticipantRepository,
+    SpendingRepository, StorageReason,
 };
 use debtor_domain::currency::Currency;
 use debtor_domain::model::{Allocation, Color, Description, Name, Spending, SpendingType};
@@ -187,6 +188,117 @@ async fn spending_eligibility_failure_rolls_back_without_parent_or_allocations()
         assert_eq!(count, 0, "partial row in {table}");
     }
 
+    drop(pool);
+    remove_database(&path);
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn snapshot_never_mixes_uncommitted_group_parent_or_allocations() {
+    let (path, pool) = migrated_database().await;
+    let store = SqliteLedgerStore::new(pool.clone());
+    let group = store
+        .create_group(Name::new("Trip").expect("name"), Currency::Usd)
+        .await
+        .expect("group");
+    let participant = store
+        .create_participant(
+            Name::new("Ada").expect("name"),
+            Color::new("#123456").expect("color"),
+        )
+        .await
+        .expect("participant");
+    store
+        .add_member(group.id, participant.id)
+        .await
+        .expect("membership");
+    store
+        .create_spending(Spending {
+            id: 0,
+            group_id: group.id,
+            description: Description::new("Dinner").expect("description"),
+            total: rust_decimal::Decimal::ONE,
+            currency: Currency::Usd,
+            spending_type: SpendingType::Food,
+            spent_date: chrono::NaiveDate::from_ymd_opt(2026, 1, 1).expect("date"),
+            payers: vec![Allocation {
+                participant_id: participant.id,
+                amount: rust_decimal::Decimal::ONE,
+            }],
+            shares: vec![Allocation {
+                participant_id: participant.id,
+                amount: rust_decimal::Decimal::ONE,
+            }],
+        })
+        .await
+        .expect("spending");
+
+    let writer_pool = connect(&database_url(&path)).await.expect("writer pool");
+    let mut writer = writer_pool.acquire().await.expect("writer connection");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *writer)
+        .await
+        .expect("writer transaction");
+    sqlx::query("UPDATE groups SET currency = 'EUR' WHERE id = ?")
+        .bind(group.id)
+        .execute(&mut *writer)
+        .await
+        .expect("update group currency");
+    sqlx::query("UPDATE spendings SET total_amount = '2', currency = 'EUR' WHERE group_id = ?")
+        .bind(group.id)
+        .execute(&mut *writer)
+        .await
+        .expect("update spending parent");
+    sqlx::query("UPDATE spending_payers SET paid_amount = '2' WHERE spending_id = 1")
+        .execute(&mut *writer)
+        .await
+        .expect("update payer");
+    sqlx::query("UPDATE spending_shares SET share_amount = '2' WHERE spending_id = 1")
+        .execute(&mut *writer)
+        .await
+        .expect("update share");
+
+    let before_commit = store
+        .ledger_snapshot(group.id)
+        .await
+        .expect("pre-commit snapshot");
+    assert_eq!(before_commit.group.currency, Currency::Usd);
+    assert_eq!(before_commit.spendings[0].currency, Currency::Usd);
+    assert_eq!(before_commit.spendings[0].total, rust_decimal::Decimal::ONE);
+    assert_eq!(
+        before_commit.spendings[0].payers[0].amount,
+        rust_decimal::Decimal::ONE
+    );
+    assert_eq!(
+        before_commit.spendings[0].shares[0].amount,
+        rust_decimal::Decimal::ONE
+    );
+
+    sqlx::query("COMMIT")
+        .execute(&mut *writer)
+        .await
+        .expect("commit writer transaction");
+    let after_commit = store
+        .ledger_snapshot(group.id)
+        .await
+        .expect("post-commit snapshot");
+    assert_eq!(after_commit.group.currency, Currency::Eur);
+    assert_eq!(after_commit.spendings[0].currency, Currency::Eur);
+    assert_eq!(
+        after_commit.spendings[0].total,
+        rust_decimal::Decimal::new(2, 0)
+    );
+    assert_eq!(
+        after_commit.spendings[0].payers[0].amount,
+        rust_decimal::Decimal::new(2, 0)
+    );
+    assert_eq!(
+        after_commit.spendings[0].shares[0].amount,
+        rust_decimal::Decimal::new(2, 0)
+    );
+
+    drop(writer);
+    drop(writer_pool);
     drop(pool);
     remove_database(&path);
 }

@@ -273,6 +273,23 @@ pub trait SpendingReader: Send + Sync {
     ) -> Result<Spending, ApplicationError>;
 }
 
+/// Immutable ledger input for one debt calculation.
+#[derive(Debug, Clone)]
+pub struct LedgerSnapshot {
+    /// Group identity and settlement currency captured with the spendings.
+    pub group: Group,
+    /// Complete spending aggregates from the same database snapshot.
+    pub spendings: Vec<Spending>,
+}
+
+/// Reads one transactionally consistent ledger snapshot.
+#[async_trait]
+pub trait LedgerSnapshotReader: Send + Sync {
+    /// Loads the group and all complete spendings from one read snapshot.
+    async fn ledger_snapshot(&self, group_id: EntityId)
+    -> Result<LedgerSnapshot, ApplicationError>;
+}
+
 /// Writes complete spending aggregates atomically.
 #[async_trait]
 pub trait SpendingRepository: Send + Sync {
@@ -539,8 +556,7 @@ pub trait DebtUseCases: Send + Sync {
 
 /// Debt workflow implementation.
 pub struct DebtService {
-    groups: Arc<dyn GroupReader>,
-    spendings: Arc<dyn SpendingReader>,
+    snapshot_reader: Arc<dyn LedgerSnapshotReader>,
     rates: Arc<dyn ExchangeRateProvider>,
     clock: Arc<dyn Clock>,
 }
@@ -573,14 +589,12 @@ impl PartialOrd for RateContext {
 impl DebtService {
     /// Creates a service with injected dependencies.
     pub fn new(
-        groups: Arc<dyn GroupReader>,
-        spendings: Arc<dyn SpendingReader>,
+        snapshot_reader: Arc<dyn LedgerSnapshotReader>,
         rates: Arc<dyn ExchangeRateProvider>,
         clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
-            groups,
-            spendings,
+            snapshot_reader,
             rates,
             clock,
         }
@@ -607,10 +621,11 @@ impl DebtUseCases for DebtService {
         group_id: EntityId,
         mode: RateMode,
     ) -> Result<DebtResult, ApplicationError> {
-        let group = self.groups.group(group_id).await?;
         let calculated_at = self.clock.now();
         let today = calculated_at.date_naive();
-        let spendings = self.spendings.spendings(group_id).await?;
+        let snapshot = self.snapshot_reader.ledger_snapshot(group_id).await?;
+        let group = snapshot.group;
+        let spendings = snapshot.spendings;
         let mut context_set = BTreeSet::new();
         let mut contexts = Vec::new();
         for spending in &spendings {
@@ -1315,25 +1330,59 @@ mod tests {
         }
     }
 
-    struct DebtGroups;
+    struct DebtSnapshot(Vec<Spending>);
     #[async_trait]
-    impl GroupReader for DebtGroups {
-        async fn list_groups(&self, _: bool) -> Result<Vec<Group>, ApplicationError> {
-            Ok(Vec::new())
-        }
-        async fn group(&self, id: EntityId) -> Result<Group, ApplicationError> {
-            Ok(group(id))
+    impl LedgerSnapshotReader for DebtSnapshot {
+        async fn ledger_snapshot(
+            &self,
+            group_id: EntityId,
+        ) -> Result<LedgerSnapshot, ApplicationError> {
+            Ok(LedgerSnapshot {
+                group: group(group_id),
+                spendings: self.0.clone(),
+            })
         }
     }
 
-    struct DebtSpendings(Vec<Spending>);
+    struct ObservedSnapshot {
+        snapshot: LedgerSnapshot,
+        completed: Arc<AtomicUsize>,
+    }
+
     #[async_trait]
-    impl SpendingReader for DebtSpendings {
-        async fn spendings(&self, _: EntityId) -> Result<Vec<Spending>, ApplicationError> {
-            Ok(self.0.clone())
+    impl LedgerSnapshotReader for ObservedSnapshot {
+        async fn ledger_snapshot(&self, _: EntityId) -> Result<LedgerSnapshot, ApplicationError> {
+            self.completed.store(1, Ordering::SeqCst);
+            Ok(self.snapshot.clone())
         }
-        async fn spending(&self, _: EntityId, _: EntityId) -> Result<Spending, ApplicationError> {
-            Err(ApplicationError::NotFound)
+    }
+
+    struct SnapshotAwareRate {
+        completed: Arc<AtomicUsize>,
+        called_before_snapshot: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl ExchangeRateProvider for SnapshotAwareRate {
+        async fn rate(
+            &self,
+            base: Currency,
+            quote: Currency,
+            requested_date: NaiveDate,
+            today: NaiveDate,
+        ) -> Result<RateQuote, ApplicationError> {
+            if self.completed.load(Ordering::SeqCst) == 0 {
+                self.called_before_snapshot.store(1, Ordering::SeqCst);
+            }
+            Ok(RateQuote {
+                base,
+                quote,
+                requested_date,
+                effective_date: requested_date,
+                rate: Decimal::ONE,
+                is_stale: false,
+                is_provisional: requested_date > today,
+            })
         }
     }
 
@@ -1433,8 +1482,7 @@ mod tests {
         let rates = Arc::new(RateFake(Mutex::new(Vec::new())));
         let clock_time = Utc.with_ymd_and_hms(2026, 7, 8, 12, 30, 0).unwrap();
         let service = DebtService::new(
-            Arc::new(DebtGroups),
-            Arc::new(DebtSpendings(vec![spending])),
+            Arc::new(DebtSnapshot(vec![spending])),
             rates.clone(),
             Arc::new(FixedClock(clock_time)),
         );
@@ -1473,8 +1521,7 @@ mod tests {
             shares: vec![allocation(PARTICIPANT_TWO, 100)],
         };
         let service = DebtService::new(
-            Arc::new(DebtGroups),
-            Arc::new(DebtSpendings(vec![spending])),
+            Arc::new(DebtSnapshot(vec![spending])),
             Arc::new(FailingRates),
             Arc::new(FixedClock(
                 Utc.with_ymd_and_hms(2026, 7, 8, 12, 30, 0).unwrap(),
@@ -1518,8 +1565,7 @@ mod tests {
             }],
         };
         let service = DebtService::new(
-            Arc::new(DebtGroups),
-            Arc::new(DebtSpendings(vec![spending])),
+            Arc::new(DebtSnapshot(vec![spending])),
             Arc::new(RateFake(Mutex::new(Vec::new()))),
             Arc::new(FixedClock(
                 Utc.with_ymd_and_hms(2026, 7, 8, 12, 30, 0).unwrap(),
@@ -1566,8 +1612,7 @@ mod tests {
             reverse: false,
         });
         let first_service = DebtService::new(
-            Arc::new(DebtGroups),
-            Arc::new(DebtSpendings(spendings.clone())),
+            Arc::new(DebtSnapshot(spendings.clone())),
             first_rates.clone(),
             Arc::new(FixedClock(clock_time)),
         );
@@ -1583,8 +1628,7 @@ mod tests {
             reverse: true,
         });
         let second_service = DebtService::new(
-            Arc::new(DebtGroups),
-            Arc::new(DebtSpendings(spendings)),
+            Arc::new(DebtSnapshot(spendings)),
             second_rates.clone(),
             Arc::new(FixedClock(clock_time)),
         );
@@ -1610,5 +1654,46 @@ mod tests {
         assert_eq!(first.transfers, second.transfers);
         assert_eq!(first.rates, second.rates);
         assert!(second_rates.maximum.load(Ordering::SeqCst) <= 4);
+    }
+
+    #[tokio::test]
+    async fn debt_service_fetches_rates_only_after_snapshot_completion() {
+        let spending = Spending {
+            id: 1,
+            group_id: GROUP_ID,
+            description: Description::new("Lunch").unwrap(),
+            total: Decimal::ONE,
+            currency: Currency::Eur,
+            spending_type: SpendingType::Food,
+            spent_date: date(4),
+            payers: vec![allocation(PARTICIPANT_ONE, 1)],
+            shares: vec![allocation(PARTICIPANT_TWO, 1)],
+        };
+        let completed = Arc::new(AtomicUsize::new(0));
+        let called_before_snapshot = Arc::new(AtomicUsize::new(0));
+        let service = DebtService::new(
+            Arc::new(ObservedSnapshot {
+                snapshot: LedgerSnapshot {
+                    group: group(GROUP_ID),
+                    spendings: vec![spending],
+                },
+                completed: completed.clone(),
+            }),
+            Arc::new(SnapshotAwareRate {
+                completed: completed.clone(),
+                called_before_snapshot: called_before_snapshot.clone(),
+            }),
+            Arc::new(FixedClock(
+                Utc.with_ymd_and_hms(2026, 7, 8, 12, 30, 0).unwrap(),
+            )),
+        );
+
+        service
+            .calculate(GROUP_ID, RateMode::Historical)
+            .await
+            .unwrap();
+
+        assert_eq!(completed.load(Ordering::SeqCst), 1);
+        assert_eq!(called_before_snapshot.load(Ordering::SeqCst), 0);
     }
 }

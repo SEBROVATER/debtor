@@ -1,0 +1,32 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT sp.id AS \"spending_id!: i64\", p.participant_id, p.paid_amount AS amount FROM spending_payers p JOIN spendings sp ON sp.id = p.spending_id WHERE sp.group_id = ? ORDER BY sp.id, p.participant_id",
+  "describe": {
+    "columns": [
+      {
+        "name": "spending_id!: i64",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "participant_id",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "amount",
+        "ordinal": 2,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "5e67a1a4397e2023ea92a9777c47f4c252b3f382bac358576ae62f6f4a4feba1"
+}
