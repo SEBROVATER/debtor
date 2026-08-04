@@ -18,6 +18,7 @@ use tower_sessions::Session;
 use super::{
     ExpenseForm,
     auth::{csrf, require_auth, require_csrf},
+    groups::require_writable_group,
     response::{error_response, map_error, render},
 };
 use crate::{
@@ -55,11 +56,24 @@ pub(crate) async fn edit_spending_form(
     if let Err(response) = require_auth(&session).await {
         return response;
     }
+    if let Err(response) = require_writable_group(&state, group_id).await {
+        return response;
+    }
     let spending = match state.spendings.spending(group_id, spending_id).await {
         Ok(value) => value,
         Err(error) => return map_error(error),
     };
-    match build_group_template(&state, &session, group_id, Some(&spending), None, None).await {
+    match build_group_template(
+        &state,
+        &session,
+        group_id,
+        Some(&spending),
+        None,
+        None,
+        None,
+    )
+    .await
+    {
         Ok(template) => render(&template),
         Err(error) => map_group_template_error(error),
     }
@@ -115,6 +129,9 @@ pub(crate) async fn delete_spending_form(
     if let Err(response) = require_auth(&session).await {
         return response;
     }
+    if let Err(response) = require_writable_group(&state, group_id).await {
+        return response;
+    }
     let spending = match state.spendings.spending(group_id, spending_id).await {
         Ok(value) => value,
         Err(error) => return map_error(error),
@@ -148,6 +165,9 @@ pub(crate) async fn delete_spending(
     if let Err(response) = require_csrf(&session, &form.csrf).await {
         return response;
     }
+    if let Err(response) = require_writable_group(&state, group_id).await {
+        return response;
+    }
     match state.spendings.delete(group_id, spending_id).await {
         Ok(()) => Redirect::to(&format!("/groups/{group_id}")).into_response(),
         Err(error) => map_error(error),
@@ -169,6 +189,9 @@ async fn save_spending(
         Err(error) => return error_response(error.status, error.message),
     };
     if let Err(response) = require_csrf(&session, &csrf_token).await {
+        return response;
+    }
+    if let Err(response) = require_writable_group(&state, group_id).await {
         return response;
     }
     let mut member_ids = match state.participants.members(group_id).await {
@@ -250,7 +273,17 @@ async fn form_error(
     message: String,
     form: &ExpenseForm,
 ) -> Response {
-    match build_group_template(state, session, group_id, editing, Some(message), Some(form)).await {
+    match build_group_template(
+        state,
+        session,
+        group_id,
+        editing,
+        Some(message),
+        Some(form),
+        None,
+    )
+    .await
+    {
         Ok(template) => (StatusCode::UNPROCESSABLE_ENTITY, render(&template)).into_response(),
         Err(error) => map_group_template_error(error),
     }
@@ -359,6 +392,7 @@ pub(super) async fn build_group_template(
     editing: Option<&Spending>,
     error: Option<String>,
     submitted: Option<&ExpenseForm>,
+    participant_draft: Option<ParticipantDraft>,
 ) -> Result<GroupTemplate, GroupTemplateError> {
     let group = state.groups.group(id).await?;
     let members = state.participants.members(id).await?;
@@ -411,6 +445,10 @@ pub(super) async fn build_group_template(
     if editing.is_none() {
         expense.action = format!("/groups/{id}/spendings");
     }
+    let (create_name, create_color) = participant_draft.map_or_else(
+        || (String::new(), suggested_participant_color().to_owned()),
+        |draft| (draft.name, draft.color),
+    );
     Ok(GroupTemplate {
         name: group.name.to_string(),
         group_id: id,
@@ -433,10 +471,15 @@ pub(super) async fn build_group_template(
             .collect(),
         archived: group.is_archived,
         error,
-        create_name: String::new(),
-        create_color: suggested_participant_color().to_owned(),
+        create_name,
+        create_color,
         expense,
     })
+}
+
+pub(super) struct ParticipantDraft {
+    pub(super) name: String,
+    pub(super) color: String,
 }
 
 pub(super) enum GroupTemplateError {

@@ -9,6 +9,9 @@ mod participants;
 mod response;
 mod spendings;
 
+#[cfg(test)]
+pub(crate) mod test_support;
+
 use serde::Deserialize;
 
 pub(crate) use crate::forms::{CsrfForm, ExpenseForm};

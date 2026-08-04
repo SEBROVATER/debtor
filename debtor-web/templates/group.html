@@ -10,8 +10,8 @@
     <header>
       <a href="/groups">debtor</a>
       <nav>
-        <a href="/groups/{{ group_id }}/debts">Debts</a
-        ><a href="/groups/{{ group_id }}/edit">Settings</a>
+        <a href="/groups/{{ group_id }}/debts">Debts</a>{% if !archived %}
+        <a href="/groups/{{ group_id }}/edit">Settings</a>{% endif %}
       </nav>
     </header>
     <main>

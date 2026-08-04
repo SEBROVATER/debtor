@@ -517,6 +517,7 @@ name = "debtor-web"
 version = "0.1.0"
 dependencies = [
  "askama",
+ "async-trait",
  "axum",
  "axum-htmx",
  "chrono",
@@ -528,6 +529,7 @@ dependencies = [
  "serde",
  "thiserror",
  "tokio",
+ "tower",
  "tower-http",
  "tower-sessions",
  "tracing",

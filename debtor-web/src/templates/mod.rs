@@ -30,6 +30,14 @@ pub struct GroupsTemplate {
     pub csrf: String,
     /// Archive state.
     pub archived: bool,
+    /// Group name draft for the create form.
+    pub create_name: String,
+    /// Group currency draft for the create form.
+    pub create_currency: String,
+    /// Currency options for the create form.
+    pub currencies: Vec<SelectOption>,
+    /// Inline validation error.
+    pub error: Option<String>,
 }
 
 /// Group settings page.
@@ -116,8 +124,12 @@ pub struct ParticipantsTemplate {
     pub csrf: String,
     /// Whether this is the archive view.
     pub archived: bool,
+    /// Participant name draft for the create form.
+    pub create_name: String,
     /// Suggested color for a fresh participant form.
     pub create_color: String,
+    /// Inline validation error.
+    pub error: Option<String>,
 }
 
 /// Participant edit page.

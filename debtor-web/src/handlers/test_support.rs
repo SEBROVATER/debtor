@@ -1,0 +1,309 @@
+#![allow(clippy::expect_used, clippy::fn_params_excessive_bools)]
+
+use std::sync::{Arc, Mutex};
+
+use async_trait::async_trait;
+use debtor_application::{
+    ApplicationError, Clock, DebtResult, DebtUseCases, EqualSpendingCommand, ExactSpendingCommand,
+    GroupUseCases, LoginAdmission, LoginAttemptLimiter, ParticipantUseCases, PasswordVerifier,
+    RateMode, SpendingUseCases, UtcClock,
+};
+use debtor_domain::{
+    currency::Currency,
+    model::{Color, Group, GroupMember, Name, Participant, Spending, ValidationError},
+};
+
+use crate::state::{AppState, TrustedProxyConfig};
+
+pub(crate) struct TestState {
+    pub(crate) app: AppState,
+    pub(crate) groups: Arc<FakeGroups>,
+}
+
+pub(crate) struct FakeGroups {
+    pub(crate) group: Group,
+    pub(crate) create_validation_error: bool,
+    pub(crate) update_validation_error: bool,
+    pub(crate) created: Mutex<Vec<(String, Currency)>>,
+    pub(crate) updated: Mutex<Vec<(i64, String, Currency)>>,
+}
+
+pub(crate) struct FakeParticipants {
+    pub(crate) participant: Participant,
+    pub(crate) create_validation_error: bool,
+    pub(crate) update_validation_error: bool,
+    pub(crate) group_create_validation_error: bool,
+    pub(crate) created: Mutex<Vec<(String, String)>>,
+    pub(crate) updated: Mutex<Vec<(i64, String, String)>>,
+    pub(crate) group_created: Mutex<Vec<(i64, String, String)>>,
+}
+
+pub(crate) fn state(archived: bool) -> TestState {
+    state_with_errors(archived, false, false, false, false, false)
+}
+
+pub(crate) fn state_with_errors(
+    archived: bool,
+    group_create_validation_error: bool,
+    group_update_validation_error: bool,
+    participant_create_validation_error: bool,
+    participant_update_validation_error: bool,
+    group_create_participant_validation_error: bool,
+) -> TestState {
+    let groups = Arc::new(FakeGroups {
+        group: Group {
+            id: 1,
+            name: Name::new("Trip").expect("valid test group"),
+            currency: Currency::Usd,
+            is_archived: archived,
+        },
+        create_validation_error: group_create_validation_error,
+        update_validation_error: group_update_validation_error,
+        created: Mutex::new(Vec::new()),
+        updated: Mutex::new(Vec::new()),
+    });
+    let participants = Arc::new(FakeParticipants {
+        participant: Participant {
+            id: 1,
+            name: Name::new("Ada").expect("valid test participant"),
+            color: Color::new("#123456").expect("valid test color"),
+            is_archived: false,
+        },
+        create_validation_error: participant_create_validation_error,
+        update_validation_error: participant_update_validation_error,
+        group_create_validation_error: group_create_participant_validation_error,
+        created: Mutex::new(Vec::new()),
+        updated: Mutex::new(Vec::new()),
+        group_created: Mutex::new(Vec::new()),
+    });
+    let spendings: Arc<dyn SpendingUseCases> = Arc::new(FakeSpendings);
+    let debts: Arc<dyn DebtUseCases> = Arc::new(FakeDebts);
+    let password: Arc<dyn PasswordVerifier> = Arc::new(FakePassword { valid: true });
+    let limiter: Arc<dyn LoginAttemptLimiter> = Arc::new(FakeLimiter);
+    let clock: Arc<dyn Clock> = Arc::new(UtcClock);
+    let groups_use_cases: Arc<dyn GroupUseCases> = groups.clone();
+    let participants_use_cases: Arc<dyn ParticipantUseCases> = participants.clone();
+    TestState {
+        app: AppState {
+            groups: groups_use_cases,
+            participants: participants_use_cases,
+            spendings,
+            debts,
+            password,
+            clock,
+            limiter,
+            proxy: TrustedProxyConfig::default(),
+        },
+        groups,
+    }
+}
+
+fn validation_error() -> ApplicationError {
+    ApplicationError::Validation(ValidationError::Empty { field: "name" })
+}
+
+#[async_trait]
+impl GroupUseCases for FakeGroups {
+    async fn list_groups(&self, _: bool) -> Result<Vec<Group>, ApplicationError> {
+        Ok(vec![self.group.clone()])
+    }
+
+    async fn group(&self, _: i64) -> Result<Group, ApplicationError> {
+        Ok(self.group.clone())
+    }
+
+    async fn create_group(
+        &self,
+        name: String,
+        currency: Currency,
+    ) -> Result<Group, ApplicationError> {
+        if self.create_validation_error {
+            return Err(validation_error());
+        }
+        self.created
+            .lock()
+            .expect("group calls lock")
+            .push((name, currency));
+        Ok(self.group.clone())
+    }
+
+    async fn update_group(
+        &self,
+        id: i64,
+        name: String,
+        currency: Currency,
+    ) -> Result<Group, ApplicationError> {
+        if self.update_validation_error {
+            return Err(validation_error());
+        }
+        self.updated
+            .lock()
+            .expect("group calls lock")
+            .push((id, name, currency));
+        Ok(self.group.clone())
+    }
+
+    async fn set_archived(&self, _: i64, _: bool) -> Result<(), ApplicationError> {
+        Ok(())
+    }
+
+    async fn delete_empty(&self, _: i64) -> Result<(), ApplicationError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl ParticipantUseCases for FakeParticipants {
+    async fn list_participants(&self, _: bool) -> Result<Vec<Participant>, ApplicationError> {
+        Ok(vec![self.participant.clone()])
+    }
+
+    async fn create_participant(
+        &self,
+        name: String,
+        color: String,
+    ) -> Result<Participant, ApplicationError> {
+        if self.create_validation_error {
+            return Err(validation_error());
+        }
+        self.created
+            .lock()
+            .expect("participant calls lock")
+            .push((name, color));
+        Ok(self.participant.clone())
+    }
+
+    async fn participant(&self, _: i64) -> Result<Participant, ApplicationError> {
+        Ok(self.participant.clone())
+    }
+
+    async fn update_participant(
+        &self,
+        id: i64,
+        name: String,
+        color: String,
+    ) -> Result<Participant, ApplicationError> {
+        if self.update_validation_error {
+            return Err(validation_error());
+        }
+        self.updated
+            .lock()
+            .expect("participant calls lock")
+            .push((id, name, color));
+        Ok(self.participant.clone())
+    }
+
+    async fn create_group_participant(
+        &self,
+        group_id: i64,
+        name: String,
+        color: String,
+    ) -> Result<Participant, ApplicationError> {
+        if self.group_create_validation_error {
+            return Err(validation_error());
+        }
+        self.group_created
+            .lock()
+            .expect("participant calls lock")
+            .push((group_id, name, color));
+        Ok(self.participant.clone())
+    }
+
+    async fn set_archived(&self, _: i64, _: bool) -> Result<(), ApplicationError> {
+        Ok(())
+    }
+
+    async fn members(
+        &self,
+        group_id: i64,
+    ) -> Result<Vec<(Participant, GroupMember)>, ApplicationError> {
+        Ok(vec![(
+            self.participant.clone(),
+            GroupMember {
+                group_id,
+                participant_id: self.participant.id,
+                is_active: true,
+            },
+        )])
+    }
+
+    async fn add_member(&self, _: i64, _: i64) -> Result<(), ApplicationError> {
+        Ok(())
+    }
+
+    async fn deactivate_member(&self, _: i64, _: i64) -> Result<(), ApplicationError> {
+        Ok(())
+    }
+}
+
+struct FakeSpendings;
+
+#[async_trait]
+impl SpendingUseCases for FakeSpendings {
+    async fn list_spendings(&self, _: i64) -> Result<Vec<Spending>, ApplicationError> {
+        Ok(Vec::new())
+    }
+
+    async fn spending(&self, _: i64, _: i64) -> Result<Spending, ApplicationError> {
+        Err(ApplicationError::NotFound)
+    }
+
+    async fn create_equal(&self, _: EqualSpendingCommand) -> Result<Spending, ApplicationError> {
+        Err(validation_error())
+    }
+
+    async fn create_exact(&self, _: ExactSpendingCommand) -> Result<Spending, ApplicationError> {
+        Err(validation_error())
+    }
+
+    async fn update_equal(
+        &self,
+        _: i64,
+        _: EqualSpendingCommand,
+    ) -> Result<Spending, ApplicationError> {
+        Err(validation_error())
+    }
+
+    async fn update_exact(
+        &self,
+        _: i64,
+        _: ExactSpendingCommand,
+    ) -> Result<Spending, ApplicationError> {
+        Err(validation_error())
+    }
+
+    async fn delete(&self, _: i64, _: i64) -> Result<(), ApplicationError> {
+        Ok(())
+    }
+}
+
+struct FakeDebts;
+
+#[async_trait]
+impl DebtUseCases for FakeDebts {
+    async fn calculate(&self, _: i64, _: RateMode) -> Result<DebtResult, ApplicationError> {
+        Err(ApplicationError::NotFound)
+    }
+}
+
+struct FakePassword {
+    valid: bool,
+}
+
+#[async_trait]
+impl PasswordVerifier for FakePassword {
+    async fn verify(&self, _: &str) -> Result<bool, ApplicationError> {
+        Ok(self.valid)
+    }
+}
+
+struct FakeLimiter;
+
+#[async_trait]
+impl LoginAttemptLimiter for FakeLimiter {
+    async fn reserve(&self, _: std::net::IpAddr) -> LoginAdmission {
+        LoginAdmission::Allowed
+    }
+
+    async fn reset(&self, _: std::net::IpAddr) {}
+}

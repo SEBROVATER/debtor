@@ -24,5 +24,9 @@ rust_decimal = { workspace = true }
 ipnet = { workspace = true }
 form_urlencoded = { workspace = true }
 
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+async-trait = { workspace = true }
+
 [lints]
 workspace = true

@@ -6,10 +6,14 @@ use tower_sessions::Session;
 
 use super::{
     auth::{require_auth, require_csrf},
+    groups::require_writable_group,
     response::{error_response, map_error},
+    spendings::{ParticipantDraft, build_group_template, map_group_template_error},
 };
 use crate::{
-    forms::{OrderedForm, parse_csrf_form, parse_member_form, parse_participant_form},
+    forms::{
+        OrderedForm, ParticipantForm, parse_csrf_form, parse_member_form, parse_participant_form,
+    },
     state::AppState,
 };
 
@@ -27,6 +31,9 @@ pub(crate) async fn add_member(
         Err(error) => return error_response(error.status, error.message),
     };
     if let Err(response) = require_csrf(&session, &form.csrf).await {
+        return response;
+    }
+    if let Err(response) = require_writable_group(&state, id).await {
         return response;
     }
     match state.participants.add_member(id, form.participant_id).await {
@@ -51,12 +58,34 @@ pub(crate) async fn create_group_participant(
     if let Err(response) = require_csrf(&session, &form.csrf).await {
         return response;
     }
+    if let Err(response) = require_writable_group(&state, id).await {
+        return response;
+    }
+    let ParticipantForm { name, color, .. } = form;
     match state
         .participants
-        .create_group_participant(id, form.name, form.color)
+        .create_group_participant(id, name.clone(), color.clone())
         .await
     {
         Ok(_) => Redirect::to(&format!("/groups/{id}")).into_response(),
+        Err(debtor_application::ApplicationError::Validation(error)) => match build_group_template(
+            &state,
+            &session,
+            id,
+            None,
+            Some(error.to_string()),
+            None,
+            Some(ParticipantDraft { name, color }),
+        )
+        .await
+        {
+            Ok(template) => (
+                axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+                super::response::render(&template),
+            )
+                .into_response(),
+            Err(error) => map_group_template_error(error),
+        },
         Err(error) => map_error(error),
     }
 }
@@ -75,6 +104,9 @@ pub(crate) async fn deactivate_member(
         Err(error) => return error_response(error.status, error.message),
     };
     if let Err(response) = require_csrf(&session, &form.csrf).await {
+        return response;
+    }
+    if let Err(response) = require_writable_group(&state, group_id).await {
         return response;
     }
     match state

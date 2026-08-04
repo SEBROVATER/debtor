@@ -54,6 +54,7 @@ External effects MUST be constructor-injected through application-owned ports. U
 - The group page MUST offer atomic create-and-join for new participants and one expense form with independent single/multiple-payer and equal/exact-share choices. These input modes are not persisted; edit screens infer the closest mode from stored allocations.
 - New participant forms MUST suggest a varied valid color from the server while allowing the administrator to select a different color before submission. Validation re-renders retain the submitted color.
 - Historical spending detail MUST remain readable for archived groups and resolve current participant names for inactive identities. Spending CRUD, group settings, empty-group deletion, participant editing, and reversible membership deactivation are server-rendered and CSRF protected.
+- Validation failures on group, participant, create-and-join, and spending forms MUST return `422` with an inline error and all submitted values retained. Archived group pages MUST hide mutation/settings controls, and direct archived mutation or form routes MUST return `409` without invoking a use case.
 - Domain and repository Rust code owns exact `Decimal` parsing, canonical formatting, precision, positivity, allocation equality, and monetary aggregation. SQLite stores monetary values as `TEXT` and MUST NOT parse, convert with floating point, or aggregate monetary values.
 
 ## Rates And Settlements

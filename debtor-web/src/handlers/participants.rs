@@ -11,7 +11,7 @@ use super::{
     response::{error_response, map_error, render},
 };
 use crate::{
-    forms::{OrderedForm, parse_csrf_form, parse_participant_form},
+    forms::{OrderedForm, ParticipantForm, parse_csrf_form, parse_participant_form},
     participant_color::suggested_participant_color,
     state::AppState,
     templates::{ParticipantEditTemplate, ParticipantRow, ParticipantsTemplate},
@@ -26,27 +26,18 @@ pub(crate) async fn participants(
         return response;
     }
     let archived = query.archived.unwrap_or(false);
-    match state.participants.list_participants(archived).await {
-        Ok(items) => render(&ParticipantsTemplate {
-            participants: items
-                .into_iter()
-                .map(|p| ParticipantRow {
-                    id: p.id,
-                    name: p.name.to_string(),
-                    color: p.color.as_str().to_owned(),
-                })
-                .collect(),
-            csrf: match csrf(&session).await {
-                Ok(token) => token,
-                Err(response) => return response,
-            },
-            archived,
-            create_color: suggested_participant_color().to_owned(),
-        }),
-        Err(_) => error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Unable to load participants.",
-        ),
+    match participants_template(
+        &state,
+        &session,
+        archived,
+        "",
+        suggested_participant_color(),
+        None,
+    )
+    .await
+    {
+        Ok(template) => render(&template),
+        Err(response) => response,
     }
 }
 
@@ -65,12 +56,16 @@ pub(crate) async fn create_participant(
     if let Err(response) = require_csrf(&session, &form.csrf).await {
         return response;
     }
+    let ParticipantForm { name, color, .. } = form;
     match state
         .participants
-        .create_participant(form.name, form.color)
+        .create_participant(name.clone(), color.clone())
         .await
     {
         Ok(_) => Redirect::to("/participants").into_response(),
+        Err(debtor_application::ApplicationError::Validation(error)) => {
+            render_participant_create_error(&state, &session, name, color, error.to_string()).await
+        }
         Err(error) => map_error(error),
     }
 }
@@ -83,22 +78,9 @@ pub(crate) async fn participant_edit_form(
     if let Err(response) = require_auth(&session).await {
         return response;
     }
-    match state.participants.participant(id).await {
-        Ok(p) if !p.is_archived => render(&ParticipantEditTemplate {
-            id,
-            name: p.name.to_string(),
-            color: p.color.as_str().to_owned(),
-            csrf: match csrf(&session).await {
-                Ok(token) => token,
-                Err(response) => return response,
-            },
-            error: None,
-        }),
-        Ok(_) => error_response(
-            StatusCode::CONFLICT,
-            "Archived participants must be restored before editing.",
-        ),
-        Err(error) => map_error(error),
+    match participant_edit_template(&state, &session, id, None, None).await {
+        Ok(template) => render(&template),
+        Err(response) => response,
     }
 }
 
@@ -118,12 +100,17 @@ pub(crate) async fn update_participant(
     if let Err(response) = require_csrf(&session, &form.csrf).await {
         return response;
     }
+    let ParticipantForm { name, color, .. } = form;
     match state
         .participants
-        .update_participant(id, form.name, form.color)
+        .update_participant(id, name.clone(), color.clone())
         .await
     {
         Ok(_) => Redirect::to("/participants").into_response(),
+        Err(debtor_application::ApplicationError::Validation(error)) => {
+            render_participant_edit_error(&state, &session, id, name, color, error.to_string())
+                .await
+        }
         Err(error) => map_error(error),
     }
 }
@@ -166,5 +153,95 @@ async fn set_participant_archive(
     match state.participants.set_archived(id, archived).await {
         Ok(()) => Redirect::to("/participants").into_response(),
         Err(error) => map_error(error),
+    }
+}
+
+async fn participants_template(
+    state: &AppState,
+    session: &Session,
+    archived: bool,
+    create_name: &str,
+    create_color: &str,
+    error: Option<String>,
+) -> Result<ParticipantsTemplate, Response> {
+    let items = state
+        .participants
+        .list_participants(archived)
+        .await
+        .map_err(map_error)?;
+    Ok(ParticipantsTemplate {
+        participants: items
+            .into_iter()
+            .map(|p| ParticipantRow {
+                id: p.id,
+                name: p.name.to_string(),
+                color: p.color.as_str().to_owned(),
+            })
+            .collect(),
+        csrf: csrf(session).await?,
+        archived,
+        create_name: create_name.to_owned(),
+        create_color: create_color.to_owned(),
+        error,
+    })
+}
+
+async fn render_participant_create_error(
+    state: &AppState,
+    session: &Session,
+    name: String,
+    color: String,
+    error: String,
+) -> Response {
+    match participants_template(state, session, false, &name, &color, Some(error)).await {
+        Ok(template) => (StatusCode::UNPROCESSABLE_ENTITY, render(&template)).into_response(),
+        Err(response) => response,
+    }
+}
+
+async fn participant_edit_template(
+    state: &AppState,
+    session: &Session,
+    id: i64,
+    draft: Option<(String, String)>,
+    error: Option<String>,
+) -> Result<ParticipantEditTemplate, Response> {
+    let participant = state
+        .participants
+        .participant(id)
+        .await
+        .map_err(map_error)?;
+    if participant.is_archived {
+        return Err(error_response(
+            StatusCode::CONFLICT,
+            "Archived participants must be restored before editing.",
+        ));
+    }
+    let (name, color) = draft.unwrap_or_else(|| {
+        (
+            participant.name.to_string(),
+            participant.color.as_str().to_owned(),
+        )
+    });
+    Ok(ParticipantEditTemplate {
+        id,
+        name,
+        color,
+        csrf: csrf(session).await?,
+        error,
+    })
+}
+
+async fn render_participant_edit_error(
+    state: &AppState,
+    session: &Session,
+    id: i64,
+    name: String,
+    color: String,
+    error: String,
+) -> Response {
+    match participant_edit_template(state, session, id, Some((name, color)), Some(error)).await {
+        Ok(template) => (StatusCode::UNPROCESSABLE_ENTITY, render(&template)).into_response(),
+        Err(response) => response,
     }
 }

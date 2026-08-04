@@ -13,7 +13,7 @@ use super::{
     spendings::{build_group_template, map_group_template_error},
 };
 use crate::{
-    forms::{OrderedForm, parse_csrf_form, parse_group_form},
+    forms::{GroupForm, OrderedForm, parse_csrf_form, parse_group_form},
     state::AppState,
     templates::{ConfirmTemplate, GroupEditTemplate, GroupRow, GroupsTemplate, SelectOption},
 };
@@ -27,23 +27,9 @@ pub(crate) async fn groups(
         return response;
     }
     let archived = query.archived.unwrap_or(false);
-    match state.groups.list_groups(archived).await {
-        Ok(items) => render(&GroupsTemplate {
-            groups: items
-                .into_iter()
-                .map(|g| GroupRow {
-                    id: g.id,
-                    name: g.name.to_string(),
-                    currency: g.currency.to_string(),
-                })
-                .collect(),
-            csrf: match csrf(&session).await {
-                Ok(token) => token,
-                Err(response) => return response,
-            },
-            archived,
-        }),
-        Err(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "Unable to load groups."),
+    match groups_template(&state, &session, archived, "", "USD", None).await {
+        Ok(template) => render(&template),
+        Err(response) => response,
     }
 }
 
@@ -62,11 +48,27 @@ pub(crate) async fn create_group(
     if let Err(response) = require_csrf(&session, &form.csrf).await {
         return response;
     }
-    let Ok(currency) = form.currency.parse::<Currency>() else {
-        return error_response(StatusCode::UNPROCESSABLE_ENTITY, "Invalid currency.");
+    let GroupForm {
+        name,
+        currency: currency_value,
+        ..
+    } = form;
+    let Ok(currency) = currency_value.parse::<Currency>() else {
+        return render_group_create_error(
+            &state,
+            &session,
+            name,
+            currency_value,
+            "Invalid currency.".into(),
+        )
+        .await;
     };
-    match state.groups.create_group(form.name, currency).await {
+    match state.groups.create_group(name.clone(), currency).await {
         Ok(_) => Redirect::to("/groups").into_response(),
+        Err(debtor_application::ApplicationError::Validation(error)) => {
+            render_group_create_error(&state, &session, name, currency_value, error.to_string())
+                .await
+        }
         Err(error) => map_error(error),
     }
 }
@@ -79,7 +81,7 @@ pub(crate) async fn group_detail(
     if let Err(response) = require_auth(&session).await {
         return response;
     }
-    match build_group_template(&state, &session, id, None, None, None).await {
+    match build_group_template(&state, &session, id, None, None, None, None).await {
         Ok(template) => render(&template),
         Err(error) => map_group_template_error(error),
     }
@@ -111,27 +113,9 @@ pub(crate) async fn group_edit_form(
     if let Err(response) = require_auth(&session).await {
         return response;
     }
-    match state.groups.group(id).await {
-        Ok(group) if !group.is_archived => render(&GroupEditTemplate {
-            id,
-            name: group.name.to_string(),
-            currency: group.currency.to_string(),
-            currencies: Currency::ALL
-                .iter()
-                .map(|c| SelectOption {
-                    value: c.to_string(),
-                    label: c.to_string(),
-                    selected: *c == group.currency,
-                })
-                .collect(),
-            csrf: match csrf(&session).await {
-                Ok(token) => token,
-                Err(response) => return response,
-            },
-            error: None,
-        }),
-        Ok(_) => error_response(StatusCode::CONFLICT, "Archived groups are read-only."),
-        Err(error) => map_error(error),
+    match group_edit_template(&state, &session, id, None, None).await {
+        Ok(template) => render(&template),
+        Err(response) => response,
     }
 }
 
@@ -151,11 +135,38 @@ pub(crate) async fn update_group(
     if let Err(response) = require_csrf(&session, &form.csrf).await {
         return response;
     }
-    let Ok(currency) = form.currency.parse::<Currency>() else {
-        return error_response(StatusCode::UNPROCESSABLE_ENTITY, "Invalid currency.");
+    if let Err(response) = require_writable_group(&state, id).await {
+        return response;
+    }
+    let GroupForm {
+        name,
+        currency: currency_value,
+        ..
+    } = form;
+    let Ok(currency) = currency_value.parse::<Currency>() else {
+        return render_group_edit_error(
+            &state,
+            &session,
+            id,
+            name,
+            currency_value,
+            "Invalid currency.".into(),
+        )
+        .await;
     };
-    match state.groups.update_group(id, form.name, currency).await {
+    match state.groups.update_group(id, name.clone(), currency).await {
         Ok(_) => Redirect::to(&format!("/groups/{id}")).into_response(),
+        Err(debtor_application::ApplicationError::Validation(error)) => {
+            render_group_edit_error(
+                &state,
+                &session,
+                id,
+                name,
+                currency_value,
+                error.to_string(),
+            )
+            .await
+        }
         Err(error) => map_error(error),
     }
 }
@@ -200,10 +211,131 @@ pub(crate) async fn delete_group(
     if let Err(response) = require_csrf(&session, &form.csrf).await {
         return response;
     }
+    if let Err(response) = require_writable_group(&state, id).await {
+        return response;
+    }
     match state.groups.delete_empty(id).await {
         Ok(()) => Redirect::to("/groups").into_response(),
         Err(error) => map_error(error),
     }
+}
+
+pub(super) async fn require_writable_group(state: &AppState, id: i64) -> Result<(), Response> {
+    match state.groups.group(id).await {
+        Ok(group) if group.is_archived => Err(error_response(
+            StatusCode::CONFLICT,
+            "Archived groups are read-only.",
+        )),
+        Ok(_) => Ok(()),
+        Err(error) => Err(map_error(error)),
+    }
+}
+
+async fn groups_template(
+    state: &AppState,
+    session: &Session,
+    archived: bool,
+    create_name: &str,
+    create_currency: &str,
+    error: Option<String>,
+) -> Result<GroupsTemplate, Response> {
+    let items = state
+        .groups
+        .list_groups(archived)
+        .await
+        .map_err(map_error)?;
+    let csrf = csrf(session).await?;
+    Ok(GroupsTemplate {
+        groups: items
+            .into_iter()
+            .map(|g| GroupRow {
+                id: g.id,
+                name: g.name.to_string(),
+                currency: g.currency.to_string(),
+            })
+            .collect(),
+        csrf,
+        archived,
+        create_name: create_name.to_owned(),
+        create_currency: create_currency.to_owned(),
+        currencies: currency_options(create_currency),
+        error,
+    })
+}
+
+async fn render_group_create_error(
+    state: &AppState,
+    session: &Session,
+    name: String,
+    currency: String,
+    error: String,
+) -> Response {
+    match groups_template(state, session, false, &name, &currency, Some(error)).await {
+        Ok(template) => (StatusCode::UNPROCESSABLE_ENTITY, render(&template)).into_response(),
+        Err(response) => response,
+    }
+}
+
+async fn group_edit_template(
+    state: &AppState,
+    session: &Session,
+    id: i64,
+    draft: Option<(String, String)>,
+    error: Option<String>,
+) -> Result<GroupEditTemplate, Response> {
+    let group = state.groups.group(id).await.map_err(map_error)?;
+    if group.is_archived {
+        return Err(error_response(
+            StatusCode::CONFLICT,
+            "Archived groups are read-only.",
+        ));
+    }
+    let (name, currency) =
+        draft.unwrap_or_else(|| (group.name.to_string(), group.currency.to_string()));
+    Ok(GroupEditTemplate {
+        id,
+        name,
+        currency: currency.clone(),
+        currencies: currency_options(&currency),
+        csrf: csrf(session).await?,
+        error,
+    })
+}
+
+async fn render_group_edit_error(
+    state: &AppState,
+    session: &Session,
+    id: i64,
+    name: String,
+    currency: String,
+    error: String,
+) -> Response {
+    match group_edit_template(state, session, id, Some((name, currency)), Some(error)).await {
+        Ok(template) => (StatusCode::UNPROCESSABLE_ENTITY, render(&template)).into_response(),
+        Err(response) => response,
+    }
+}
+
+fn currency_options(selected: &str) -> Vec<SelectOption> {
+    let mut options = Currency::ALL
+        .iter()
+        .map(|currency| SelectOption {
+            value: currency.to_string(),
+            label: currency.to_string(),
+            selected: currency.to_string() == selected,
+        })
+        .collect::<Vec<_>>();
+    if !selected.is_empty() && !options.iter().any(|option| option.value == selected) {
+        options.insert(
+            0,
+            SelectOption {
+                value: selected.to_owned(),
+                label: selected.to_owned(),
+                selected: true,
+            },
+        );
+    }
+    options
 }
 
 async fn archive(
