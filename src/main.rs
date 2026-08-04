@@ -8,8 +8,8 @@ use axum::error_handling::HandleErrorLayer;
 use debtor_application::{
     AuthenticationService, AuthenticationUseCases, Clock, DebtService, DebtUseCases, GroupReader,
     GroupRepository, GroupService, GroupUseCases, LedgerSnapshotReader, ParticipantRepository,
-    ParticipantService, ParticipantUseCases, SpendingReader, SpendingRepository, SpendingService,
-    SpendingUseCases, UtcClock,
+    ParticipantService, ParticipantUseCases, ReadinessService, ReadinessUseCases, SpendingReader,
+    SpendingRepository, SpendingService, SpendingUseCases, UtcClock,
 };
 use debtor_infra::auth::{ArgonPasswordGate, MemoryLoginAttemptLimiter};
 use debtor_infra::db::repos::SqliteLedgerStore;
@@ -69,6 +69,7 @@ async fn build_app(config: Config) -> Result<axum::Router> {
         .context("unable to apply SQLite migrations")?;
 
     let store = Arc::new(SqliteLedgerStore::new(pool));
+    let readiness: Arc<dyn ReadinessUseCases> = Arc::new(ReadinessService::new(store.clone()));
     let group_reader: Arc<dyn GroupReader> = store.clone();
     let group_repository: Arc<dyn GroupRepository> = store.clone();
     let participant_repository: Arc<dyn ParticipantRepository> = store.clone();
@@ -97,6 +98,7 @@ async fn build_app(config: Config) -> Result<axum::Router> {
         debts,
         authentication,
         clock,
+        readiness,
         proxy,
     };
     let sessions = SessionManagerLayer::new(MemoryStore::default())
@@ -218,6 +220,7 @@ mod composition_tests {
             .await
             .expect("build application");
         let response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .uri("/healthz")
@@ -227,6 +230,16 @@ mod composition_tests {
             .await
             .expect("health response");
         assert_eq!(response.status(), StatusCode::OK);
+        let readiness = app
+            .oneshot(
+                Request::builder()
+                    .uri("/readyz")
+                    .body(Body::empty())
+                    .expect("readiness request"),
+            )
+            .await
+            .expect("readiness response");
+        assert_eq!(readiness.status(), StatusCode::OK);
         assert!(path.exists());
         remove_database(&path);
     }

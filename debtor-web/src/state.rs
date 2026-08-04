@@ -10,7 +10,7 @@ use std::{
 
 use debtor_application::{
     AuthenticationUseCases, Clock, DebtUseCases, GroupUseCases, ParticipantUseCases,
-    SpendingUseCases,
+    ReadinessUseCases, SpendingUseCases,
 };
 
 /// Dependencies exposed to the HTTP layer as application interfaces.
@@ -28,6 +28,8 @@ pub struct AppState {
     pub authentication: Arc<dyn AuthenticationUseCases>,
     /// Shared UTC clock for deterministic form defaults.
     pub clock: Arc<dyn Clock>,
+    /// Local dependency readiness checks.
+    pub readiness: Arc<dyn ReadinessUseCases>,
     /// Trusted reverse-proxy client-IP policy.
     pub proxy: TrustedProxyConfig,
 }

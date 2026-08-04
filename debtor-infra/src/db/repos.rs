@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use debtor_application::{
-    ApplicationError, GroupReader, GroupRepository, LedgerSnapshot, LedgerSnapshotReader,
-    ParticipantRepository, SpendingReader, SpendingRepository, StorageReason,
+    ApplicationError, DatabaseReadiness, GroupReader, GroupRepository, LedgerSnapshot,
+    LedgerSnapshotReader, ParticipantRepository, SpendingReader, SpendingRepository, StorageReason,
 };
 use debtor_domain::currency::Currency;
 use debtor_domain::model::{
@@ -22,6 +22,7 @@ use sqlx::SqlitePool;
 use tokio::sync::Mutex;
 
 const WRITE_GATE_TIMEOUT: Duration = Duration::from_secs(5);
+const READINESS_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// SQLite-backed ledger persistence adapter.
 pub struct SqliteLedgerStore {
@@ -207,6 +208,25 @@ impl SqliteLedgerStore {
         }
         tx.commit().await.map_err(storage)?;
         Ok(LedgerSnapshot { group, spendings })
+    }
+}
+
+#[async_trait]
+impl DatabaseReadiness for SqliteLedgerStore {
+    async fn check(&self) -> Result<(), ApplicationError> {
+        match tokio::time::timeout(READINESS_TIMEOUT, async {
+            let mut connection = self.pool.acquire().await.map_err(storage)?;
+            let _: i64 = sqlx::query_scalar!("SELECT 1 AS value")
+                .fetch_one(&mut *connection)
+                .await
+                .map_err(storage)?;
+            Ok(())
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(ApplicationError::Storage(StorageReason::Contention)),
+        }
     }
 }
 
@@ -832,6 +852,47 @@ mod tests {
             store
                 .write_guard_with_timeout(Duration::from_millis(10))
                 .await,
+            Err(ApplicationError::Storage(StorageReason::Contention))
+        ));
+    }
+
+    #[tokio::test]
+    async fn readiness_accepts_a_healthy_pool() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("test pool");
+        let store = SqliteLedgerStore::new(pool);
+
+        assert!(store.check().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn readiness_maps_a_closed_pool_to_storage_failure() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("test pool");
+        let store = SqliteLedgerStore::new(pool.clone());
+        pool.close().await;
+
+        assert!(matches!(
+            store.check().await,
+            Err(ApplicationError::Storage(StorageReason::Unexpected))
+        ));
+    }
+
+    #[tokio::test]
+    async fn readiness_times_out_when_the_pool_cannot_acquire() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(Duration::from_secs(30))
+            .connect("sqlite::memory:")
+            .await
+            .expect("test pool");
+        let _held = pool.acquire().await.expect("held connection");
+        let store = SqliteLedgerStore::new(pool);
+
+        assert!(matches!(
+            store.check().await,
             Err(ApplicationError::Storage(StorageReason::Contention))
         ));
     }

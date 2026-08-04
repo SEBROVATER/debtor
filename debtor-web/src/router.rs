@@ -34,7 +34,7 @@ pub fn router_with_sessions(
 ) -> Router {
     let public = Router::new()
         .route("/healthz", get(handlers::health))
-        .route("/readyz", get(handlers::health))
+        .route("/readyz", get(handlers::readiness))
         .layer(middleware::from_fn(app_middleware::probe_timeout))
         .layer(
             ServiceBuilder::new()
@@ -142,7 +142,9 @@ mod tests {
     use tower::ServiceExt;
 
     use super::router;
-    use crate::handlers::test_support::{TestState, state, state_with_errors};
+    use crate::handlers::test_support::{
+        TestState, state, state_with_errors, state_with_readiness_failure,
+    };
 
     const PEER: std::net::SocketAddr =
         std::net::SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 4000);
@@ -533,6 +535,28 @@ mod tests {
                 "probe session {uri}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn readiness_failure_is_distinct_from_liveness_and_sanitized() {
+        let test_state = state_with_readiness_failure();
+        let app = app(&test_state);
+
+        let health = app
+            .clone()
+            .oneshot(request(Method::GET, "/healthz", "", None))
+            .await
+            .expect("health response");
+        assert_eq!(health.status(), StatusCode::OK);
+
+        let readiness = app
+            .oneshot(request(Method::GET, "/readyz", "", None))
+            .await
+            .expect("readiness response");
+        assert_eq!(readiness.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = response_body(readiness).await;
+        assert!(body.contains("Service temporarily unavailable."));
+        assert!(!body.contains("unexpected storage failure"));
     }
 
     #[tokio::test]

@@ -134,6 +134,39 @@ impl Clock for UtcClock {
     }
 }
 
+/// Checks the health of the application's local database dependency.
+#[async_trait]
+pub trait DatabaseReadiness: Send + Sync {
+    /// Acquires a database connection and performs a trivial non-monetary query.
+    async fn check(&self) -> Result<(), ApplicationError>;
+}
+
+/// Inbound readiness use case.
+#[async_trait]
+pub trait ReadinessUseCases: Send + Sync {
+    /// Checks mandatory local dependencies required to serve the application.
+    async fn check(&self) -> Result<(), ApplicationError>;
+}
+
+/// Readiness workflow backed by a narrow database port.
+pub struct ReadinessService {
+    database: Arc<dyn DatabaseReadiness>,
+}
+
+impl ReadinessService {
+    /// Creates a readiness service with an injected database dependency.
+    pub fn new(database: Arc<dyn DatabaseReadiness>) -> Self {
+        Self { database }
+    }
+}
+
+#[async_trait]
+impl ReadinessUseCases for ReadinessService {
+    async fn check(&self) -> Result<(), ApplicationError> {
+        self.database.check().await
+    }
+}
+
 /// Loads a rate for a currency pair and requested date.
 #[async_trait]
 pub trait ExchangeRateProvider: Send + Sync {
@@ -1030,6 +1063,33 @@ mod tests {
         async fn reset(&self, _: std::net::IpAddr) {
             self.resets.fetch_add(1, Ordering::SeqCst);
         }
+    }
+
+    struct ReadinessFake(Result<(), ApplicationError>);
+
+    #[async_trait]
+    impl DatabaseReadiness for ReadinessFake {
+        async fn check(&self) -> Result<(), ApplicationError> {
+            match &self.0 {
+                Ok(()) => Ok(()),
+                Err(ApplicationError::Storage(reason)) => Err(ApplicationError::Storage(*reason)),
+                Err(_) => Err(ApplicationError::Storage(StorageReason::Unexpected)),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn readiness_delegates_to_the_database_port() {
+        let healthy = ReadinessService::new(Arc::new(ReadinessFake(Ok(()))));
+        assert!(healthy.check().await.is_ok());
+
+        let failed = ReadinessService::new(Arc::new(ReadinessFake(Err(
+            ApplicationError::Storage(StorageReason::Unexpected),
+        ))));
+        assert!(matches!(
+            failed.check().await,
+            Err(ApplicationError::Storage(StorageReason::Unexpected))
+        ));
     }
 
     #[tokio::test]

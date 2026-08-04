@@ -7,8 +7,8 @@ use async_trait::async_trait;
 use debtor_application::{
     ApplicationError, AuthenticationService, AuthenticationUseCases, Clock, DebtResult,
     DebtUseCases, EqualSpendingCommand, ExactSpendingCommand, GroupUseCases, LoginAdmission,
-    LoginAttemptLimiter, ParticipantUseCases, PasswordVerifier, RateMode, SpendingUseCases,
-    UtcClock,
+    LoginAttemptLimiter, ParticipantUseCases, PasswordVerifier, RateMode, ReadinessUseCases,
+    SpendingUseCases, UtcClock,
 };
 use debtor_domain::{
     currency::Currency,
@@ -100,11 +100,35 @@ pub(crate) fn state_with_errors(
             debts,
             authentication,
             clock,
+            readiness: Arc::new(FakeReadiness { healthy: true }),
             proxy: TrustedProxyConfig::default(),
         },
         groups,
         participants,
         auth_resets,
+    }
+}
+
+pub(crate) fn state_with_readiness_failure() -> TestState {
+    let mut test_state = state(false);
+    test_state.app.readiness = Arc::new(FakeReadiness { healthy: false });
+    test_state
+}
+
+struct FakeReadiness {
+    healthy: bool,
+}
+
+#[async_trait]
+impl ReadinessUseCases for FakeReadiness {
+    async fn check(&self) -> Result<(), ApplicationError> {
+        if self.healthy {
+            Ok(())
+        } else {
+            Err(ApplicationError::Storage(
+                debtor_application::StorageReason::Unexpected,
+            ))
+        }
     }
 }
 

@@ -22,7 +22,7 @@ pub(crate) use groups::{
     archive_group, create_group, delete_group, delete_group_form, group_detail, group_edit_form,
     groups, restore_group, update_group,
 };
-pub(crate) use health::health;
+pub(crate) use health::{health, readiness};
 pub(crate) use memberships::{add_member, create_group_participant, deactivate_member};
 pub(crate) use participants::{
     archive_participant, create_participant, participant_edit_form, participants,
