@@ -28,7 +28,6 @@ debtor-application = { path = "debtor-application" }
 debtor-infra = { path = "debtor-infra" }
 debtor-web = { path = "debtor-web" }
 axum = "0.8"
-axum-htmx = "0.8"
 tower-sessions = "0.14"
 tower-http = { version = "0.6", features = ["trace", "fs"] }
 tokio = { version = "1", features = ["full"] }
@@ -53,7 +52,6 @@ ipnet = "2.12"
 form_urlencoded = "1"
 
 [dependencies]
-debtor-domain = { workspace = true }
 debtor-application = { workspace = true }
 debtor-infra = { workspace = true }
 debtor-web = { workspace = true }

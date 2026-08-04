@@ -47,6 +47,7 @@ External effects MUST be constructor-injected through application-owned ports. U
 - Names and descriptions are trimmed and bounded; dates are valid ISO dates on or after `2025-01-01`; totals and all persisted payer/share amounts are positive.
 - Payer totals and share totals MUST each equal the spending total exactly in source-currency minor units.
 - Equal splits assign residual minor units in ascending participant-ID order. Exact and equal are the only split modes.
+- Transport-neutral application commands MUST own single/exact payer selection, equal/exact share construction, participant-ID validation, allocation precision, and total validation. Web form parsing MUST NOT construct financial allocations beyond decoding submitted values.
 - New allocations require a globally active participant with active group membership. Historical inactive or archived identities remain in history, balances, and transfers.
 - Archived groups are read-only. Empty groups may be deleted; groups with spendings may only be archived. Participants are archived/restored, never deleted through the application. Referenced memberships may only be deactivated/reactivated.
 - Spending aggregate writes, including membership eligibility checks and allocations, MUST be transactional. Latest valid write wins.

@@ -190,16 +190,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "axum-htmx"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1406324062566c4f08464126f59b640f90bd4e9c02d8def8112f6253546cd886"
-dependencies = [
- "axum-core",
- "http",
-]
-
-[[package]]
 name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -458,7 +448,6 @@ dependencies = [
  "anyhow",
  "axum",
  "debtor-application",
- "debtor-domain",
  "debtor-infra",
  "debtor-web",
  "dotenvy",
@@ -521,7 +510,6 @@ dependencies = [
  "askama",
  "async-trait",
  "axum",
- "axum-htmx",
  "chrono",
  "debtor-application",
  "debtor-domain",

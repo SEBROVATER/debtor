@@ -11,8 +11,8 @@ use debtor_domain::debts::{
 };
 use debtor_domain::expenses::splitting::equal_split;
 use debtor_domain::model::{
-    Color, Description, EntityId, Group, GroupMember, Name, Participant, Spending, SpendingType,
-    ValidationError,
+    Allocation, Color, Description, EntityId, Group, GroupMember, Name, Participant, Spending,
+    SpendingType, ValidationError,
 };
 use futures::stream::{self, StreamExt};
 use rust_decimal::Decimal;
@@ -365,17 +365,6 @@ pub trait SpendingRepository: Send + Sync {
         group_id: EntityId,
         spending_id: EntityId,
     ) -> Result<(), ApplicationError>;
-}
-
-/// Compatibility facade for adapters that provide all ledger persistence ports.
-pub trait LedgerStore:
-    GroupReader + GroupRepository + ParticipantRepository + SpendingReader + SpendingRepository
-{
-}
-
-impl<T> LedgerStore for T where
-    T: GroupReader + GroupRepository + ParticipantRepository + SpendingReader + SpendingRepository
-{
 }
 
 /// Inbound group operations.
@@ -775,6 +764,15 @@ impl DebtUseCases for DebtService {
     }
 }
 
+/// Payer selection independent of any transport format.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PayerSelection {
+    /// One participant paid the full total.
+    Single(EntityId),
+    /// Exact payer amounts supplied by the administrator.
+    Exact(Vec<debtor_domain::model::Allocation>),
+}
+
 /// Input for a new equal-split spending.
 pub struct EqualSpendingCommand {
     /// Owning group.
@@ -790,7 +788,7 @@ pub struct EqualSpendingCommand {
     /// Spending date.
     pub spent_date: NaiveDate,
     /// One or more payer allocations.
-    pub payers: Vec<debtor_domain::model::Allocation>,
+    pub payers: PayerSelection,
     /// Selected share recipients.
     pub share_participant_ids: Vec<EntityId>,
 }
@@ -810,7 +808,7 @@ pub struct ExactSpendingCommand {
     /// Spending date.
     pub spent_date: NaiveDate,
     /// One or more payer allocations.
-    pub payers: Vec<debtor_domain::model::Allocation>,
+    pub payers: PayerSelection,
     /// One or more positive exact owed-share allocations.
     pub shares: Vec<debtor_domain::model::Allocation>,
 }
@@ -869,6 +867,19 @@ impl SpendingService {
     }
 }
 
+fn resolve_payers(
+    total: Decimal,
+    selection: PayerSelection,
+) -> Vec<debtor_domain::model::Allocation> {
+    match selection {
+        PayerSelection::Single(participant_id) => vec![Allocation {
+            participant_id,
+            amount: total,
+        }],
+        PayerSelection::Exact(payers) => payers,
+    }
+}
+
 #[async_trait]
 impl SpendingUseCases for SpendingService {
     async fn list_spendings(&self, group_id: EntityId) -> Result<Vec<Spending>, ApplicationError> {
@@ -900,7 +911,7 @@ impl SpendingUseCases for SpendingService {
             currency: command.currency,
             spending_type: command.spending_type,
             spent_date: command.spent_date,
-            payers: command.payers,
+            payers: resolve_payers(command.total, command.payers),
             shares,
         };
         spending.validate()?;
@@ -919,7 +930,7 @@ impl SpendingUseCases for SpendingService {
             currency: command.currency,
             spending_type: command.spending_type,
             spent_date: command.spent_date,
-            payers: command.payers,
+            payers: resolve_payers(command.total, command.payers),
             shares: command.shares,
         };
         spending.validate()?;
@@ -944,7 +955,7 @@ impl SpendingUseCases for SpendingService {
             currency: command.currency,
             spending_type: command.spending_type,
             spent_date: command.spent_date,
-            payers: command.payers,
+            payers: resolve_payers(command.total, command.payers),
             shares,
         };
         spending.validate()?;
@@ -964,7 +975,7 @@ impl SpendingUseCases for SpendingService {
             currency: command.currency,
             spending_type: command.spending_type,
             spent_date: command.spent_date,
-            payers: command.payers,
+            payers: resolve_payers(command.total, command.payers),
             shares: command.shares,
         };
         spending.validate()?;
@@ -1381,7 +1392,7 @@ mod tests {
             currency: Currency::Usd,
             spending_type: SpendingType::Food,
             spent_date: date(5),
-            payers: vec![allocation(PARTICIPANT_ONE, 1001)],
+            payers: PayerSelection::Single(PARTICIPANT_ONE),
             share_participant_ids: vec![PARTICIPANT_TWO, PARTICIPANT_ONE],
         }
     }
@@ -1394,7 +1405,10 @@ mod tests {
             currency: Currency::Usd,
             spending_type: SpendingType::Transport,
             spent_date: date(6),
-            payers: vec![allocation(PARTICIPANT_ONE, 1000)],
+            payers: PayerSelection::Exact(vec![
+                allocation(PARTICIPANT_ONE, 400),
+                allocation(PARTICIPANT_TWO, 600),
+            ]),
             shares: vec![
                 allocation(PARTICIPANT_ONE, 400),
                 allocation(PARTICIPANT_TWO, 600),
@@ -1438,6 +1452,57 @@ mod tests {
         assert_eq!(updated[1].id, 100);
         assert_eq!(*fake.read_requests.lock().unwrap(), vec![(GROUP_ID, 77)]);
         assert_eq!(*fake.listed_groups.lock().unwrap(), vec![GROUP_ID]);
+    }
+
+    #[tokio::test]
+    async fn spending_commands_cover_all_payer_and_share_modes_and_validate_selection() {
+        let fake = Arc::new(SpendingFake {
+            listed_groups: Mutex::new(Vec::new()),
+            read_requests: Mutex::new(Vec::new()),
+            created: Mutex::new(Vec::new()),
+            updated: Mutex::new(Vec::new()),
+            fail_update: false,
+        });
+        let service = SpendingService::new(fake.clone(), fake);
+
+        let mut equal_multiple_payers = equal_command();
+        equal_multiple_payers.payers =
+            PayerSelection::Exact(vec![allocation(PARTICIPANT_ONE, 1001)]);
+        service.create_equal(equal_multiple_payers).await.unwrap();
+
+        let mut exact_single_payer = exact_command();
+        exact_single_payer.payers = PayerSelection::Single(PARTICIPANT_ONE);
+        service.create_exact(exact_single_payer).await.unwrap();
+
+        let mut duplicate_payers = equal_command();
+        duplicate_payers.payers = PayerSelection::Exact(vec![
+            allocation(PARTICIPANT_ONE, 500),
+            allocation(PARTICIPANT_ONE, 501),
+        ]);
+        assert!(matches!(
+            service.create_equal(duplicate_payers).await,
+            Err(ApplicationError::Validation(
+                ValidationError::DuplicateParticipant { .. }
+            ))
+        ));
+
+        let mut empty_shares = exact_command();
+        empty_shares.shares.clear();
+        assert!(matches!(
+            service.create_exact(empty_shares).await,
+            Err(ApplicationError::Validation(
+                ValidationError::EmptyAllocations { field: "share" }
+            ))
+        ));
+
+        let mut invalid_id = equal_command();
+        invalid_id.share_participant_ids = vec![-1];
+        assert!(matches!(
+            service.create_equal(invalid_id).await,
+            Err(ApplicationError::Validation(
+                ValidationError::InvalidParticipantId
+            ))
+        ));
     }
 
     #[tokio::test]

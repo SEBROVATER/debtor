@@ -30,6 +30,9 @@ pub fn equal_split(
             });
         }
     }
+    if ids.iter().any(|id| *id <= 0) {
+        return Err(ValidationError::InvalidParticipantId);
+    }
     crate::model::validate_amount(total, currency, "total")?;
     let unit = Decimal::new(1, currency.minor_unit_scale());
     let units = (total / unit).trunc();

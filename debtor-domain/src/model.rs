@@ -63,6 +63,9 @@ pub enum ValidationError {
         /// Repeated participant identifier.
         participant_id: EntityId,
     },
+    /// An allocation refers to an invalid participant identifier.
+    #[error("participant identifier must be positive")]
+    InvalidParticipantId,
     /// An equal split would create one or more zero-valued shares.
     #[error("equal split total must contain at least one minor unit per recipient")]
     InsufficientMinorUnits {
@@ -401,6 +404,9 @@ fn validate_allocations(
     let mut seen = std::collections::BTreeSet::new();
     let mut sum = Decimal::ZERO;
     for value in values {
+        if value.participant_id <= 0 {
+            return Err(ValidationError::InvalidParticipantId);
+        }
         if !seen.insert(value.participant_id) {
             return Err(ValidationError::DuplicateParticipant {
                 participant_id: value.participant_id,

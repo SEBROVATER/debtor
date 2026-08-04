@@ -7,9 +7,10 @@ use axum::{
     response::{IntoResponse, Redirect, Response},
 };
 use chrono::NaiveDate;
-use debtor_application::{EqualSpendingCommand, ExactSpendingCommand};
+use debtor_application::{EqualSpendingCommand, ExactSpendingCommand, PayerSelection};
 use debtor_domain::{
     currency::Currency,
+    expenses::{PayerMode, ShareMode, infer_payer_mode, infer_share_mode},
     model::{Allocation, Spending, SpendingType},
 };
 use rust_decimal::Decimal;
@@ -313,14 +314,17 @@ fn parse_expense(
     let spent_date = NaiveDate::parse_from_str(&form.spent_date, "%Y-%m-%d")
         .map_err(|_| "Date must be a valid ISO date.".to_string())?;
     let payers = match form.payer_mode.as_str() {
-        "single" => vec![Allocation {
-            participant_id: form
-                .single_payer_id
+        "single" => PayerSelection::Single(
+            form.single_payer_id
                 .filter(|id| *id > 0)
                 .ok_or("Choose who paid.")?,
-            amount: total,
-        }],
-        "multiple" => strict_allocations(member_ids, &form.extra, "payer_", "paid amounts")?,
+        ),
+        "multiple" => PayerSelection::Exact(strict_allocations(
+            member_ids,
+            &form.extra,
+            "payer_",
+            "paid amounts",
+        )?),
         _ => return Err("Choose how many people paid.".into()),
     };
     let share_participant_ids = member_ids
@@ -573,27 +577,16 @@ fn expense_view(
         view.spending_type = s.spending_type.to_string();
         view.spent_date = s.spent_date.to_string();
         view.action = format!("/groups/{}/spendings/{}", s.group_id, s.id);
-        if s.payers.len() == 1 && s.payers[0].amount == s.total {
+        if infer_payer_mode(s) == PayerMode::Single {
             view.single_payer_id = s.payers[0].participant_id;
         } else {
             view.payer_mode = "multiple".into();
         }
-        if s.shares.iter().all(|a| a.amount > Decimal::ZERO) {
-            let ids = s
-                .shares
-                .iter()
-                .map(|a| a.participant_id)
-                .collect::<Vec<_>>();
-            if let Ok(equal) =
-                debtor_domain::expenses::splitting::equal_split(s.total, s.currency, &ids)
-            {
-                if equal == s.shares {
-                    view.split_mode = "equal".into();
-                } else {
-                    view.split_mode = "exact".into();
-                }
-            }
+        view.split_mode = match infer_share_mode(s) {
+            ShareMode::Equal => "equal",
+            ShareMode::Exact => "exact",
         }
+        .into();
         let payer_map: BTreeMap<_, _> = s
             .payers
             .iter()
