@@ -127,7 +127,11 @@ pub fn router_with_sessions<S: SessionStore + Clone>(
                 .load_shed()
                 .layer(GlobalConcurrencyLimitLayer::with_semaphore(user_limit)),
         );
-    public.merge(login).merge(protected).with_state(state)
+    public
+        .merge(login)
+        .merge(protected)
+        .layer(middleware::from_fn(app_middleware::http_observability))
+        .with_state(state)
 }
 
 #[cfg(test)]

@@ -55,13 +55,27 @@ async fn main() -> Result<()> {
         )
         .init();
     let config = Config::from_lookup(|name| std::env::var(name).ok(), cfg!(debug_assertions))?;
+    tracing::info!(
+        target: "debtor.startup",
+        event = "startup_stage",
+        stage = "environment_loaded",
+    );
     let signals = SignalReceivers::install()?;
+    tracing::info!(
+        target: "debtor.startup",
+        event = "startup_stage",
+        stage = "signals_registered",
+    );
     let bind = config.bind;
     let runtime = build_app(config).await?;
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .context("unable to bind APP_BIND")?;
-    tracing::info!(url = %format!("http://{}", bind), "debtor listening");
+    tracing::info!(
+        target: "debtor.startup",
+        event = "listening",
+        url = %format!("http://{}", bind),
+    );
     run_runtime(runtime, listener, signals).await
 }
 
@@ -83,6 +97,11 @@ async fn build_app(config: Config) -> Result<BuiltApp> {
         TrustedProxyConfig::parse(&config.trusted_proxy_cidrs, &config.trusted_proxy_header)
             .map_err(anyhow::Error::msg)?;
     let password = Arc::new(ArgonPasswordGate::new(config.password_hash)?);
+    tracing::info!(
+        target: "debtor.startup",
+        event = "startup_stage",
+        stage = "configuration_validated",
+    );
     let pool = debtor_infra::db::connect(&config.database_url)
         .await
         .context("unable to connect SQLite")?;
@@ -90,6 +109,11 @@ async fn build_app(config: Config) -> Result<BuiltApp> {
         .run(&pool)
         .await
         .context("unable to apply SQLite migrations")?;
+    tracing::info!(
+        target: "debtor.startup",
+        event = "startup_stage",
+        stage = "migrations_complete",
+    );
 
     let store = Arc::new(SqliteLedgerStore::new(pool.clone()));
     let cleanup_health = CleanupHealth::new();
@@ -154,9 +178,15 @@ async fn build_app(config: Config) -> Result<BuiltApp> {
             std::time::Duration::from_secs(30),
         ))
         .service(ServeDir::new("static"));
+    let app = debtor_web::router::router_with_sessions(state, sessions, user_limit)
+        .nest_service("/static", static_service);
+    tracing::info!(
+        target: "debtor.startup",
+        event = "startup_stage",
+        stage = "application_composed",
+    );
     Ok(BuiltApp {
-        app: debtor_web::router::router_with_sessions(state, sessions, user_limit)
-            .nest_service("/static", static_service),
+        app,
         pool,
         session_store,
         cleanup_health,
@@ -196,6 +226,17 @@ impl ShutdownTrigger {
     fn is_fatal(self) -> bool {
         !matches!(self, Self::Signal)
     }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Signal => "signal",
+            Self::SignalFailure => "signal_failure",
+            Self::CleanupFailure => "cleanup_failure",
+            Self::HttpFailure => "http_failure",
+            Self::CheckpointFailure => "checkpoint_failure",
+            Self::PoolCloseFailure => "pool_close_failure",
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -219,13 +260,34 @@ struct ShutdownOutcome {
 impl ShutdownCoordinator {
     async fn request(&self, trigger: ShutdownTrigger) {
         let mut state = self.state.lock().await;
-        if state.first.is_none() {
+        let first = state.first.is_none();
+        if first {
             state.first = Some(trigger);
         }
         if trigger.is_fatal() {
             state.fatal_triggers.push(trigger);
         }
         drop(state);
+        if first {
+            tracing::info!(
+                target: "debtor.runtime",
+                event = "shutdown_triggered",
+                trigger = trigger.name(),
+            );
+            if trigger.is_fatal() {
+                tracing::warn!(
+                    target: "debtor.runtime",
+                    event = "shutdown_failure",
+                    trigger = trigger.name(),
+                );
+            }
+        } else if trigger.is_fatal() {
+            tracing::warn!(
+                target: "debtor.runtime",
+                event = "shutdown_failure",
+                trigger = trigger.name(),
+            );
+        }
         self.notify.notify_waiters();
     }
 
@@ -434,7 +496,26 @@ async fn run_runtime(
     }
 
     let outcome = coordinator.outcome().await;
-    if outcome.first.is_none() || !outcome.fatal_triggers.is_empty() {
+    let success = outcome.first.is_some() && outcome.fatal_triggers.is_empty();
+    let trigger = outcome.first.map_or("unknown", ShutdownTrigger::name);
+    if success {
+        tracing::info!(
+            target: "debtor.runtime",
+            event = "shutdown_complete",
+            success,
+            trigger,
+            fatal_failure_count = outcome.fatal_triggers.len(),
+        );
+    } else {
+        tracing::warn!(
+            target: "debtor.runtime",
+            event = "shutdown_complete",
+            success,
+            trigger,
+            fatal_failure_count = outcome.fatal_triggers.len(),
+        );
+    }
+    if !success {
         return Err(anyhow!("runtime shutdown failed"));
     }
     Ok(())

@@ -503,6 +503,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -527,6 +528,7 @@ dependencies = [
  "tower-http",
  "tower-sessions",
  "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 

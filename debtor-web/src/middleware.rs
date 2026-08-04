@@ -2,11 +2,13 @@
 
 use axum::{
     body::Body,
+    extract::MatchedPath,
     http::{Method, Request, StatusCode, header::HeaderValue},
     middleware::Next,
     response::{IntoResponse, Redirect, Response},
 };
 use std::time::Duration;
+use std::time::Instant;
 use tower::BoxError;
 use tower_sessions::Session;
 
@@ -47,8 +49,57 @@ pub async fn security_headers(request: Request<Body>, next: Next) -> Response {
     response
 }
 
+/// Records only safe HTTP response metadata.
+pub async fn http_observability(request: Request<Body>, next: Next) -> Response {
+    let method = request.method().clone();
+    let route = matched_route(&request);
+    let started = Instant::now();
+    let response = next.run(request).await;
+    let status = response.status();
+    let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+    record_http_response(&method, &route, status, latency_ms);
+    response
+}
+
+fn matched_route(request: &Request<Body>) -> String {
+    request
+        .extensions()
+        .get::<MatchedPath>()
+        .map_or("unmatched", MatchedPath::as_str)
+        .to_owned()
+}
+
+fn record_http_response(method: &Method, route: &str, status: StatusCode, latency_ms: u64) {
+    if status.is_server_error() {
+        tracing::warn!(
+            target: "debtor.http",
+            event = "http_response",
+            method = %method,
+            route = %route,
+            status = status.as_u16(),
+            latency_ms,
+        );
+    } else {
+        tracing::info!(
+            target: "debtor.http",
+            event = "http_response",
+            method = %method,
+            route = %route,
+            status = status.as_u16(),
+            latency_ms,
+        );
+    }
+}
+
 /// Maps load-shed failures to a stable retryable response.
 pub async fn overload_error(_: BoxError) -> Response {
+    tracing::warn!(
+        target: "debtor.http",
+        event = "request_admission_rejected",
+        category = "concurrency",
+        count = 1_u64,
+    );
     (
         StatusCode::SERVICE_UNAVAILABLE,
         "Service temporarily unavailable.",
@@ -110,7 +161,11 @@ fn timeout_response() -> Response {
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
-    use std::time::Duration;
+    use std::{
+        io::Write,
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
 
     use axum::{
         Router,
@@ -120,8 +175,65 @@ mod tests {
         routing::any,
     };
     use tower::ServiceExt;
+    use tracing_subscriber::fmt::MakeWriter;
 
-    use super::safe_read_timeout_with_limits;
+    use super::{matched_route, record_http_response, safe_read_timeout_with_limits};
+
+    #[derive(Clone)]
+    struct SharedWriter(Arc<Mutex<Vec<u8>>>);
+
+    struct Writer(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Writer {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("writer lock").extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> MakeWriter<'a> for SharedWriter {
+        type Writer = Writer;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            Writer(self.0.clone())
+        }
+    }
+
+    #[test]
+    fn http_event_contains_safe_fields_without_query_or_body_data() {
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_writer(SharedWriter(buffer.clone()))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            record_http_response(&Method::GET, "/groups/{id}", StatusCode::OK, 12);
+        });
+        let output =
+            String::from_utf8(buffer.lock().expect("log buffer").clone()).expect("UTF-8 logs");
+        assert!(output.contains("http_response"));
+        assert!(output.contains("method=GET"));
+        assert!(output.contains("route=/groups/{id}"));
+        assert!(output.contains("status=200"));
+        assert!(output.contains("latency_ms=12"));
+        assert!(!output.contains("password=sentinel"));
+        assert!(!output.contains("csrf=sentinel"));
+    }
+
+    #[test]
+    fn route_fallback_never_uses_the_raw_uri_or_query() {
+        let request = Request::builder()
+            .uri("/login?password=sentinel")
+            .body(Body::empty())
+            .expect("request");
+        assert_eq!(matched_route(&request), "unmatched");
+    }
 
     #[tokio::test]
     async fn safe_reads_timeout_but_mutations_return_definitive_results() {

@@ -41,6 +41,12 @@ pub(crate) async fn login(
     };
     match state.authentication.attempt(client, password).await {
         Ok(AuthenticationAttempt::RetryAfter(seconds)) => {
+            tracing::warn!(
+                target: "debtor.auth",
+                event = "login_rate_limit_rejected",
+                category = "attempt_window",
+                count = 1_u64,
+            );
             let mut response = error_response(
                 StatusCode::TOO_MANY_REQUESTS,
                 "Too many login attempts. Try again later.",

@@ -237,6 +237,11 @@ impl FrankfurterClient {
     fn stale_or_error(&self, key: CacheKey, today: NaiveDate) -> FlightResult {
         let (base, quote, requested_date, fetch_date) = key;
         if requested_date < today {
+            tracing::warn!(
+                target: "debtor.provider",
+                event = "provider_fallback",
+                category = "historical_unavailable",
+            );
             return Err(UnavailableReason::ExchangeRates);
         }
         let stale = self.refreshable_cache.read().ok().and_then(|cache| {
@@ -257,14 +262,34 @@ impl FrankfurterClient {
                 .max_by_key(|((_, _, _, cached_fetch), _)| *cached_fetch)
                 .map(|(_, quote)| quote.clone())
         });
-        stale
-            .map(|mut quote| {
+        if let Some(mut quote) = stale {
+            tracing::info!(
+                target: "debtor.provider",
+                event = "provider_fallback",
+                category = if requested_date > today {
+                    "future_stale_cache"
+                } else {
+                    "current_stale_cache"
+                },
+            );
+            return Ok({
                 quote.requested_date = requested_date;
                 quote.is_stale = true;
                 quote.is_provisional = requested_date > today;
                 quote
-            })
-            .ok_or(UnavailableReason::ExchangeRates)
+            });
+        }
+
+        tracing::warn!(
+            target: "debtor.provider",
+            event = "provider_fallback",
+            category = if requested_date > today {
+                "future_unavailable"
+            } else {
+                "current_unavailable"
+            },
+        );
+        Err(UnavailableReason::ExchangeRates)
     }
 
     fn cache_for(
@@ -283,11 +308,40 @@ impl FrankfurterClient {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::{
+        io::Write,
+        sync::atomic::{AtomicUsize, Ordering},
+        sync::{Arc, Mutex},
+    };
 
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+    use tracing_subscriber::fmt::MakeWriter;
+
+    #[derive(Clone)]
+    struct SharedWriter(Arc<Mutex<Vec<u8>>>);
+
+    struct Writer(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Writer {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("writer lock").extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> MakeWriter<'a> for SharedWriter {
+        type Writer = Writer;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            Writer(self.0.clone())
+        }
+    }
 
     #[tokio::test]
     async fn identity_rate_is_exact_without_network() {
@@ -301,6 +355,31 @@ mod tests {
                 .rate,
             Decimal::ONE
         );
+    }
+
+    #[test]
+    fn provider_fallback_event_contains_only_a_safe_category() {
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_max_level(tracing::Level::INFO)
+            .with_writer(SharedWriter(buffer.clone()))
+            .finish();
+        let date = date(2026, 1, 1);
+        let client = FrankfurterClient::with_base_url(
+            "https://provider-sentinel.invalid/secret-password=sentinel",
+        );
+        let result = tracing::subscriber::with_default(subscriber, || {
+            client.stale_or_error((Currency::Usd, Currency::Eur, date, date), date)
+        });
+        assert_eq!(result, Err(UnavailableReason::ExchangeRates));
+        let output =
+            String::from_utf8(buffer.lock().expect("log buffer").clone()).expect("UTF-8 logs");
+        assert!(output.contains("provider_fallback"));
+        assert!(output.contains("current_unavailable"));
+        assert!(!output.contains("provider-sentinel"));
+        assert!(!output.contains("sentinel"));
     }
 
     #[tokio::test]

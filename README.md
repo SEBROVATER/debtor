@@ -41,6 +41,8 @@ Sessions are process-local and restart-invalidation is intentional. Anonymous lo
 
 On Ctrl-C or SIGTERM, the server stops accepting new connections and drains active requests for at most 10 seconds before forced cancellation. Shutdown then checkpoints the WAL and closes SQLite with separate five-second bounds. Signal-only shutdown succeeds; cleanup, HTTP, checkpoint, or pool-close failures produce an unsuccessful exit. WAL sidecars are never manually removed during shutdown and remain available for SQLite recovery after a timeout.
 
+Structured diagnostics report safe startup stages, listening address, readiness categories, route-pattern response status/latency, login rate-limit rejection categories, provider fallback categories, and shutdown outcomes. Request bodies, credentials, hashes, cookies, session/CSRF identifiers, forwarding details, query strings, and configured provider URLs are excluded.
+
 ## License
 
 MIT OR Apache-2.0
