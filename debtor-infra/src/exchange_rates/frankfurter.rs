@@ -3,7 +3,7 @@ use std::sync::RwLock;
 
 use async_trait::async_trait;
 use chrono::NaiveDate;
-use debtor_application::{ApplicationError, ExchangeRateProvider, RateQuote};
+use debtor_application::{ApplicationError, ExchangeRateProvider, RateQuote, UnavailableReason};
 use debtor_domain::currency::Currency;
 use rust_decimal::Decimal;
 use serde::Deserialize;
@@ -74,7 +74,7 @@ impl ExchangeRateProvider for FrankfurterClient {
         let cache = self.cache_for(original_requested_date, today);
         let cached = cache
             .read()
-            .map_err(|error| ApplicationError::Unavailable(error.to_string()))?
+            .map_err(|_| ApplicationError::Unavailable(UnavailableReason::ExchangeRates))?
             .get(&key)
             .cloned();
         if let Some(value) = cached {
@@ -88,31 +88,14 @@ impl ExchangeRateProvider for FrankfurterClient {
         );
         let response = match self.http.get(url).send().await {
             Ok(response) if response.status().is_success() => response,
-            Ok(response) => {
-                return self.stale_or_error(
-                    key,
-                    today,
-                    format!("Frankfurter returned {}", response.status()),
-                );
-            }
-            Err(error) => return self.stale_or_error(key, today, error.to_string()),
+            Ok(_) | Err(_) => return self.stale_or_error(key, today),
         };
         let payload: RateResponse = match response.json().await {
             Ok(payload) => payload,
-            Err(error) => {
-                return self.stale_or_error(
-                    key,
-                    today,
-                    format!("invalid Frankfurter response: {error}"),
-                );
-            }
+            Err(_) => return self.stale_or_error(key, today),
         };
         if payload.rate <= Decimal::ZERO {
-            return self.stale_or_error(
-                key,
-                today,
-                "Frankfurter returned a non-positive rate".into(),
-            );
+            return self.stale_or_error(key, today);
         }
         let value = RateQuote {
             base,
@@ -125,7 +108,7 @@ impl ExchangeRateProvider for FrankfurterClient {
         };
         cache
             .write()
-            .map_err(|error| ApplicationError::Unavailable(error.to_string()))?
+            .map_err(|_| ApplicationError::Unavailable(UnavailableReason::ExchangeRates))?
             .insert(key, value.clone());
         Ok(value)
     }
@@ -136,11 +119,12 @@ impl FrankfurterClient {
         &self,
         key: CacheKey,
         today: NaiveDate,
-        message: String,
     ) -> Result<RateQuote, ApplicationError> {
         let (base, quote, requested_date, fetch_date) = key;
         if requested_date < today {
-            return Err(ApplicationError::Unavailable(message));
+            return Err(ApplicationError::Unavailable(
+                UnavailableReason::ExchangeRates,
+            ));
         }
         let stale = self.refreshable_cache.read().ok().and_then(|cache| {
             cache
@@ -167,7 +151,9 @@ impl FrankfurterClient {
                 quote.is_provisional = requested_date > today;
                 quote
             })
-            .ok_or(ApplicationError::Unavailable(message))
+            .ok_or(ApplicationError::Unavailable(
+                UnavailableReason::ExchangeRates,
+            ))
     }
 
     fn cache_for(

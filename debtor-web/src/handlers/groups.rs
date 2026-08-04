@@ -67,7 +67,7 @@ pub(crate) async fn create_group(
     };
     match state.groups.create_group(form.name, currency).await {
         Ok(_) => Redirect::to("/groups").into_response(),
-        Err(error) => error_response(StatusCode::UNPROCESSABLE_ENTITY, &error.to_string()),
+        Err(error) => map_error(error),
     }
 }
 

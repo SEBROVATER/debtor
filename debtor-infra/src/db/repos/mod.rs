@@ -8,7 +8,7 @@ use std::str::FromStr;
 use async_trait::async_trait;
 use debtor_application::{
     ApplicationError, GroupReader, GroupRepository, ParticipantRepository, SpendingReader,
-    SpendingRepository,
+    SpendingRepository, StorageReason,
 };
 use debtor_domain::currency::Currency;
 use debtor_domain::model::{
@@ -269,9 +269,7 @@ impl ParticipantRepository for SqliteLedgerStore {
         .map_err(storage)?;
         if membership.rows_affected() == 0 {
             group_mutable_in_transaction(&mut tx, group_id).await?;
-            return Err(ApplicationError::Storage(
-                "group membership insert was rejected".into(),
-            ));
+            return Err(ApplicationError::Storage(StorageReason::Unexpected));
         }
         tx.commit().await.map_err(storage)?;
         participant_by_id(&self.pool, id).await
@@ -341,9 +339,7 @@ impl ParticipantRepository for SqliteLedgerStore {
         if result.rows_affected() == 0 {
             self.group_mutable(group_id).await?;
             self.participant_mutable(participant_id).await?;
-            return Err(ApplicationError::Storage(
-                "group membership insert was rejected".into(),
-            ));
+            return Err(ApplicationError::Storage(StorageReason::Unexpected));
         }
         Ok(())
     }
@@ -421,8 +417,8 @@ impl SpendingRepository for SqliteLedgerStore {
     }
 }
 
-fn storage(error: sqlx::Error) -> ApplicationError {
-    ApplicationError::Storage(error.to_string())
+fn storage(_error: sqlx::Error) -> ApplicationError {
+    ApplicationError::Storage(StorageReason::Unexpected)
 }
 
 fn changed(result: sqlx::sqlite::SqliteQueryResult) -> Result<(), ApplicationError> {
@@ -438,7 +434,7 @@ fn group(row: DbGroup) -> Result<Group, ApplicationError> {
         id: row.id,
         name: Name::new(row.name)?,
         currency: Currency::from_str(&row.currency)
-            .map_err(|_| ApplicationError::Storage("invalid persisted currency".into()))?,
+            .map_err(|_| ApplicationError::Storage(StorageReason::InvalidData))?,
         is_archived: row.is_archived != 0,
     })
 }
@@ -479,7 +475,7 @@ async fn load_spending(
         .map_err(storage)?
         .ok_or(ApplicationError::NotFound)?;
     let currency = Currency::from_str(&row.currency)
-        .map_err(|_| ApplicationError::Storage("invalid currency".into()))?;
+        .map_err(|_| ApplicationError::Storage(StorageReason::InvalidData))?;
     let spending = Spending {
         id,
         group_id,
@@ -487,21 +483,20 @@ async fn load_spending(
         total: canonical_decimal(&row.total_amount)?,
         currency,
         spending_type: SpendingType::from_str(&row.spending_type)
-            .map_err(|_| ApplicationError::Storage("invalid type".into()))?,
+            .map_err(|_| ApplicationError::Storage(StorageReason::InvalidData))?,
         spent_date: chrono::NaiveDate::parse_from_str(&row.spent_date, "%Y-%m-%d")
-            .map_err(|error| ApplicationError::Storage(error.to_string()))?,
+            .map_err(|_| ApplicationError::Storage(StorageReason::InvalidData))?,
         payers: payer_rows(pool, id).await?,
         shares: share_rows(pool, id).await?,
     };
     spending
         .validate()
-        .map_err(|_| ApplicationError::Storage("invalid persisted spending".into()))?;
+        .map_err(|_| ApplicationError::Storage(StorageReason::InvalidData))?;
     Ok(spending)
 }
 
 fn canonical_decimal(value: &str) -> Result<rust_decimal::Decimal, ApplicationError> {
-    parse_decimal(value)
-        .map_err(|_| ApplicationError::Storage("invalid canonical monetary value".into()))
+    parse_decimal(value).map_err(|_| ApplicationError::Storage(StorageReason::InvalidData))
 }
 
 fn allocation(row: DbAllocation) -> Result<Allocation, ApplicationError> {
@@ -657,9 +652,7 @@ async fn save_spending(
             .map_err(storage)?;
         if result.rows_affected() == 0 {
             group_mutable_in_transaction(&mut tx, spending.group_id).await?;
-            return Err(ApplicationError::Storage(
-                "spending insert was rejected".into(),
-            ));
+            return Err(ApplicationError::Storage(StorageReason::Unexpected));
         }
         result.last_insert_rowid()
     };

@@ -33,6 +33,7 @@ The diagram expresses permitted direction, not an exhaustive list of direct Carg
 - `debtor-infra` owns SQLx, HTTP, cryptography, caching, and other concrete adapters.
 - `debtor-web` owns Axum, forms, middleware, Askama rendering, and HTTP error mapping; handlers contain no financial, SQL, network, or cryptographic logic.
 - The root crate owns configuration, composition, migrations, process lifecycle, and server startup.
+- Application-facing failures MUST use structured, safe reason categories. Raw SQLx, HTTP, provider, cryptography, and other adapter diagnostics MUST NOT cross inward-facing ports or reach user-facing responses.
 - The supported first-release production topology is one application process with one local SQLite volume behind a sanitizing HTTPS reverse proxy. Direct insecure HTTP is debug/local only. Multiple application instances and external SQLite writers are unsupported.
 - SQLite persistence uses explicit WAL with `synchronous=FULL`, a five-second busy timeout, one process-local ledger write gate with a five-second acquisition timeout, and snapshot-consistent reads. Among admitted valid operations, the last committed write wins; optimistic revision columns are not used.
 

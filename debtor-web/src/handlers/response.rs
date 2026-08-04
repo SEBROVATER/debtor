@@ -34,11 +34,92 @@ pub(super) fn map_error(error: debtor_application::ApplicationError) -> Response
         debtor_application::ApplicationError::Validation(error) => {
             error_response(StatusCode::UNPROCESSABLE_ENTITY, &error.to_string())
         }
-        debtor_application::ApplicationError::Unavailable(error) => {
-            error_response(StatusCode::SERVICE_UNAVAILABLE, &error)
+        debtor_application::ApplicationError::Unavailable(
+            debtor_application::UnavailableReason::ExchangeRates,
+        ) => error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Exchange-rate service unavailable.",
+        ),
+        debtor_application::ApplicationError::Unavailable(
+            debtor_application::UnavailableReason::Authentication,
+        ) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Authentication service unavailable.",
+        ),
+        debtor_application::ApplicationError::Storage(
+            debtor_application::StorageReason::Contention,
+        ) => error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Storage is busy. Try again.",
+        ),
+        debtor_application::ApplicationError::Storage(
+            debtor_application::StorageReason::InvalidData,
+        ) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "Stored data is invalid."),
+        debtor_application::ApplicationError::Storage(
+            debtor_application::StorageReason::Unexpected,
+        ) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "Storage error."),
+        debtor_application::ApplicationError::Configuration(_) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Application configuration error.",
+        ),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use axum::{body::to_bytes, http::StatusCode};
+    use debtor_application::{
+        ApplicationError, ConfigurationError, StorageReason, UnavailableReason,
+    };
+
+    use super::map_error;
+
+    #[test]
+    fn maps_each_safe_error_category_to_its_status() {
+        let cases = [
+            (
+                ApplicationError::Unavailable(UnavailableReason::ExchangeRates),
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                ApplicationError::Unavailable(UnavailableReason::Authentication),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                ApplicationError::Storage(StorageReason::Contention),
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                ApplicationError::Storage(StorageReason::InvalidData),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                ApplicationError::Storage(StorageReason::Unexpected),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                ApplicationError::Configuration(ConfigurationError::InvalidPasswordHash),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(map_error(error).status(), expected);
         }
-        debtor_application::ApplicationError::Storage(_) => {
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, "Storage error.")
-        }
+    }
+
+    #[tokio::test]
+    async fn unavailable_response_uses_fixed_text_without_adapter_details() {
+        let response = map_error(ApplicationError::Unavailable(
+            UnavailableReason::ExchangeRates,
+        ));
+        let body = to_bytes(response.into_body(), 4096)
+            .await
+            .expect("rendered error body");
+        let body = String::from_utf8(body.to_vec()).expect("UTF-8 error body");
+
+        assert!(body.contains("Exchange-rate service unavailable."));
+        assert!(!body.contains("provider-internal-detail"));
     }
 }

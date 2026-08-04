@@ -1,6 +1,8 @@
 use argon2::{Argon2, PasswordHash, PasswordVerifier as ArgonPasswordVerifier};
 use async_trait::async_trait;
-use debtor_application::{ApplicationError, PasswordVerifier};
+use debtor_application::{
+    ApplicationError, ConfigurationError, PasswordVerifier, UnavailableReason,
+};
 use std::sync::OnceLock;
 use tokio::sync::Semaphore;
 
@@ -16,8 +18,9 @@ impl ArgonPasswordGate {
     ///
     /// Returns an error when the configured PHC string is malformed.
     pub fn new(hash: String) -> Result<Self, ApplicationError> {
-        let parsed = PasswordHash::new(&hash)
-            .map_err(|_| ApplicationError::Storage("invalid password hash".into()))?;
+        let parsed = PasswordHash::new(&hash).map_err(|_| {
+            ApplicationError::Configuration(ConfigurationError::InvalidPasswordHash)
+        })?;
         let salt_length = parsed.salt.and_then(decoded_salt_length);
         let hash_length = parsed.hash.map(|output| output.as_bytes().len());
         let memory_cost = parsed.params.get("m").and_then(parse_parameter);
@@ -31,8 +34,8 @@ impl ArgonPasswordGate {
             || !matches!(time_cost, Some(2..=5))
             || !matches!(parallelism, Some(1..=4))
         {
-            return Err(ApplicationError::Storage(
-                "invalid Argon2id password hash".into(),
+            return Err(ApplicationError::Configuration(
+                ConfigurationError::InvalidPasswordHash,
             ));
         }
         Ok(Self { hash })
@@ -57,17 +60,18 @@ impl PasswordVerifier for ArgonPasswordGate {
             .clone()
             .acquire_owned()
             .await
-            .map_err(|_| ApplicationError::Storage("password verifier unavailable".into()))?;
+            .map_err(|_| ApplicationError::Unavailable(UnavailableReason::Authentication))?;
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            let hash = PasswordHash::new(&hash)
-                .map_err(|_| ApplicationError::Storage("invalid password hash".into()))?;
+            let hash = PasswordHash::new(&hash).map_err(|_| {
+                ApplicationError::Configuration(ConfigurationError::InvalidPasswordHash)
+            })?;
             Ok(Argon2::default()
                 .verify_password(password.as_bytes(), &hash)
                 .is_ok())
         })
         .await
-        .map_err(|_| ApplicationError::Storage("password verifier task failed".into()))?
+        .map_err(|_| ApplicationError::Unavailable(UnavailableReason::Authentication))?
     }
 }
 
@@ -80,7 +84,7 @@ fn semaphore() -> &'static std::sync::Arc<Semaphore> {
 #[allow(clippy::expect_used)]
 mod tests {
     use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
-    use debtor_application::PasswordVerifier;
+    use debtor_application::{ApplicationError, ConfigurationError, PasswordVerifier};
 
     use super::ArgonPasswordGate;
 
@@ -157,6 +161,16 @@ mod tests {
         ] {
             assert!(ArgonPasswordGate::new(invalid).is_err());
         }
+    }
+
+    #[test]
+    fn reports_invalid_hash_as_configuration_error() {
+        assert!(matches!(
+            ArgonPasswordGate::new("not-a-password-hash".into()),
+            Err(ApplicationError::Configuration(
+                ConfigurationError::InvalidPasswordHash
+            ))
+        ));
     }
 
     fn test_hash(

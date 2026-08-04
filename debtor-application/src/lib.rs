@@ -15,6 +15,39 @@ use debtor_domain::model::{
 use rust_decimal::Decimal;
 use thiserror::Error;
 
+/// Safe categories for unavailable external dependencies.
+#[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
+pub enum UnavailableReason {
+    /// The exchange-rate provider could not provide a quote.
+    #[error("exchange-rate provider unavailable")]
+    ExchangeRates,
+    /// The authentication dependency could not process a request.
+    #[error("authentication dependency unavailable")]
+    Authentication,
+}
+
+/// Safe categories for persistence failures.
+#[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
+pub enum StorageReason {
+    /// The database or application write gate is busy.
+    #[error("storage contention")]
+    Contention,
+    /// Persisted data failed domain decoding or validation.
+    #[error("invalid persisted data")]
+    InvalidData,
+    /// An unexpected persistence operation failed.
+    #[error("unexpected storage failure")]
+    Unexpected,
+}
+
+/// Safe categories for startup configuration failures.
+#[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigurationError {
+    /// The configured administrator password hash is not acceptable.
+    #[error("invalid administrator password configuration")]
+    InvalidPasswordHash,
+}
+
 /// Application-level failures suitable for HTTP mapping.
 #[derive(Debug, Error)]
 pub enum ApplicationError {
@@ -29,10 +62,13 @@ pub enum ApplicationError {
     Conflict,
     /// An external dependency failed.
     #[error("external dependency unavailable: {0}")]
-    Unavailable(String),
+    Unavailable(UnavailableReason),
     /// Persistence failed unexpectedly.
     #[error("persistence failed: {0}")]
-    Storage(String),
+    Storage(StorageReason),
+    /// Startup configuration is invalid.
+    #[error("invalid application configuration: {0}")]
+    Configuration(ConfigurationError),
 }
 
 /// Rate selection requested by the debts view.
@@ -818,7 +854,7 @@ mod tests {
             currency: Currency,
         ) -> Result<Group, ApplicationError> {
             if self.fail_create {
-                return Err(ApplicationError::Storage("groups unavailable".into()));
+                return Err(ApplicationError::Storage(StorageReason::Unexpected));
             }
             self.created.lock().unwrap().push((name.clone(), currency));
             Ok(Group {
@@ -891,9 +927,10 @@ mod tests {
             .create_group("Trip".into(), Currency::Usd)
             .await
             .unwrap_err();
-        assert!(
-            matches!(error, ApplicationError::Storage(message) if message == "groups unavailable")
-        );
+        assert!(matches!(
+            error,
+            ApplicationError::Storage(StorageReason::Unexpected)
+        ));
     }
 
     struct ParticipantFake {
@@ -1215,7 +1252,9 @@ mod tests {
             _: NaiveDate,
             _: NaiveDate,
         ) -> Result<RateQuote, ApplicationError> {
-            Err(ApplicationError::Unavailable("rates unavailable".into()))
+            Err(ApplicationError::Unavailable(
+                UnavailableReason::ExchangeRates,
+            ))
         }
     }
 
@@ -1288,8 +1327,9 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(
-            matches!(error, ApplicationError::Unavailable(message) if message == "rates unavailable")
-        );
+        assert!(matches!(
+            error,
+            ApplicationError::Unavailable(UnavailableReason::ExchangeRates)
+        ));
     }
 }
