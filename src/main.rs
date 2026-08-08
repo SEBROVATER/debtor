@@ -12,8 +12,9 @@ use runtime::{SignalReceivers, run_runtime};
 
 #[cfg(test)]
 use runtime::{
-    CleanupHealth, ShutdownCoordinator, ShutdownTrigger, checkpoint_pool, cleanup_worker,
-    close_pool, drain_result, run_runtime_with_options,
+    CleanupHealth, ShutdownCoordinator, ShutdownTrigger, await_server_or_shutdown, checkpoint_pool,
+    checkpoint_pool_with_timeout, cleanup_worker, close_pool, close_pool_with_timeout,
+    drain_result, run_runtime_with_options, run_runtime_with_timeouts,
 };
 
 #[tokio::main]
@@ -67,13 +68,16 @@ mod composition_tests {
     use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
     use async_trait::async_trait;
     use axum::{
+        Router,
         body::Body,
         http::{Request, StatusCode},
+        routing::get,
     };
     use debtor_application::{
         ApplicationError, DatabaseReadiness, ReadinessService, ReadinessUseCases,
         SupervisorReadiness, UnavailableReason,
     };
+    use tokio::sync::Notify;
     use tower::ServiceExt;
     use tower_sessions::{
         ExpiredDeletion, SessionStore,
@@ -110,6 +114,15 @@ mod composition_tests {
         let _ = std::fs::remove_file(path);
         let _ = std::fs::remove_file(format!("{}-wal", path.display()));
         let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+
+    fn runtime_with(app: Router, pool: sqlx::SqlitePool) -> crate::composition::BuiltApp {
+        crate::composition::BuiltApp {
+            app,
+            pool,
+            session_store: debtor_web::session_store::ReapingMemoryStore::default(),
+            cleanup_health: CleanupHealth::new(),
+        }
     }
 
     fn cookie_pair(response: &reqwest::Response) -> String {
@@ -367,5 +380,171 @@ mod composition_tests {
             .expect("temporary pool");
         assert!(checkpoint_pool(&pool).await);
         assert!(close_pool(&pool).await);
+    }
+
+    #[tokio::test]
+    async fn active_request_drains_before_runtime_shutdown() {
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let app = Router::new().route(
+            "/hold",
+            get({
+                let entered = entered.clone();
+                let release = release.clone();
+                move || {
+                    let entered = entered.clone();
+                    let release = release.clone();
+                    async move {
+                        entered.notify_one();
+                        release.notified().await;
+                        "ok"
+                    }
+                }
+            }),
+        );
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("test pool");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let address = listener.local_addr().expect("listener address");
+        let coordinator = ShutdownCoordinator::default();
+        let mut server = tokio::spawn(run_runtime_with_timeouts(
+            runtime_with(app, pool),
+            listener,
+            SignalReceivers::install().expect("signal handlers"),
+            coordinator.clone(),
+            Duration::from_mins(1),
+            Duration::from_secs(1),
+        ));
+        let request = tokio::spawn(async move {
+            reqwest::get(format!("http://{address}/hold"))
+                .await
+                .expect("held response")
+                .text()
+                .await
+                .expect("held body")
+        });
+        entered.notified().await;
+        coordinator.request(ShutdownTrigger::Signal).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut server)
+                .await
+                .is_err()
+        );
+        release.notify_one();
+        assert_eq!(request.await.expect("request task"), "ok");
+        assert!(server.await.expect("server task").is_ok());
+    }
+
+    #[tokio::test]
+    async fn forced_drain_cancels_a_stuck_active_request() {
+        let entered = Arc::new(Notify::new());
+        let never_release = Arc::new(Notify::new());
+        let app = Router::new().route(
+            "/hold",
+            get({
+                let entered = entered.clone();
+                let never_release = never_release.clone();
+                move || {
+                    let entered = entered.clone();
+                    let never_release = never_release.clone();
+                    async move {
+                        entered.notify_one();
+                        never_release.notified().await;
+                        "unreachable"
+                    }
+                }
+            }),
+        );
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("test pool");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let address = listener.local_addr().expect("listener address");
+        let coordinator = ShutdownCoordinator::default();
+        let server = tokio::spawn(run_runtime_with_timeouts(
+            runtime_with(app, pool),
+            listener,
+            SignalReceivers::install().expect("signal handlers"),
+            coordinator.clone(),
+            Duration::from_mins(1),
+            Duration::from_millis(10),
+        ));
+        let request =
+            tokio::spawn(async move { reqwest::get(format!("http://{address}/hold")).await });
+        entered.notified().await;
+        coordinator.request(ShutdownTrigger::Signal).await;
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), server)
+                .await
+                .expect("forced drain timeout")
+                .expect("server task")
+                .is_ok()
+        );
+        request.abort();
+        assert!(request.await.expect_err("cancelled request").is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn busy_checkpoint_preserves_wal_sidecars() {
+        let path = database_path();
+        let pool = debtor_infra::db::connect(&format!("sqlite://{}?mode=rwc", path.display()))
+            .await
+            .expect("WAL pool");
+        sqlx::query("CREATE TABLE checkpoint_test (value INTEGER)")
+            .execute(&pool)
+            .await
+            .expect("create table");
+        let mut reader = pool.acquire().await.expect("reader connection");
+        sqlx::query("BEGIN")
+            .execute(&mut *reader)
+            .await
+            .expect("begin read");
+        sqlx::query("SELECT * FROM checkpoint_test")
+            .fetch_all(&mut *reader)
+            .await
+            .expect("read snapshot");
+        sqlx::query("INSERT INTO checkpoint_test (value) VALUES (1)")
+            .execute(&pool)
+            .await
+            .expect("write WAL frame");
+
+        assert!(!checkpoint_pool_with_timeout(&pool, Duration::from_millis(50)).await);
+        assert!(PathBuf::from(format!("{}-wal", path.display())).exists());
+        sqlx::query("ROLLBACK")
+            .execute(&mut *reader)
+            .await
+            .expect("release snapshot");
+        drop(reader);
+        assert!(close_pool(&pool).await);
+        remove_database(&path);
+    }
+
+    #[tokio::test]
+    async fn pool_close_timeout_is_bounded_until_connections_release() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("test pool");
+        let connection = pool.acquire().await.expect("held connection");
+        assert!(!close_pool_with_timeout(&pool, Duration::from_millis(10)).await);
+        drop(connection);
+        assert!(close_pool_with_timeout(&pool, Duration::from_secs(1)).await);
+    }
+
+    #[tokio::test]
+    async fn unexpected_server_termination_is_a_fatal_shutdown_trigger() {
+        let coordinator = ShutdownCoordinator::default();
+        let mut server = std::future::ready(Ok(()));
+
+        assert!(await_server_or_shutdown(&mut server, &coordinator).await);
+        let outcome = coordinator.outcome().await;
+        assert_eq!(outcome.first, Some(ShutdownTrigger::HttpFailure));
+        assert_eq!(outcome.fatal_triggers, vec![ShutdownTrigger::HttpFailure]);
     }
 }

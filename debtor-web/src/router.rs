@@ -171,6 +171,32 @@ mod tests {
         router(test_state.app.clone())
     }
 
+    #[tokio::test]
+    async fn probes_remain_available_when_all_user_permits_are_held() {
+        let test_state = state(false);
+        let user_limit = Arc::new(tokio::sync::Semaphore::new(64));
+        let permits = user_limit
+            .clone()
+            .acquire_many_owned(64)
+            .await
+            .expect("all user permits");
+        let app = router_with_sessions(
+            test_state.app,
+            SessionManagerLayer::new(ReapingMemoryStore::default())
+                .with_secure(false)
+                .with_expiry(session::anonymous_expiry())
+                .with_always_save(true),
+            user_limit,
+        );
+
+        let response = app
+            .oneshot(request(Method::GET, "/healthz", "", None))
+            .await
+            .expect("probe response");
+        assert_eq!(response.status(), StatusCode::OK);
+        drop(permits);
+    }
+
     fn request(method: Method, uri: &str, body: &str, cookie: Option<&str>) -> Request<Body> {
         let mut request = Request::builder()
             .method(method)

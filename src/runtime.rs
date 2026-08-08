@@ -235,10 +235,14 @@ struct WalCheckpoint {
 }
 
 pub(crate) async fn checkpoint_pool(pool: &SqlitePool) -> bool {
+    checkpoint_pool_with_timeout(pool, WAL_CHECKPOINT_TIMEOUT).await
+}
+
+pub(crate) async fn checkpoint_pool_with_timeout(pool: &SqlitePool, timeout: Duration) -> bool {
     // SQLite exposes wal_checkpoint output without declared column types.
     // Keep this static pragma checked for syntax while decoding its fixed shape explicitly.
     tokio::time::timeout(
-        WAL_CHECKPOINT_TIMEOUT,
+        timeout,
         sqlx::query_as_unchecked!(WalCheckpoint, "PRAGMA wal_checkpoint(TRUNCATE)").fetch_one(pool),
     )
     .await
@@ -251,9 +255,11 @@ pub(crate) async fn checkpoint_pool(pool: &SqlitePool) -> bool {
 }
 
 pub(crate) async fn close_pool(pool: &SqlitePool) -> bool {
-    tokio::time::timeout(POOL_CLOSE_TIMEOUT, pool.close())
-        .await
-        .is_ok()
+    close_pool_with_timeout(pool, POOL_CLOSE_TIMEOUT).await
+}
+
+pub(crate) async fn close_pool_with_timeout(pool: &SqlitePool, timeout: Duration) -> bool {
+    tokio::time::timeout(timeout, pool.close()).await.is_ok()
 }
 
 pub(crate) async fn run_runtime(
@@ -278,6 +284,25 @@ pub(crate) async fn run_runtime_with_options(
     coordinator: ShutdownCoordinator,
     cleanup_interval: Duration,
 ) -> Result<()> {
+    run_runtime_with_timeouts(
+        runtime,
+        listener,
+        signals,
+        coordinator,
+        cleanup_interval,
+        HTTP_DRAIN_TIMEOUT,
+    )
+    .await
+}
+
+pub(crate) async fn run_runtime_with_timeouts(
+    runtime: BuiltApp,
+    listener: tokio::net::TcpListener,
+    signals: SignalReceivers,
+    coordinator: ShutdownCoordinator,
+    cleanup_interval: Duration,
+    http_drain_timeout: Duration,
+) -> Result<()> {
     let mut cleanup_handle: JoinHandle<()> = tokio::spawn(cleanup_worker(
         runtime.session_store.clone(),
         coordinator.clone(),
@@ -298,18 +323,10 @@ pub(crate) async fn run_runtime_with_options(
         .into_future(),
     );
 
-    let server_finished = tokio::select! {
-        result = &mut server => {
-            if result.is_err() {
-                coordinator.request(ShutdownTrigger::HttpFailure).await;
-            }
-            true
-        }
-        () = coordinator.wait() => false,
-    };
+    let server_finished = await_server_or_shutdown(&mut server, &coordinator).await;
 
     if !server_finished
-        && let Some(result) = drain_result(&mut server, HTTP_DRAIN_TIMEOUT).await
+        && let Some(result) = drain_result(&mut server, http_drain_timeout).await
         && result.is_err()
     {
         coordinator.request(ShutdownTrigger::HttpFailure).await;
@@ -368,6 +385,24 @@ pub(crate) async fn run_runtime_with_options(
         return Err(anyhow!("runtime shutdown failed"));
     }
     Ok(())
+}
+
+pub(crate) async fn await_server_or_shutdown<F>(
+    server: &mut F,
+    coordinator: &ShutdownCoordinator,
+) -> bool
+where
+    F: Future<Output = std::io::Result<()>> + Unpin,
+{
+    tokio::select! {
+        result = server => {
+            if result.is_err() || coordinator.outcome().await.first.is_none() {
+                coordinator.request(ShutdownTrigger::HttpFailure).await;
+            }
+            true
+        }
+        () = coordinator.wait() => false,
+    }
 }
 
 pub(crate) async fn drain_result<F>(future: F, timeout: Duration) -> Option<F::Output>
