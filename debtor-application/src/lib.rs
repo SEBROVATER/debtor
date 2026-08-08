@@ -884,55 +884,6 @@ impl DebtUseCases for DebtService {
     }
 }
 
-/// Payer selection independent of any transport format.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PayerSelection {
-    /// One participant paid the full total.
-    Single(EntityId),
-    /// Exact payer amounts supplied by the administrator.
-    Exact(Vec<debtor_domain::model::Allocation>),
-}
-
-/// Input for a new equal-split spending.
-pub struct EqualSpendingCommand {
-    /// Owning group.
-    pub group_id: EntityId,
-    /// Description entered by the admin.
-    pub description: String,
-    /// Positive source-currency total.
-    pub total: Decimal,
-    /// Source currency.
-    pub currency: Currency,
-    /// Fixed category.
-    pub spending_type: SpendingType,
-    /// Spending date.
-    pub spent_date: NaiveDate,
-    /// One or more payer allocations.
-    pub payers: PayerSelection,
-    /// Selected share recipients.
-    pub share_participant_ids: Vec<EntityId>,
-}
-
-/// Input for a new exact-share spending.
-pub struct ExactSpendingCommand {
-    /// Owning group.
-    pub group_id: EntityId,
-    /// Description entered by the admin.
-    pub description: String,
-    /// Positive source-currency total.
-    pub total: Decimal,
-    /// Source currency.
-    pub currency: Currency,
-    /// Fixed category.
-    pub spending_type: SpendingType,
-    /// Spending date.
-    pub spent_date: NaiveDate,
-    /// One or more payer allocations.
-    pub payers: PayerSelection,
-    /// One or more positive exact owed-share allocations.
-    pub shares: Vec<debtor_domain::model::Allocation>,
-}
-
 /// Raw payer selection decoded from a transport adapter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PayerInput {
@@ -989,28 +940,6 @@ pub trait SpendingUseCases: Send + Sync {
         group_id: EntityId,
         cursor: Option<SpendingCursor>,
     ) -> Result<SpendingPage, ApplicationError>;
-    /// Creates a validated equal-split spending.
-    async fn create_equal(
-        &self,
-        command: EqualSpendingCommand,
-    ) -> Result<Spending, ApplicationError>;
-    /// Creates a validated exact-share spending.
-    async fn create_exact(
-        &self,
-        command: ExactSpendingCommand,
-    ) -> Result<Spending, ApplicationError>;
-    /// Updates an equal-split spending.
-    async fn update_equal(
-        &self,
-        spending_id: EntityId,
-        command: EqualSpendingCommand,
-    ) -> Result<Spending, ApplicationError>;
-    /// Updates an exact-share spending.
-    async fn update_exact(
-        &self,
-        spending_id: EntityId,
-        command: ExactSpendingCommand,
-    ) -> Result<Spending, ApplicationError>;
     /// Creates a spending from raw, transport-neutral input.
     async fn create_input(&self, input: SpendingInput) -> Result<Spending, ApplicationError>;
     /// Updates a spending from raw, transport-neutral input.
@@ -1150,19 +1079,6 @@ async fn validate_eligible(
     Ok(())
 }
 
-fn resolve_payers(
-    total: Decimal,
-    selection: PayerSelection,
-) -> Vec<debtor_domain::model::Allocation> {
-    match selection {
-        PayerSelection::Single(participant_id) => vec![Allocation {
-            participant_id,
-            amount: total,
-        }],
-        PayerSelection::Exact(payers) => payers,
-    }
-}
-
 #[async_trait]
 impl SpendingUseCases for SpendingService {
     async fn list_spendings(&self, group_id: EntityId) -> Result<Vec<Spending>, ApplicationError> {
@@ -1183,94 +1099,6 @@ impl SpendingUseCases for SpendingService {
         cursor: Option<SpendingCursor>,
     ) -> Result<SpendingPage, ApplicationError> {
         self.reader.spending_page(group_id, cursor).await
-    }
-
-    async fn create_equal(
-        &self,
-        command: EqualSpendingCommand,
-    ) -> Result<Spending, ApplicationError> {
-        let shares = equal_split(
-            command.total,
-            command.currency,
-            &command.share_participant_ids,
-        )?;
-        let spending = Spending {
-            id: 0,
-            group_id: command.group_id,
-            description: Description::new(command.description)?,
-            total: command.total,
-            currency: command.currency,
-            spending_type: command.spending_type,
-            spent_date: command.spent_date,
-            payers: resolve_payers(command.total, command.payers),
-            shares,
-        };
-        spending.validate()?;
-        self.repository.create_spending(spending).await
-    }
-
-    async fn create_exact(
-        &self,
-        command: ExactSpendingCommand,
-    ) -> Result<Spending, ApplicationError> {
-        let spending = Spending {
-            id: 0,
-            group_id: command.group_id,
-            description: Description::new(command.description)?,
-            total: command.total,
-            currency: command.currency,
-            spending_type: command.spending_type,
-            spent_date: command.spent_date,
-            payers: resolve_payers(command.total, command.payers),
-            shares: command.shares,
-        };
-        spending.validate()?;
-        self.repository.create_spending(spending).await
-    }
-
-    async fn update_equal(
-        &self,
-        spending_id: EntityId,
-        command: EqualSpendingCommand,
-    ) -> Result<Spending, ApplicationError> {
-        let shares = equal_split(
-            command.total,
-            command.currency,
-            &command.share_participant_ids,
-        )?;
-        let spending = Spending {
-            id: spending_id,
-            group_id: command.group_id,
-            description: Description::new(command.description)?,
-            total: command.total,
-            currency: command.currency,
-            spending_type: command.spending_type,
-            spent_date: command.spent_date,
-            payers: resolve_payers(command.total, command.payers),
-            shares,
-        };
-        spending.validate()?;
-        self.repository.update_spending(spending).await
-    }
-
-    async fn update_exact(
-        &self,
-        spending_id: EntityId,
-        command: ExactSpendingCommand,
-    ) -> Result<Spending, ApplicationError> {
-        let spending = Spending {
-            id: spending_id,
-            group_id: command.group_id,
-            description: Description::new(command.description)?,
-            total: command.total,
-            currency: command.currency,
-            spending_type: command.spending_type,
-            spent_date: command.spent_date,
-            payers: resolve_payers(command.total, command.payers),
-            shares: command.shares,
-        };
-        spending.validate()?;
-        self.repository.update_spending(spending).await
     }
 
     async fn create_input(&self, input: SpendingInput) -> Result<Spending, ApplicationError> {
@@ -1749,40 +1577,40 @@ mod tests {
         }
     }
 
-    fn equal_command() -> EqualSpendingCommand {
-        EqualSpendingCommand {
+    fn equal_input() -> SpendingInput {
+        SpendingInput {
             group_id: GROUP_ID,
             description: "  Dinner  ".into(),
-            total: Decimal::new(1001, 2),
-            currency: Currency::Usd,
-            spending_type: SpendingType::Food,
-            spent_date: date(5),
-            payers: PayerSelection::Single(PARTICIPANT_ONE),
-            share_participant_ids: vec![PARTICIPANT_TWO, PARTICIPANT_ONE],
+            total: "10.01".into(),
+            currency: "USD".into(),
+            spending_type: "food".into(),
+            spent_date: date(5).to_string(),
+            payers: PayerInput::Single(PARTICIPANT_ONE),
+            shares: ShareInput::Equal(vec![PARTICIPANT_TWO, PARTICIPANT_ONE]),
         }
     }
 
-    fn exact_command() -> ExactSpendingCommand {
-        ExactSpendingCommand {
+    fn exact_input() -> SpendingInput {
+        SpendingInput {
             group_id: GROUP_ID,
             description: "Taxi".into(),
-            total: Decimal::new(1000, 2),
-            currency: Currency::Usd,
-            spending_type: SpendingType::Transport,
-            spent_date: date(6),
-            payers: PayerSelection::Exact(vec![
-                allocation(PARTICIPANT_ONE, 400),
-                allocation(PARTICIPANT_TWO, 600),
+            total: "10.00".into(),
+            currency: "USD".into(),
+            spending_type: "transport".into(),
+            spent_date: date(6).to_string(),
+            payers: PayerInput::Exact(vec![
+                (PARTICIPANT_ONE, "4.00".into()),
+                (PARTICIPANT_TWO, "6.00".into()),
             ]),
-            shares: vec![
-                allocation(PARTICIPANT_ONE, 400),
-                allocation(PARTICIPANT_TWO, 600),
-            ],
+            shares: ShareInput::Exact(vec![
+                (PARTICIPANT_ONE, "4.00".into()),
+                (PARTICIPANT_TWO, "6.00".into()),
+            ]),
         }
     }
 
     #[tokio::test]
-    async fn spending_service_builds_equal_and_exact_create_update_aggregates_and_scopes_reads() {
+    async fn spending_service_parses_raw_input_for_create_update_and_scopes_reads() {
         let fake = Arc::new(SpendingFake {
             listed_groups: Mutex::new(Vec::new()),
             read_requests: Mutex::new(Vec::new()),
@@ -1792,10 +1620,10 @@ mod tests {
         });
         let service = SpendingService::new(fake.clone(), fake.clone());
 
-        service.create_equal(equal_command()).await.unwrap();
-        service.create_exact(exact_command()).await.unwrap();
-        service.update_equal(99, equal_command()).await.unwrap();
-        service.update_exact(100, exact_command()).await.unwrap();
+        service.create_input(equal_input()).await.unwrap();
+        service.create_input(exact_input()).await.unwrap();
+        service.update_input(99, equal_input()).await.unwrap();
+        service.update_input(100, exact_input()).await.unwrap();
         assert!(matches!(
             service.spending(GROUP_ID, 77).await,
             Err(ApplicationError::NotFound)
@@ -1811,7 +1639,13 @@ mod tests {
                 allocation(PARTICIPANT_TWO, 500)
             ]
         );
-        assert_eq!(created[1].shares, exact_command().shares);
+        assert_eq!(
+            created[1].shares,
+            vec![
+                allocation(PARTICIPANT_ONE, 400),
+                allocation(PARTICIPANT_TWO, 600)
+            ]
+        );
         let updated = fake.updated.lock().unwrap();
         assert_eq!(updated[0].id, 99);
         assert_eq!(updated[1].id, 100);
@@ -1820,7 +1654,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spending_commands_cover_all_payer_and_share_modes_and_validate_selection() {
+    async fn spending_input_covers_all_payer_and_share_modes_and_validates_selection() {
         let fake = Arc::new(SpendingFake {
             listed_groups: Mutex::new(Vec::new()),
             read_requests: Mutex::new(Vec::new()),
@@ -1830,40 +1664,39 @@ mod tests {
         });
         let service = SpendingService::new(fake.clone(), fake);
 
-        let mut equal_multiple_payers = equal_command();
-        equal_multiple_payers.payers =
-            PayerSelection::Exact(vec![allocation(PARTICIPANT_ONE, 1001)]);
-        service.create_equal(equal_multiple_payers).await.unwrap();
+        let mut equal_multiple_payers = equal_input();
+        equal_multiple_payers.payers = PayerInput::Exact(vec![(PARTICIPANT_ONE, "10.01".into())]);
+        service.create_input(equal_multiple_payers).await.unwrap();
 
-        let mut exact_single_payer = exact_command();
-        exact_single_payer.payers = PayerSelection::Single(PARTICIPANT_ONE);
-        service.create_exact(exact_single_payer).await.unwrap();
+        let mut exact_single_payer = exact_input();
+        exact_single_payer.payers = PayerInput::Single(PARTICIPANT_ONE);
+        service.create_input(exact_single_payer).await.unwrap();
 
-        let mut duplicate_payers = equal_command();
-        duplicate_payers.payers = PayerSelection::Exact(vec![
-            allocation(PARTICIPANT_ONE, 500),
-            allocation(PARTICIPANT_ONE, 501),
+        let mut duplicate_payers = equal_input();
+        duplicate_payers.payers = PayerInput::Exact(vec![
+            (PARTICIPANT_ONE, "5.00".into()),
+            (PARTICIPANT_ONE, "5.01".into()),
         ]);
         assert!(matches!(
-            service.create_equal(duplicate_payers).await,
+            service.create_input(duplicate_payers).await,
             Err(ApplicationError::Validation(
                 ValidationError::DuplicateParticipant { .. }
             ))
         ));
 
-        let mut empty_shares = exact_command();
-        empty_shares.shares.clear();
+        let mut empty_shares = exact_input();
+        empty_shares.shares = ShareInput::Exact(Vec::new());
         assert!(matches!(
-            service.create_exact(empty_shares).await,
+            service.create_input(empty_shares).await,
             Err(ApplicationError::Validation(
                 ValidationError::EmptyAllocations { field: "share" }
             ))
         ));
 
-        let mut invalid_id = equal_command();
-        invalid_id.share_participant_ids = vec![-1];
+        let mut invalid_id = equal_input();
+        invalid_id.shares = ShareInput::Equal(vec![-1]);
         assert!(matches!(
-            service.create_equal(invalid_id).await,
+            service.create_input(invalid_id).await,
             Err(ApplicationError::Validation(
                 ValidationError::InvalidParticipantId
             ))
@@ -1880,7 +1713,7 @@ mod tests {
             fail_update: true,
         });
         let error = SpendingService::new(fake.clone(), fake)
-            .update_exact(9, exact_command())
+            .update_input(9, exact_input())
             .await
             .unwrap_err();
         assert!(matches!(error, ApplicationError::Conflict));

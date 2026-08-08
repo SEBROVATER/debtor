@@ -6,9 +6,9 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use debtor_application::{
     ApplicationError, AuthenticationService, AuthenticationUseCases, Clock, DebtResult,
-    DebtUseCases, EqualSpendingCommand, ExactSpendingCommand, GroupUseCases, LoginAdmission,
-    LoginAttemptLimiter, ParticipantUseCases, PasswordVerifier, RateMode, ReadinessUseCases,
-    SpendingInput, SpendingPage, SpendingUseCases, UtcClock,
+    DebtUseCases, GroupUseCases, LoginAdmission, LoginAttemptLimiter, ParticipantUseCases,
+    PasswordVerifier, RateMode, ReadinessUseCases, SpendingInput, SpendingPage, SpendingUseCases,
+    UtcClock,
 };
 use debtor_domain::{
     currency::Currency,
@@ -292,30 +292,6 @@ impl SpendingUseCases for FakeSpendings {
             older: None,
             newer: None,
         })
-    }
-
-    async fn create_equal(&self, _: EqualSpendingCommand) -> Result<Spending, ApplicationError> {
-        Err(validation_error())
-    }
-
-    async fn create_exact(&self, _: ExactSpendingCommand) -> Result<Spending, ApplicationError> {
-        Err(validation_error())
-    }
-
-    async fn update_equal(
-        &self,
-        _: i64,
-        _: EqualSpendingCommand,
-    ) -> Result<Spending, ApplicationError> {
-        Err(validation_error())
-    }
-
-    async fn update_exact(
-        &self,
-        _: i64,
-        _: ExactSpendingCommand,
-    ) -> Result<Spending, ApplicationError> {
-        Err(validation_error())
     }
 
     async fn create_input(&self, _: SpendingInput) -> Result<Spending, ApplicationError> {
