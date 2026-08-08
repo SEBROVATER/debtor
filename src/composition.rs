@@ -5,8 +5,9 @@ use axum::error_handling::HandleErrorLayer;
 use debtor_application::{
     AuthenticationService, AuthenticationUseCases, Clock, DebtService, DebtUseCases, GroupReader,
     GroupRepository, GroupService, GroupUseCases, LedgerSnapshotReader, ParticipantRepository,
-    ParticipantService, ParticipantUseCases, ReadinessService, ReadinessUseCases, SpendingReader,
-    SpendingEligibilityReader, SpendingRepository, SpendingService, SpendingUseCases, UtcClock,
+    ParticipantService, ParticipantUseCases, ReadinessService, ReadinessUseCases,
+    SpendingEligibilityReader, SpendingReader, SpendingRepository, SpendingService,
+    SpendingUseCases, UtcClock,
 };
 use debtor_infra::auth::{ArgonPasswordGate, MemoryLoginAttemptLimiter};
 use debtor_infra::db::repos::SqliteLedgerRuntime;

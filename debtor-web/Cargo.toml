@@ -26,7 +26,6 @@ async-trait = { workspace = true }
 time = { workspace = true }
 
 [dev-dependencies]
-tower = { workspace = true, features = ["util"] }
 serde_json = { workspace = true }
 tracing-subscriber = { workspace = true }
 
