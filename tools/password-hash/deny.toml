@@ -1,0 +1,30 @@
+[advisories]
+version = 2
+yanked = "deny"
+
+[licenses]
+version = 2
+confidence-threshold = 0.8
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "MIT",
+]
+
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+skip = [
+    { crate = "getrandom@0.2.17", reason = "Argon2's password-hash 0.5 requires Rand Core 0.6 while this helper uses Rand 0.10" },
+    { crate = "rand_core@0.6.4", reason = "Argon2's password-hash 0.5 requires Rand Core 0.6 while this helper uses Rand 0.10" },
+    { crate = "windows-sys@0.59.0", reason = "rpassword's current rtoolbox dependency uses an older Windows API binding" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

@@ -48,7 +48,7 @@ jobs:
       - name: Check dependency policy
         run: |
           cargo install cargo-deny --version 0.20.2 --locked
-          cargo deny --manifest-path tools/password-hash/Cargo.toml check
+          cargo deny --manifest-path tools/password-hash/Cargo.toml --config tools/password-hash/deny.toml check
       - name: Run Clippy
         run: cargo clippy --manifest-path tools/password-hash/Cargo.toml --all-targets --all-features --locked -- -D warnings
       - name: Run tests

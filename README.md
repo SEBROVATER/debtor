@@ -36,7 +36,7 @@ The independent password-helper checks are:
 
 ```bash
 cargo fmt --manifest-path tools/password-hash/Cargo.toml -- --check
-cargo deny --manifest-path tools/password-hash/Cargo.toml check
+cargo deny --manifest-path tools/password-hash/Cargo.toml --config tools/password-hash/deny.toml check
 cargo clippy --manifest-path tools/password-hash/Cargo.toml --all-targets --all-features --locked -- -D warnings
 cargo test --manifest-path tools/password-hash/Cargo.toml --locked
 ```
