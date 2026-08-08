@@ -10,7 +10,7 @@ use super::{
     GroupsQuery,
     auth::{csrf, require_auth},
     response::{error_response, map_error, render},
-    spendings::{build_group_template, map_group_template_error},
+    spending_views::{build_group_template, map_group_template_error},
 };
 use crate::{
     forms::{CsrfValidatedForm, GroupForm, parse_group_form},

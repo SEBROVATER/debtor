@@ -8,7 +8,7 @@ use super::{
     auth::require_auth,
     groups::require_writable_group,
     response::{error_response, map_error},
-    spendings::{ParticipantDraft, build_group_template, map_group_template_error},
+    spending_views::{ParticipantDraft, build_group_template, map_group_template_error},
 };
 use crate::{
     forms::{CsrfValidatedForm, ParticipantForm, parse_member_form, parse_participant_form},

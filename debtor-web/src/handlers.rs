@@ -7,6 +7,7 @@ mod health;
 mod memberships;
 mod participants;
 mod response;
+mod spending_views;
 mod spendings;
 
 #[cfg(test)]
