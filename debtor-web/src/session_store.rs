@@ -151,7 +151,7 @@ impl ReapingMemoryStore {
     }
 
     #[cfg(test)]
-    async fn counts(&self) -> (usize, usize, usize) {
+    pub(crate) async fn counts(&self) -> (usize, usize, usize) {
         let state = self.state.lock().await;
         (
             state.records.len(),

@@ -24,6 +24,7 @@ struct StableCache {
     values: HashMap<CacheKey, RateQuote>,
     access_order: BTreeMap<u64, CacheKey>,
     next_access: u64,
+    evictions: u64,
 }
 
 impl StableCache {
@@ -32,6 +33,7 @@ impl StableCache {
             values: HashMap::new(),
             access_order: BTreeMap::new(),
             next_access: 0,
+            evictions: 0,
         }
     }
 
@@ -59,6 +61,7 @@ impl StableCache {
                 break;
             };
             self.values.remove(&oldest);
+            self.evictions = self.evictions.saturating_add(1);
             tracing::debug!(
                 target: "debtor.provider",
                 event = "provider_cache_eviction",
@@ -74,6 +77,77 @@ impl StableCache {
         self.touch(key, value.clone());
         Some(value)
     }
+}
+
+struct RefreshableCache {
+    values: HashMap<CacheKey, RateQuote>,
+    last_rollover: Option<NaiveDate>,
+    evictions: u64,
+}
+
+impl RefreshableCache {
+    fn new() -> Self {
+        Self {
+            values: HashMap::new(),
+            last_rollover: None,
+            evictions: 0,
+        }
+    }
+
+    fn prune_on_rollover(&mut self, today: NaiveDate) {
+        if self.last_rollover == Some(today) {
+            return;
+        }
+        self.last_rollover = Some(today);
+
+        let mut newest_fallbacks = HashMap::new();
+        for &key @ (base, quote, requested, fetch) in self.values.keys() {
+            if fetch >= today {
+                continue;
+            }
+            let context = if requested == fetch {
+                (base, quote, None)
+            } else {
+                (base, quote, Some(requested))
+            };
+            newest_fallbacks
+                .entry(context)
+                .and_modify(|candidate: &mut CacheKey| {
+                    if candidate.3 < fetch {
+                        *candidate = key;
+                    }
+                })
+                .or_insert(key);
+        }
+        let before = self.values.len();
+        self.values.retain(|key, _| {
+            key.3 >= today || newest_fallbacks.values().any(|candidate| candidate == key)
+        });
+        self.evictions = self.evictions.saturating_add(
+            u64::try_from(before - self.values.len()).map_or(u64::MAX, |count| count),
+        );
+    }
+
+    fn get(&self, key: &CacheKey) -> Option<RateQuote> {
+        self.values.get(key).cloned()
+    }
+
+    fn insert(&mut self, key: CacheKey, value: RateQuote) {
+        self.values.insert(key, value);
+    }
+}
+
+/// Key-free, process-local exchange-rate cache counters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CacheCounters {
+    /// Number of stable historical contexts retained.
+    pub stable_entries: usize,
+    /// Number of refreshable current/future contexts retained.
+    pub refreshable_entries: usize,
+    /// Number of stable contexts evicted by LRU capacity.
+    pub stable_evictions: u64,
+    /// Number of obsolete refreshable contexts pruned at UTC rollover.
+    pub refreshable_evictions: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -113,7 +187,7 @@ pub struct FrankfurterClient {
     http: Option<reqwest::Client>,
     base_url: String,
     stable_cache: Arc<RwLock<StableCache>>,
-    refreshable_cache: Arc<RwLock<HashMap<CacheKey, RateQuote>>>,
+    refreshable_cache: Arc<RwLock<RefreshableCache>>,
     in_flight: Arc<Mutex<HashMap<CacheKey, Arc<Flight>>>>,
     requests: Arc<Semaphore>,
 }
@@ -136,7 +210,7 @@ impl FrankfurterClient {
             http,
             base_url: base_url.trim_end_matches('/').to_owned(),
             stable_cache: Arc::new(RwLock::new(StableCache::new())),
-            refreshable_cache: Arc::new(RwLock::new(HashMap::new())),
+            refreshable_cache: Arc::new(RwLock::new(RefreshableCache::new())),
             in_flight: Arc::new(Mutex::new(HashMap::new())),
             requests: Arc::new(Semaphore::new(MAX_IN_FLIGHT_REQUESTS)),
         }
@@ -147,6 +221,28 @@ impl FrankfurterClient {
         let mut client = Self::with_base_url(base_url);
         client.http = Some(http);
         client
+    }
+
+    /// Returns aggregate cache counters without exposing rate contexts.
+    ///
+    /// # Errors
+    ///
+    /// Returns an unavailable error if a cache lock is poisoned.
+    pub fn cache_counters(&self) -> Result<CacheCounters, ApplicationError> {
+        let stable = self
+            .stable_cache
+            .read()
+            .map_err(|_| ApplicationError::Unavailable(UnavailableReason::ExchangeRates))?;
+        let refreshable = self
+            .refreshable_cache
+            .read()
+            .map_err(|_| ApplicationError::Unavailable(UnavailableReason::ExchangeRates))?;
+        Ok(CacheCounters {
+            stable_entries: stable.values.len(),
+            refreshable_entries: refreshable.values.len(),
+            stable_evictions: stable.evictions,
+            refreshable_evictions: refreshable.evictions,
+        })
     }
 }
 
@@ -185,11 +281,12 @@ impl ExchangeRateProvider for FrankfurterClient {
                 .map_err(|_| ApplicationError::Unavailable(UnavailableReason::ExchangeRates))?
                 .get(key)
         } else {
-            self.refreshable_cache
-                .read()
-                .map_err(|_| ApplicationError::Unavailable(UnavailableReason::ExchangeRates))?
-                .get(&key)
-                .cloned()
+            let mut cache = self
+                .refreshable_cache
+                .write()
+                .map_err(|_| ApplicationError::Unavailable(UnavailableReason::ExchangeRates))?;
+            cache.prune_on_rollover(today);
+            cache.get(&key)
         };
         if let Some(value) = cached {
             return Ok(value);
@@ -283,10 +380,12 @@ impl FrankfurterClient {
                 .map_err(|_| UnavailableReason::ExchangeRates)?
                 .touch(key, value.clone());
         } else {
-            self.refreshable_cache
+            let mut cache = self
+                .refreshable_cache
                 .write()
-                .map_err(|_| UnavailableReason::ExchangeRates)?
-                .insert(key, value.clone());
+                .map_err(|_| UnavailableReason::ExchangeRates)?;
+            cache.prune_on_rollover(today);
+            cache.insert(key, value.clone());
         }
         Ok(value)
     }
@@ -315,6 +414,7 @@ impl FrankfurterClient {
         }
         let stale = self.refreshable_cache.read().ok().and_then(|cache| {
             cache
+                .values
                 .iter()
                 .filter(
                     |((cached_base, cached_quote, cached_requested, cached_fetch), _)| {
@@ -722,6 +822,86 @@ mod tests {
         assert!(cache.get(oldest_key).is_none());
         assert!(cache.get(hot_key).is_some());
         assert_eq!(cache.values.len(), STABLE_CACHE_CAPACITY);
+        assert_eq!(cache.evictions, 1);
+    }
+
+    #[test]
+    fn refreshable_cache_prunes_superseded_rollover_contexts_but_keeps_fallbacks() {
+        let mut cache = RefreshableCache::new();
+        let first = date(2026, 1, 1);
+        let second = date(2026, 1, 2);
+        let today = date(2026, 1, 3);
+        let future = date(2026, 1, 10);
+        let other_future = date(2026, 1, 11);
+        let keys = [
+            (Currency::Usd, Currency::Eur, first, first),
+            (Currency::Usd, Currency::Eur, second, second),
+            (Currency::Usd, Currency::Eur, future, first),
+            (Currency::Usd, Currency::Eur, future, second),
+            (Currency::Usd, Currency::Eur, other_future, first),
+            (Currency::Usd, Currency::Eur, today, today),
+        ];
+        for key in keys {
+            cache.insert(key, quote(key));
+        }
+
+        cache.prune_on_rollover(today);
+
+        assert_eq!(cache.values.len(), 4);
+        assert_eq!(cache.evictions, 2);
+        assert!(
+            cache
+                .get(&(Currency::Usd, Currency::Eur, first, first))
+                .is_none()
+        );
+        assert!(
+            cache
+                .get(&(Currency::Usd, Currency::Eur, second, second))
+                .is_some()
+        );
+        assert!(
+            cache
+                .get(&(Currency::Usd, Currency::Eur, future, first))
+                .is_none()
+        );
+        assert!(
+            cache
+                .get(&(Currency::Usd, Currency::Eur, future, second))
+                .is_some()
+        );
+        assert!(
+            cache
+                .get(&(Currency::Usd, Currency::Eur, other_future, first))
+                .is_some()
+        );
+        assert!(
+            cache
+                .get(&(Currency::Usd, Currency::Eur, today, today))
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn cache_counters_expose_only_aggregate_sizes_and_evictions() {
+        let client = FrankfurterClient::with_base_url("http://127.0.0.1:1");
+        let mut cache = client.stable_cache.write().expect("cache lock");
+        for index in 0..=STABLE_CACHE_CAPACITY {
+            let requested_date =
+                date(2025, 1, 1) + chrono::Duration::days(i64::try_from(index).unwrap());
+            let key = (Currency::Usd, Currency::Eur, requested_date, requested_date);
+            cache.touch(key, quote(key));
+        }
+        drop(cache);
+
+        assert_eq!(
+            client.cache_counters().expect("cache counters"),
+            CacheCounters {
+                stable_entries: STABLE_CACHE_CAPACITY,
+                refreshable_entries: 0,
+                stable_evictions: 1,
+                refreshable_evictions: 0,
+            }
+        );
     }
 
     fn quote(key: CacheKey) -> RateQuote {

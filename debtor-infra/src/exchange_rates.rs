@@ -2,4 +2,4 @@
 
 mod frankfurter;
 
-pub use frankfurter::FrankfurterClient;
+pub use frankfurter::{CacheCounters, FrankfurterClient};

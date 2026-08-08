@@ -137,6 +137,8 @@ pub fn router_with_sessions<S: SessionStore + Clone>(
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
+    use std::sync::Arc;
+
     use axum::{
         body::{Body, to_bytes},
         extract::connect_info::ConnectInfo,
@@ -148,10 +150,18 @@ mod tests {
     };
     use debtor_domain::currency::Currency;
     use tower::ServiceExt;
+    use tower_sessions::{
+        SessionManagerLayer, SessionStore,
+        session::{Id, Record},
+    };
 
-    use super::router;
+    use super::{router, router_with_sessions};
     use crate::handlers::test_support::{
         TestState, state, state_with_errors, state_with_readiness_failure,
+    };
+    use crate::{
+        session,
+        session_store::{AUTHENTICATED_CAPACITY, ReapingMemoryStore},
     };
 
     const PEER: std::net::SocketAddr =
@@ -231,6 +241,86 @@ mod tests {
             .expect("login response");
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
         session_cookie(&response)
+    }
+
+    #[tokio::test]
+    async fn concurrent_promotions_at_authenticated_capacity_leave_no_anonymous_orphan() {
+        let test_state = state(false);
+        let store = ReapingMemoryStore::default();
+        for _ in 0..AUTHENTICATED_CAPACITY - 1 {
+            let mut record = Record {
+                id: Id::default(),
+                data: std::collections::HashMap::from([("authenticated".into(), true.into())]),
+                expiry_date: time::OffsetDateTime::now_utc() + time::Duration::hours(1),
+            };
+            store
+                .create(&mut record)
+                .await
+                .expect("fill authenticated capacity");
+        }
+        let app = router_with_sessions(
+            test_state.app.clone(),
+            SessionManagerLayer::new(store.clone())
+                .with_secure(false)
+                .with_expiry(session::anonymous_expiry())
+                .with_always_save(true),
+            Arc::new(tokio::sync::Semaphore::new(64)),
+        );
+        let mut submissions = Vec::new();
+        for _ in 0..2 {
+            let response = app
+                .clone()
+                .oneshot(request(Method::GET, "/login", "", None))
+                .await
+                .expect("login form response");
+            let cookie = session_cookie(&response);
+            let token = csrf(&response_body(response).await);
+            submissions.push((cookie, token));
+        }
+        let [(first_cookie, first_token), (second_cookie, second_token)]: [(String, String); 2] =
+            submissions.try_into().expect("two login submissions");
+        let first = app.clone().oneshot(request(
+            Method::POST,
+            "/login",
+            &format!("csrf={first_token}&password=correct"),
+            Some(&first_cookie),
+        ));
+        let second = app.clone().oneshot(request(
+            Method::POST,
+            "/login",
+            &format!("csrf={second_token}&password=correct"),
+            Some(&second_cookie),
+        ));
+        let (first, second) = tokio::join!(first, second);
+        let statuses = [
+            first.expect("first login response").status(),
+            second.expect("second login response").status(),
+        ];
+
+        assert_eq!(
+            statuses
+                .iter()
+                .filter(|&&status| status == StatusCode::SEE_OTHER)
+                .count(),
+            1
+        );
+        assert_eq!(
+            statuses
+                .iter()
+                .filter(|&&status| status == StatusCode::SERVICE_UNAVAILABLE)
+                .count(),
+            1
+        );
+        assert_eq!(
+            store.counts().await,
+            (AUTHENTICATED_CAPACITY, 0, AUTHENTICATED_CAPACITY)
+        );
+        assert_eq!(
+            test_state
+                .auth_resets
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
     }
 
     #[tokio::test]
