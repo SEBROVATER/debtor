@@ -1020,6 +1020,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cloned_runtime_handles_block_on_the_shared_write_gate() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("test pool");
+        let runtime = SqliteLedgerRuntime::new(pool);
+        let first = runtime.store();
+        let second = runtime.store();
+        let held = first.write_guard().await.expect("first gate acquisition");
+
+        assert!(matches!(
+            second
+                .write_guard_with_timeout(Duration::from_millis(10))
+                .await,
+            Err(ApplicationError::Storage(StorageReason::Contention))
+        ));
+
+        drop(held);
+        assert!(
+            second
+                .write_guard_with_timeout(Duration::from_millis(10))
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
     async fn readiness_accepts_a_healthy_pool() {
         let pool = SqlitePool::connect("sqlite::memory:")
             .await

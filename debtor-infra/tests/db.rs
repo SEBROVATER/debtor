@@ -3,7 +3,6 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use debtor_application::{
@@ -78,34 +77,6 @@ async fn file_database_uses_wal_full_and_persists_after_reopen() {
         .expect("persisted group");
     assert_eq!(name, "Persisted");
     drop(reopened);
-    remove_database(&path);
-}
-
-#[tokio::test]
-async fn concurrent_mutations_through_cloned_runtime_handles_are_serialized() {
-    let (path, pool) = migrated_database().await;
-    let runtime = SqliteLedgerRuntime::new(pool.clone());
-    let first = Arc::new(runtime.store());
-    let second = Arc::new(runtime.store());
-    let first_task = tokio::spawn(async move {
-        first
-            .create_group(Name::new("First").expect("name"), Currency::Usd)
-            .await
-    });
-    let second_task = tokio::spawn(async move {
-        second
-            .create_group(Name::new("Second").expect("name"), Currency::Eur)
-            .await
-    });
-    assert!(first_task.await.expect("first task").is_ok());
-    assert!(second_task.await.expect("second task").is_ok());
-
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM groups")
-        .fetch_one(&pool)
-        .await
-        .expect("group count");
-    assert_eq!(count, 2);
-    drop(pool);
     remove_database(&path);
 }
 
