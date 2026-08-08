@@ -225,7 +225,10 @@ impl SpendingReader for SqliteLedgerStore {
             .into_iter()
             .map(|row| spending_summary(group_id, row))
             .collect::<Result<Vec<_>, _>>()?;
-        let older = has_more
+        let older = matches!(direction, Some(SpendingPageDirection::Newer)) || has_more;
+        let newer = matches!(direction, Some(SpendingPageDirection::Older))
+            || (matches!(direction, Some(SpendingPageDirection::Newer)) && has_more);
+        let older = older
             .then(|| {
                 items.last().map(|item| SpendingCursor {
                     direction: SpendingPageDirection::Older,
@@ -234,8 +237,7 @@ impl SpendingReader for SqliteLedgerStore {
                 })
             })
             .flatten();
-        let newer = direction
-            .is_some()
+        let newer = newer
             .then(|| {
                 items.first().map(|item| SpendingCursor {
                     direction: SpendingPageDirection::Newer,

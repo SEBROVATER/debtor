@@ -244,6 +244,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn empty_history_cursor_links_to_newest_page() {
+        let test_state = state(false);
+        let app = app(&test_state);
+        let session_cookie = login(&app).await;
+
+        let response = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                "/groups/1?cursor=older:2026-01-01:1",
+                "",
+                Some(&session_cookie),
+            ))
+            .await
+            .expect("history response");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            response_body(response)
+                .await
+                .contains("href=\"/groups/1\">Newest</a>")
+        );
+    }
+
+    #[tokio::test]
     async fn concurrent_promotions_at_authenticated_capacity_leave_no_anonymous_orphan() {
         let test_state = state(false);
         let store = ReapingMemoryStore::default();

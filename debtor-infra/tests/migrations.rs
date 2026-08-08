@@ -117,21 +117,24 @@ async fn all_expected_indexes_exist(pool: SqlitePool) {
 }
 
 #[sqlx::test(migrations = "../migrations")]
-async fn spending_history_plan_uses_composite_index(pool: SqlitePool) {
-    let rows = sqlx::query(
+async fn spending_history_plans_use_composite_index_in_both_directions(pool: SqlitePool) {
+    for query in [
         "EXPLAIN QUERY PLAN SELECT id FROM spendings WHERE group_id = ? AND (spent_date < ? OR (spent_date = ? AND id < ?)) ORDER BY spent_date DESC, id DESC LIMIT 26",
-    )
-    .bind(1_i64)
-    .bind("2026-01-01")
-    .bind("2026-01-01")
-    .bind(1_i64)
-    .fetch_all(&pool)
-    .await
-    .expect("query spending history plan");
-    assert!(rows.iter().any(|row| {
-        let detail: &str = row.get("detail");
-        detail.contains("idx_spendings_group_date")
-    }));
+        "EXPLAIN QUERY PLAN SELECT id FROM spendings WHERE group_id = ? AND (spent_date > ? OR (spent_date = ? AND id > ?)) ORDER BY spent_date ASC, id ASC LIMIT 26",
+    ] {
+        let rows = sqlx::query(query)
+            .bind(1_i64)
+            .bind("2026-01-01")
+            .bind("2026-01-01")
+            .bind(1_i64)
+            .fetch_all(&pool)
+            .await
+            .expect("query spending history plan");
+        assert!(rows.iter().any(|row| {
+            let detail: &str = row.get("detail");
+            detail.contains("idx_spendings_group_date")
+        }));
+    }
 }
 
 #[sqlx::test(migrations = "../migrations")]

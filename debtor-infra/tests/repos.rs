@@ -95,6 +95,50 @@ async fn spending_history_is_bounded_and_keyset_stable(pool: SqlitePool) {
     assert_eq!(back.items.len(), 25);
     assert_eq!(back.items[0].id, 26);
     assert_eq!(back.items[24].id, 2);
+    assert_eq!(back.older.expect("older cursor").id, 2);
+    assert!(back.newer.is_none());
+
+    let empty = store
+        .spending_page(
+            group_id,
+            Some(SpendingCursor {
+                direction: SpendingPageDirection::Older,
+                spent_date: first.items[24].spent_date,
+                id: 1,
+            }),
+        )
+        .await
+        .expect("empty page");
+    assert!(empty.items.is_empty());
+    assert!(empty.older.is_none());
+    assert!(empty.newer.is_none());
+}
+
+#[sqlx::test(migrations = "../migrations")]
+async fn spending_detail_does_not_materialize_unrelated_history(pool: SqlitePool) {
+    let (store, group_id, participant_id) = active_group_and_participant(&pool).await;
+    store
+        .add_member(group_id, participant_id)
+        .await
+        .expect("add member");
+    let target = store
+        .create_spending(spending(group_id, participant_id))
+        .await
+        .expect("target spending");
+    sqlx::query("INSERT INTO spendings (group_id, description, total_amount, currency, spending_type, spent_date) VALUES (?, 'Unrelated', 'not-a-decimal', 'USD', 'food', '2026-01-01')")
+        .bind(group_id)
+        .execute(&pool)
+        .await
+        .expect("insert unrelated malformed history");
+
+    assert_eq!(
+        store
+            .spending(group_id, target.id)
+            .await
+            .expect("direct detail")
+            .id,
+        target.id
+    );
 }
 
 #[sqlx::test(migrations = "../migrations")]
