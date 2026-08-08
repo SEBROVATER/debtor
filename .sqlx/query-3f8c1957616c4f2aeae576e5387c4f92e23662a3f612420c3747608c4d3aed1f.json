@@ -6,17 +6,20 @@
       {
         "name": "busy",
         "ordinal": 0,
-        "type_info": "Null"
+        "type_info": "Null",
+        "origin": "Expression"
       },
       {
         "name": "log",
         "ordinal": 1,
-        "type_info": "Null"
+        "type_info": "Null",
+        "origin": "Expression"
       },
       {
         "name": "checkpointed",
         "ordinal": 2,
-        "type_info": "Null"
+        "type_info": "Null",
+        "origin": "Expression"
       }
     ],
     "parameters": {

@@ -117,6 +117,24 @@ async fn all_expected_indexes_exist(pool: SqlitePool) {
 }
 
 #[sqlx::test(migrations = "../migrations")]
+async fn spending_history_plan_uses_composite_index(pool: SqlitePool) {
+    let rows = sqlx::query(
+        "EXPLAIN QUERY PLAN SELECT id FROM spendings WHERE group_id = ? AND (spent_date < ? OR (spent_date = ? AND id < ?)) ORDER BY spent_date DESC, id DESC LIMIT 26",
+    )
+    .bind(1_i64)
+    .bind("2026-01-01")
+    .bind("2026-01-01")
+    .bind(1_i64)
+    .fetch_all(&pool)
+    .await
+    .expect("query spending history plan");
+    assert!(rows.iter().any(|row| {
+        let detail: &str = row.get("detail");
+        detail.contains("idx_spendings_group_date")
+    }));
+}
+
+#[sqlx::test(migrations = "../migrations")]
 async fn groups_table_has_expected_columns(pool: SqlitePool) {
     let rows: Vec<SqliteRow> = sqlx::query("PRAGMA table_info(groups)")
         .fetch_all(&pool)
@@ -188,10 +206,11 @@ async fn group_members_has_composite_primary_key(pool: SqlitePool) {
             .await
             .expect("pk index name");
 
-    let pk_columns: Vec<SqliteRow> = sqlx::query(&*format!("PRAGMA index_info({pk_name})"))
-        .fetch_all(&pool)
-        .await
-        .expect("PRAGMA index_info");
+    let pk_columns: Vec<SqliteRow> =
+        sqlx::query(sqlx::AssertSqlSafe(format!("PRAGMA index_info({pk_name})")))
+            .fetch_all(&pool)
+            .await
+            .expect("PRAGMA index_info");
 
     let pk_col_names: Vec<String> = pk_columns
         .iter()
@@ -485,10 +504,11 @@ async fn spendings_restrict_group_delete_and_preserve_history(pool: SqlitePool) 
         "spending_payers",
         "spending_shares",
     ] {
-        let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
-            .fetch_one(&pool)
-            .await
-            .expect("count after rejected delete");
+        let count: i64 =
+            sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}")))
+                .fetch_one(&pool)
+                .await
+                .expect("count after rejected delete");
         assert_eq!(count, 1, "history row missing from {table}");
     }
 }

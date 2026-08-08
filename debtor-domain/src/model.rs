@@ -66,6 +66,12 @@ pub enum ValidationError {
     /// An allocation refers to an invalid participant identifier.
     #[error("participant identifier must be positive")]
     InvalidParticipantId,
+    /// A decimal, currency, category, or date field could not be parsed.
+    #[error("{field} is invalid")]
+    InvalidField {
+        /// Field that failed lexical parsing.
+        field: &'static str,
+    },
     /// An equal split would create one or more zero-valued shares.
     #[error("equal split total must contain at least one minor unit per recipient")]
     InsufficientMinorUnits {

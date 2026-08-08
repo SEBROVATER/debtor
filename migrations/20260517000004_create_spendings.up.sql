@@ -17,4 +17,4 @@ CREATE TABLE spendings (
 CREATE INDEX idx_spendings_group ON spendings(group_id);
 CREATE INDEX idx_spendings_spent_date ON spendings(spent_date);
 CREATE INDEX idx_spendings_type ON spendings(spending_type);
-CREATE INDEX idx_spendings_group_date ON spendings(group_id, spent_date);
+CREATE INDEX idx_spendings_group_date ON spendings(group_id, spent_date DESC, id DESC);

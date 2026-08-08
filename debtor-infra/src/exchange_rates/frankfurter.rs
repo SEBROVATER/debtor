@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -16,8 +16,65 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const TOTAL_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 const MAX_IN_FLIGHT_REQUESTS: usize = 4;
+const STABLE_CACHE_CAPACITY: usize = 4_096;
 type CacheKey = (Currency, Currency, NaiveDate, NaiveDate);
 type FlightResult = Result<RateQuote, UnavailableReason>;
+
+struct StableCache {
+    values: HashMap<CacheKey, RateQuote>,
+    access_order: BTreeMap<u64, CacheKey>,
+    next_access: u64,
+}
+
+impl StableCache {
+    fn new() -> Self {
+        Self {
+            values: HashMap::new(),
+            access_order: BTreeMap::new(),
+            next_access: 0,
+        }
+    }
+
+    fn next_sequence(&mut self) -> u64 {
+        if self.next_access == u64::MAX {
+            self.access_order.clear();
+            let keys = self.values.keys().copied().collect::<Vec<_>>();
+            for (sequence, key) in keys.into_iter().enumerate() {
+                self.access_order.insert(sequence as u64, key);
+            }
+            self.next_access = self.values.len() as u64;
+        }
+        let sequence = self.next_access;
+        self.next_access += 1;
+        sequence
+    }
+
+    fn touch(&mut self, key: CacheKey, value: RateQuote) {
+        self.access_order.retain(|_, candidate| *candidate != key);
+        let sequence = self.next_sequence();
+        self.values.insert(key, value);
+        self.access_order.insert(sequence, key);
+        while self.values.len() > STABLE_CACHE_CAPACITY {
+            let Some((sequence, oldest)) = self.access_order.pop_first() else {
+                break;
+            };
+            self.values.remove(&oldest);
+            tracing::debug!(
+                target: "debtor.provider",
+                event = "provider_cache_eviction",
+                category = "stable_lru",
+                count = 1_u64,
+                sequence,
+            );
+        }
+    }
+
+    fn get(&mut self, key: CacheKey) -> Option<RateQuote> {
+        let value = self.values.get(&key).cloned()?;
+        self.touch(key, value.clone());
+        Some(value)
+    }
+}
 
 #[derive(Debug, Deserialize)]
 struct RateResponse {
@@ -55,7 +112,7 @@ impl Flight {
 pub struct FrankfurterClient {
     http: Option<reqwest::Client>,
     base_url: String,
-    stable_cache: Arc<RwLock<HashMap<CacheKey, RateQuote>>>,
+    stable_cache: Arc<RwLock<StableCache>>,
     refreshable_cache: Arc<RwLock<HashMap<CacheKey, RateQuote>>>,
     in_flight: Arc<Mutex<HashMap<CacheKey, Arc<Flight>>>>,
     requests: Arc<Semaphore>,
@@ -78,7 +135,7 @@ impl FrankfurterClient {
         Self {
             http,
             base_url: base_url.trim_end_matches('/').to_owned(),
-            stable_cache: Arc::new(RwLock::new(HashMap::new())),
+            stable_cache: Arc::new(RwLock::new(StableCache::new())),
             refreshable_cache: Arc::new(RwLock::new(HashMap::new())),
             in_flight: Arc::new(Mutex::new(HashMap::new())),
             requests: Arc::new(Semaphore::new(MAX_IN_FLIGHT_REQUESTS)),
@@ -122,12 +179,18 @@ impl ExchangeRateProvider for FrankfurterClient {
             });
         }
         let key = (base, quote, original_requested_date, fetch_date);
-        let cache = self.cache_for(original_requested_date, today);
-        let cached = cache
-            .read()
-            .map_err(|_| ApplicationError::Unavailable(UnavailableReason::ExchangeRates))?
-            .get(&key)
-            .cloned();
+        let cached = if original_requested_date < today {
+            self.stable_cache
+                .write()
+                .map_err(|_| ApplicationError::Unavailable(UnavailableReason::ExchangeRates))?
+                .get(key)
+        } else {
+            self.refreshable_cache
+                .read()
+                .map_err(|_| ApplicationError::Unavailable(UnavailableReason::ExchangeRates))?
+                .get(&key)
+                .cloned()
+        };
         if let Some(value) = cached {
             return Ok(value);
         }
@@ -214,11 +277,17 @@ impl FrankfurterClient {
             is_stale: false,
             is_provisional: original_requested_date > today,
         };
-        let cache = self.cache_for(original_requested_date, today);
-        cache
-            .write()
-            .map_err(|_| UnavailableReason::ExchangeRates)?
-            .insert(key, value.clone());
+        if original_requested_date < today {
+            self.stable_cache
+                .write()
+                .map_err(|_| UnavailableReason::ExchangeRates)?
+                .touch(key, value.clone());
+        } else {
+            self.refreshable_cache
+                .write()
+                .map_err(|_| UnavailableReason::ExchangeRates)?
+                .insert(key, value.clone());
+        }
         Ok(value)
     }
 
@@ -290,18 +359,6 @@ impl FrankfurterClient {
             },
         );
         Err(UnavailableReason::ExchangeRates)
-    }
-
-    fn cache_for(
-        &self,
-        requested_date: NaiveDate,
-        today: NaiveDate,
-    ) -> &RwLock<HashMap<CacheKey, RateQuote>> {
-        if requested_date < today {
-            self.stable_cache.as_ref()
-        } else {
-            self.refreshable_cache.as_ref()
-        }
     }
 }
 
@@ -641,6 +698,43 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[test]
+    fn stable_cache_evicts_oldest_context_after_refreshing_a_hot_entry() {
+        let mut cache = StableCache::new();
+        for index in 0..STABLE_CACHE_CAPACITY {
+            let requested_date =
+                date(2025, 1, 1) + chrono::Duration::days(i64::try_from(index).unwrap());
+            let key = (Currency::Usd, Currency::Eur, requested_date, requested_date);
+            cache.touch(key, quote(key));
+        }
+        let hot_date = date(2025, 1, 1) + chrono::Duration::days(100);
+        let hot_key = (Currency::Usd, Currency::Eur, hot_date, hot_date);
+        assert!(cache.get(hot_key).is_some());
+
+        let extra_date = date(2040, 1, 1);
+        let extra_key = (Currency::Usd, Currency::Eur, extra_date, extra_date);
+        cache.touch(extra_key, quote(extra_key));
+
+        let oldest_date = date(2025, 1, 1);
+        let oldest_key = (Currency::Usd, Currency::Eur, oldest_date, oldest_date);
+        assert!(cache.get(oldest_key).is_none());
+        assert!(cache.get(hot_key).is_some());
+        assert_eq!(cache.values.len(), STABLE_CACHE_CAPACITY);
+    }
+
+    fn quote(key: CacheKey) -> RateQuote {
+        let (base, quote, requested_date, effective_date) = key;
+        RateQuote {
+            base,
+            quote,
+            requested_date,
+            effective_date,
+            rate: Decimal::ONE,
+            is_stale: false,
+            is_provisional: false,
+        }
     }
 
     fn date(year: i32, month: u32, day: u32) -> NaiveDate {

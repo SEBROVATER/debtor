@@ -8,7 +8,7 @@ use debtor_application::{
     ApplicationError, AuthenticationService, AuthenticationUseCases, Clock, DebtResult,
     DebtUseCases, EqualSpendingCommand, ExactSpendingCommand, GroupUseCases, LoginAdmission,
     LoginAttemptLimiter, ParticipantUseCases, PasswordVerifier, RateMode, ReadinessUseCases,
-    SpendingUseCases, UtcClock,
+    SpendingInput, SpendingPage, SpendingUseCases, UtcClock,
 };
 use debtor_domain::{
     currency::Currency,
@@ -282,6 +282,18 @@ impl SpendingUseCases for FakeSpendings {
         Err(ApplicationError::NotFound)
     }
 
+    async fn spending_page(
+        &self,
+        _: i64,
+        _: Option<debtor_application::SpendingCursor>,
+    ) -> Result<SpendingPage, ApplicationError> {
+        Ok(SpendingPage {
+            items: Vec::new(),
+            older: None,
+            newer: None,
+        })
+    }
+
     async fn create_equal(&self, _: EqualSpendingCommand) -> Result<Spending, ApplicationError> {
         Err(validation_error())
     }
@@ -303,6 +315,14 @@ impl SpendingUseCases for FakeSpendings {
         _: i64,
         _: ExactSpendingCommand,
     ) -> Result<Spending, ApplicationError> {
+        Err(validation_error())
+    }
+
+    async fn create_input(&self, _: SpendingInput) -> Result<Spending, ApplicationError> {
+        Err(validation_error())
+    }
+
+    async fn update_input(&self, _: i64, _: SpendingInput) -> Result<Spending, ApplicationError> {
         Err(validation_error())
     }
 

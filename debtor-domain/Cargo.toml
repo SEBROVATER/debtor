@@ -8,7 +8,6 @@ rust-version.workspace = true
 
 [dependencies]
 rust_decimal = { workspace = true }
-serde = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true }
 

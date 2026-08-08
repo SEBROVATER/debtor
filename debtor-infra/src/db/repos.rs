@@ -10,12 +10,13 @@ use std::time::Duration;
 use async_trait::async_trait;
 use debtor_application::{
     ApplicationError, DatabaseReadiness, GroupReader, GroupRepository, LedgerSnapshot,
-    LedgerSnapshotReader, ParticipantRepository, SpendingReader, SpendingRepository, StorageReason,
+    LedgerSnapshotReader, ParticipantRepository, SpendingCursor, SpendingPage,
+    SpendingPageDirection, SpendingReader, SpendingRepository, SpendingSummary, StorageReason,
 };
 use debtor_domain::currency::Currency;
 use debtor_domain::model::{
     Allocation, Color, Description, EntityId, Group, GroupMember, Name, Participant, Spending,
-    SpendingType,
+    SpendingType, validate_amount,
 };
 use debtor_domain::money::{format_decimal, parse_decimal};
 use sqlx::SqlitePool;
@@ -28,6 +29,35 @@ const READINESS_TIMEOUT: Duration = Duration::from_secs(1);
 pub struct SqliteLedgerStore {
     pool: SqlitePool,
     write_gate: Arc<Mutex<()>>,
+}
+
+/// Root-owned `SQLite` resources shared by every persistence adapter handle.
+pub struct SqliteLedgerRuntime {
+    pool: SqlitePool,
+    write_gate: Arc<Mutex<()>>,
+}
+
+impl SqliteLedgerRuntime {
+    /// Creates one process-local runtime around a configured pool.
+    pub fn new(pool: SqlitePool) -> Self {
+        Self {
+            pool,
+            write_gate: Arc::new(Mutex::new(())),
+        }
+    }
+
+    /// Returns a cloneable adapter handle sharing the runtime write gate.
+    pub fn store(&self) -> SqliteLedgerStore {
+        SqliteLedgerStore {
+            pool: self.pool.clone(),
+            write_gate: self.write_gate.clone(),
+        }
+    }
+
+    /// Returns a pool handle for readiness and bounded shutdown.
+    pub fn pool(&self) -> SqlitePool {
+        self.pool.clone()
+    }
 }
 
 struct DbGroup {
@@ -60,6 +90,15 @@ struct DbSpending {
     spent_date: String,
 }
 
+struct DbSpendingSummary {
+    id: i64,
+    description: String,
+    total_amount: String,
+    currency: String,
+    spending_type: String,
+    spent_date: String,
+}
+
 struct DbSnapshotSpending {
     id: i64,
     description: String,
@@ -81,14 +120,6 @@ struct DbSpendingAllocation {
 }
 
 impl SqliteLedgerStore {
-    /// Creates an adapter from a configured pool.
-    pub fn new(pool: SqlitePool) -> Self {
-        Self {
-            pool,
-            write_gate: Arc::new(Mutex::new(())),
-        }
-    }
-
     async fn write_guard(&self) -> Result<tokio::sync::OwnedMutexGuard<()>, ApplicationError> {
         self.write_guard_with_timeout(WRITE_GATE_TIMEOUT).await
     }
@@ -520,12 +551,70 @@ impl SpendingReader for SqliteLedgerStore {
         group_id: EntityId,
         spending_id: EntityId,
     ) -> Result<Spending, ApplicationError> {
-        self.ledger_snapshot_impl(group_id)
-            .await?
-            .spendings
+        load_spending(&self.pool, group_id, spending_id).await
+    }
+
+    async fn spending_page(
+        &self,
+        group_id: EntityId,
+        cursor: Option<SpendingCursor>,
+    ) -> Result<SpendingPage, ApplicationError> {
+        let (mut rows, direction) = match cursor {
+            None => (
+                sqlx::query_as!(DbSpendingSummary, "SELECT id, description, total_amount, currency, spending_type, spent_date FROM spendings WHERE group_id = ? ORDER BY spent_date DESC, id DESC LIMIT 26", group_id)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(storage)?,
+                None,
+            ),
+            Some(cursor) if cursor.direction == SpendingPageDirection::Older => (
+                sqlx::query_as!(DbSpendingSummary, "SELECT id, description, total_amount, currency, spending_type, spent_date FROM spendings WHERE group_id = ? AND (spent_date < ? OR (spent_date = ? AND id < ?)) ORDER BY spent_date DESC, id DESC LIMIT 26", group_id, cursor.spent_date.to_string(), cursor.spent_date.to_string(), cursor.id)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(storage)?,
+                Some(SpendingPageDirection::Older),
+            ),
+            Some(cursor) => (
+                sqlx::query_as!(DbSpendingSummary, "SELECT id, description, total_amount, currency, spending_type, spent_date FROM spendings WHERE group_id = ? AND (spent_date > ? OR (spent_date = ? AND id > ?)) ORDER BY spent_date ASC, id ASC LIMIT 26", group_id, cursor.spent_date.to_string(), cursor.spent_date.to_string(), cursor.id)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(storage)?,
+                Some(SpendingPageDirection::Newer),
+            ),
+        };
+        let has_more = rows.len() > 25;
+        rows.truncate(25);
+        if direction == Some(SpendingPageDirection::Newer) {
+            rows.reverse();
+        }
+        let items = rows
             .into_iter()
-            .find(|spending| spending.id == spending_id)
-            .ok_or(ApplicationError::NotFound)
+            .map(|row| spending_summary(group_id, row))
+            .collect::<Result<Vec<_>, _>>()?;
+        let older = has_more
+            .then(|| {
+                items.last().map(|item| SpendingCursor {
+                    direction: SpendingPageDirection::Older,
+                    spent_date: item.spent_date,
+                    id: item.id,
+                })
+            })
+            .flatten();
+        let newer = direction
+            .is_some()
+            .then(|| {
+                items.first().map(|item| SpendingCursor {
+                    direction: SpendingPageDirection::Newer,
+                    spent_date: item.spent_date,
+                    id: item.id,
+                })
+            })
+            .flatten();
+        Ok(SpendingPage {
+            items,
+            older,
+            newer,
+        })
     }
 }
 
@@ -601,7 +690,8 @@ fn changed(result: sqlx::sqlite::SqliteQueryResult) -> Result<(), ApplicationErr
 fn group(row: DbGroup) -> Result<Group, ApplicationError> {
     Ok(Group {
         id: row.id,
-        name: Name::new(row.name)?,
+        name: Name::new(row.name)
+            .map_err(|_| ApplicationError::Storage(StorageReason::InvalidData))?,
         currency: Currency::from_str(&row.currency)
             .map_err(|_| ApplicationError::Storage(StorageReason::InvalidData))?,
         is_archived: row.is_archived != 0,
@@ -611,8 +701,10 @@ fn group(row: DbGroup) -> Result<Group, ApplicationError> {
 fn participant(row: DbParticipant) -> Result<Participant, ApplicationError> {
     Ok(Participant {
         id: row.id,
-        name: Name::new(row.name)?,
-        color: Color::new(row.color)?,
+        name: Name::new(row.name)
+            .map_err(|_| ApplicationError::Storage(StorageReason::InvalidData))?,
+        color: Color::new(row.color)
+            .map_err(|_| ApplicationError::Storage(StorageReason::InvalidData))?,
         is_archived: row.is_archived != 0,
     })
 }
@@ -638,8 +730,9 @@ async fn load_spending(
     group_id: EntityId,
     id: EntityId,
 ) -> Result<Spending, ApplicationError> {
+    let mut tx = pool.begin().await.map_err(storage)?;
     let row = sqlx::query_as!(DbSpending, "SELECT description, total_amount, currency, spending_type, spent_date FROM spendings WHERE id = ? AND group_id = ?", id, group_id)
-        .fetch_optional(pool)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(storage)?
         .ok_or(ApplicationError::NotFound)?;
@@ -648,24 +741,55 @@ async fn load_spending(
     let spending = Spending {
         id,
         group_id,
-        description: Description::new(row.description)?,
+        description: Description::new(row.description)
+            .map_err(|_| ApplicationError::Storage(StorageReason::InvalidData))?,
         total: canonical_decimal(&row.total_amount)?,
         currency,
         spending_type: SpendingType::from_str(&row.spending_type)
             .map_err(|_| ApplicationError::Storage(StorageReason::InvalidData))?,
         spent_date: chrono::NaiveDate::parse_from_str(&row.spent_date, "%Y-%m-%d")
             .map_err(|_| ApplicationError::Storage(StorageReason::InvalidData))?,
-        payers: payer_rows(pool, id).await?,
-        shares: share_rows(pool, id).await?,
+        payers: payer_rows(&mut tx, id).await?,
+        shares: share_rows(&mut tx, id).await?,
     };
     spending
         .validate()
         .map_err(|_| ApplicationError::Storage(StorageReason::InvalidData))?;
+    tx.commit().await.map_err(storage)?;
     Ok(spending)
 }
 
 fn canonical_decimal(value: &str) -> Result<rust_decimal::Decimal, ApplicationError> {
     parse_decimal(value).map_err(|_| ApplicationError::Storage(StorageReason::InvalidData))
+}
+
+fn spending_summary(
+    group_id: EntityId,
+    row: DbSpendingSummary,
+) -> Result<SpendingSummary, ApplicationError> {
+    let currency = Currency::from_str(&row.currency)
+        .map_err(|_| ApplicationError::Storage(StorageReason::InvalidData))?;
+    let total = canonical_decimal(&row.total_amount)?;
+    validate_amount(total, currency, "total")
+        .map_err(|_| ApplicationError::Storage(StorageReason::InvalidData))?;
+    SpendingType::from_str(&row.spending_type)
+        .map_err(|_| ApplicationError::Storage(StorageReason::InvalidData))?;
+    let spent_date = chrono::NaiveDate::parse_from_str(&row.spent_date, "%Y-%m-%d")
+        .map_err(|_| ApplicationError::Storage(StorageReason::InvalidData))?;
+    let earliest = chrono::NaiveDate::from_ymd_opt(2025, 1, 1)
+        .ok_or(ApplicationError::Storage(StorageReason::InvalidData))?;
+    if spent_date < earliest {
+        return Err(ApplicationError::Storage(StorageReason::InvalidData));
+    }
+    Ok(SpendingSummary {
+        id: row.id,
+        group_id,
+        description: Description::new(row.description)
+            .map_err(|_| ApplicationError::Storage(StorageReason::InvalidData))?,
+        total,
+        currency,
+        spent_date,
+    })
 }
 
 fn allocation(row: DbAllocation) -> Result<Allocation, ApplicationError> {
@@ -676,11 +800,11 @@ fn allocation(row: DbAllocation) -> Result<Allocation, ApplicationError> {
 }
 
 async fn payer_rows(
-    pool: &SqlitePool,
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     spending_id: EntityId,
 ) -> Result<Vec<Allocation>, ApplicationError> {
     sqlx::query_as!(DbAllocation, "SELECT participant_id, paid_amount AS amount FROM spending_payers WHERE spending_id = ? ORDER BY participant_id", spending_id)
-        .fetch_all(pool)
+        .fetch_all(&mut **tx)
         .await
         .map_err(storage)?
         .into_iter()
@@ -689,11 +813,11 @@ async fn payer_rows(
 }
 
 async fn share_rows(
-    pool: &SqlitePool,
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     spending_id: EntityId,
 ) -> Result<Vec<Allocation>, ApplicationError> {
     sqlx::query_as!(DbAllocation, "SELECT participant_id, share_amount AS amount FROM spending_shares WHERE spending_id = ? ORDER BY participant_id", spending_id)
-        .fetch_all(pool)
+        .fetch_all(&mut **tx)
         .await
         .map_err(storage)?
         .into_iter()
@@ -845,7 +969,7 @@ mod tests {
         let pool = SqlitePool::connect("sqlite::memory:")
             .await
             .expect("test pool");
-        let store = SqliteLedgerStore::new(pool);
+        let store = SqliteLedgerRuntime::new(pool).store();
         let _held = store.write_gate.clone().lock_owned().await;
 
         assert!(matches!(
@@ -861,7 +985,7 @@ mod tests {
         let pool = SqlitePool::connect("sqlite::memory:")
             .await
             .expect("test pool");
-        let store = SqliteLedgerStore::new(pool);
+        let store = SqliteLedgerRuntime::new(pool).store();
 
         assert!(store.check().await.is_ok());
     }
@@ -871,7 +995,7 @@ mod tests {
         let pool = SqlitePool::connect("sqlite::memory:")
             .await
             .expect("test pool");
-        let store = SqliteLedgerStore::new(pool.clone());
+        let store = SqliteLedgerRuntime::new(pool.clone()).store();
         pool.close().await;
 
         assert!(matches!(
@@ -889,7 +1013,7 @@ mod tests {
             .await
             .expect("test pool");
         let _held = pool.acquire().await.expect("held connection");
-        let store = SqliteLedgerStore::new(pool);
+        let store = SqliteLedgerRuntime::new(pool).store();
 
         assert!(matches!(
             store.check().await,

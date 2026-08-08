@@ -262,6 +262,13 @@
           </tbody>
         </table>
         {% endif %}
+        {% if newer_spendings.is_some() || older_spendings.is_some() || show_newest_spendings %}
+        <nav class="pagination" aria-label="Expense history pages">
+          {% if show_newest_spendings %}<a href="/groups/{{ group_id }}">Newest</a>{% endif %}
+          {% if newer_spendings.is_some() %}<a href="/groups/{{ group_id }}?cursor={{ newer_spendings.as_ref().unwrap() }}">Newer</a>{% endif %}
+          {% if older_spendings.is_some() %}<a href="/groups/{{ group_id }}?cursor={{ older_spendings.as_ref().unwrap() }}">Older</a>{% endif %}
+        </nav>
+        {% endif %}
       </section>
     </main>
   </body>

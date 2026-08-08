@@ -161,11 +161,8 @@ pub(crate) fn parse_member_form(form: OrderedForm) -> Result<MemberForm, FormErr
     Ok(MemberForm { participant_id })
 }
 
-/// Parses an expense form after the handler has established its eligible IDs.
-pub(crate) fn parse_expense_form(
-    form: OrderedForm,
-    eligible_ids: &[i64],
-) -> Result<ExpenseForm, FormError> {
+/// Parses expense field structure without applying financial eligibility policy.
+pub(crate) fn parse_expense_form(form: OrderedForm) -> Result<ExpenseForm, FormError> {
     const SCALARS: [&str; 9] = [
         "description",
         "total",
@@ -178,10 +175,6 @@ pub(crate) fn parse_expense_form(
         "csrf",
     ];
 
-    let eligible_ids = eligible_ids
-        .iter()
-        .copied()
-        .collect::<std::collections::BTreeSet<_>>();
     let mut scalars = HashMap::new();
     let mut extra = HashMap::new();
     for (key, value) in form.0 {
@@ -194,7 +187,7 @@ pub(crate) fn parse_expense_form(
         let Some((prefix, id)) = dynamic_expense_field(&key) else {
             return Err(malformed_form("Malformed form submission."));
         };
-        if !eligible_ids.contains(&id) || extra.insert(format!("{prefix}{id}"), value).is_some() {
+        if extra.insert(format!("{prefix}{id}"), value).is_some() {
             return Err(malformed_form("Malformed form submission."));
         }
     }
@@ -205,10 +198,6 @@ pub(crate) fn parse_expense_form(
     let single_payer_id = scalar(&scalars, "single_payer_id")
         .parse()
         .map_err(|_| malformed_form("Malformed form submission."))?;
-    if single_payer_id != 0 && !eligible_ids.contains(&single_payer_id) {
-        return Err(malformed_form("Malformed form submission."));
-    }
-
     Ok(ExpenseForm {
         description: scalar(&scalars, "description"),
         total: scalar(&scalars, "total"),
@@ -227,7 +216,7 @@ fn dynamic_expense_field(key: &str) -> Option<(&str, i64)> {
         .into_iter()
         .find_map(|prefix| {
             key.strip_prefix(prefix)
-                .and_then(|id| id.parse::<i64>().ok().filter(|id| *id > 0))
+                .and_then(|id| id.parse::<i64>().ok())
                 .map(|id| (prefix, id))
         })
 }
@@ -355,12 +344,12 @@ mod tests {
     }
 
     #[test]
-    fn expense_parser_accepts_only_eligible_dynamic_fields() {
+    fn expense_parser_accepts_structural_dynamic_fields_without_eligibility_policy() {
         let mut form = expense_fields();
         form.0.push(("payer_1".into(), "12.00".into()));
         form.0.push(("share_2".into(), "on".into()));
 
-        let parsed = parse_expense_form(form, &[1, 2]).expect("valid expense form");
+        let parsed = parse_expense_form(form).expect("valid expense form");
         assert_eq!(
             parsed.extra.get("payer_1").map(String::as_str),
             Some("12.00")
@@ -370,16 +359,14 @@ mod tests {
 
     #[test]
     fn expense_parser_rejects_duplicate_unknown_and_malformed_dynamic_fields() {
-        for field in ["payer_1", "payer_3", "payer_not-an-id", "unexpected"] {
+        for field in ["payer_1", "payer_not-an-id", "unexpected"] {
             let mut form = expense_fields();
             form.0.push((field.into(), "12.00".into()));
             if field == "payer_1" {
                 form.0.push((field.into(), "13.00".into()));
             }
             assert_eq!(
-                parse_expense_form(form, &[1, 2])
-                    .err()
-                    .map(|error| error.status),
+                parse_expense_form(form).err().map(|error| error.status),
                 Some(StatusCode::BAD_REQUEST),
                 "{field}"
             );

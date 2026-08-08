@@ -39,6 +39,11 @@ pub(crate) struct GroupsQuery {
 }
 
 #[derive(Deserialize)]
+pub(crate) struct SpendingQuery {
+    pub(super) cursor: Option<String>,
+}
+
+#[derive(Deserialize)]
 pub(crate) struct DebtQuery {
     pub(super) rate_mode: Option<String>,
 }

@@ -74,11 +74,16 @@ pub(crate) async fn group_detail(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<i64>,
+    Query(query): Query<super::SpendingQuery>,
 ) -> Response {
     if let Err(response) = require_auth(&session).await {
         return response;
     }
-    match build_group_template(&state, &session, id, None, None, None, None).await {
+    let cursor = match super::spendings::parse_cursor(query.cursor.as_deref()) {
+        Ok(cursor) => cursor,
+        Err(message) => return error_response(StatusCode::BAD_REQUEST, message),
+    };
+    match build_group_template(&state, &session, id, cursor, None, None, None, None).await {
         Ok(template) => render(&template),
         Err(error) => map_group_template_error(error),
     }

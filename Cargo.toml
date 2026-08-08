@@ -23,28 +23,28 @@ license = "MIT OR Apache-2.0"
 rust-version = "1.97"
 
 [workspace.dependencies]
-debtor-domain = { path = "debtor-domain" }
-debtor-application = { path = "debtor-application" }
-debtor-infra = { path = "debtor-infra" }
-debtor-web = { path = "debtor-web" }
-axum = "0.8"
-tower-sessions = "0.14"
+debtor-domain = { path = "debtor-domain", version = "1.0.0" }
+debtor-application = { path = "debtor-application", version = "1.0.0" }
+debtor-infra = { path = "debtor-infra", version = "1.0.0" }
+debtor-web = { path = "debtor-web", version = "1.0.0" }
+axum = { version = "0.8", default-features = false, features = ["http1", "matched-path", "query", "tokio", "tracing"] }
+tower-sessions = { version = "0.15", default-features = false, features = ["axum-core"] }
 tower = { version = "0.5", features = ["limit", "load-shed", "util"] }
-tower-http = { version = "0.6", features = ["trace", "fs", "limit", "timeout"] }
-tokio = { version = "1", features = ["full"] }
-askama = "0.12"
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate"] }
+tower-http = { version = "0.6", default-features = false, features = ["fs", "limit", "timeout"] }
+tokio = { version = "1", default-features = false, features = ["macros", "rt", "rt-multi-thread", "net", "signal", "sync", "time", "io-util"] }
+askama = { version = "0.16", default-features = false, features = ["config", "derive", "std"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
 argon2 = "0.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["arbitrary_precision"] }
 thiserror = "2"
 anyhow = "1"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.13", default-features = false, features = ["form", "rustls"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dotenvy = "0.15"
-chrono = { version = "0.4", features = ["serde"] }
-rust_decimal = { version = "1", features = ["serde-with-arbitrary-precision"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+rust_decimal = { version = "1", default-features = false, features = ["std", "serde-with-arbitrary-precision"] }
 futures = "0.3"
 uuid = { version = "1", features = ["v4"] }
 async-trait = "0.1"
@@ -62,7 +62,6 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tower-sessions = { workspace = true }
-time = { workspace = true }
 tower-http = { workspace = true }
 sqlx = { workspace = true }
 dotenvy = { workspace = true }

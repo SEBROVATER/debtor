@@ -5,7 +5,7 @@ use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-const WINDOW: Duration = Duration::from_secs(300);
+const WINDOW: Duration = Duration::from_mins(5);
 const MAX_CLIENTS: usize = 4_096;
 
 /// Process-local rolling login attempt limiter.
@@ -156,12 +156,11 @@ impl LoginAttemptLimiter for MemoryLoginAttemptLimiter {
     }
 
     async fn reset(&self, client: IpAddr) {
-        if let Ok(mut state) = self.state.lock() {
-            if let Some(values) = state.attempts.remove(&client) {
-                if let Some(first) = values.front() {
-                    state.remove_expiry(client, first.saturating_add(WINDOW));
-                }
-            }
+        if let Ok(mut state) = self.state.lock()
+            && let Some(values) = state.attempts.remove(&client)
+            && let Some(first) = values.front()
+        {
+            state.remove_expiry(client, first.saturating_add(WINDOW));
         }
     }
 }
@@ -223,7 +222,7 @@ mod tests {
             limiter.reserve(client).await,
             LoginAdmission::RetryAfter(299)
         );
-        clock.set(Duration::from_secs(300));
+        clock.set(Duration::from_mins(5));
         assert_eq!(limiter.reserve(client).await, LoginAdmission::Allowed);
         limiter.reset(client).await;
         assert_eq!(limiter.reserve(client).await, LoginAdmission::Allowed);
@@ -279,7 +278,7 @@ mod tests {
             LoginAdmission::RetryAfter(299)
         );
         assert_eq!(limiter.reserve(first).await, LoginAdmission::Allowed);
-        clock.set(Duration::from_secs(300));
+        clock.set(Duration::from_mins(5));
         assert_eq!(limiter.reserve(unseen).await, LoginAdmission::RetryAfter(1));
         clock.set(Duration::from_secs(301));
         assert_eq!(limiter.reserve(unseen).await, LoginAdmission::Allowed);
@@ -311,7 +310,7 @@ mod tests {
         let expired: IpAddr = "192.0.2.25".parse().expect("valid test IP");
         let current: IpAddr = "192.0.2.26".parse().expect("valid test IP");
         assert_eq!(limiter.reserve(expired).await, LoginAdmission::Allowed);
-        clock.set(Duration::from_secs(300));
+        clock.set(Duration::from_mins(5));
         assert_eq!(limiter.reserve(current).await, LoginAdmission::Allowed);
         let state = limiter.state.lock().expect("limiter state");
         assert!(!state.attempts.contains_key(&expired));

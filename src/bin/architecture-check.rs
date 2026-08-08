@@ -17,6 +17,20 @@ const APPLICATION_ALLOWED: &[&str] = &[
     "rust_decimal",
     "thiserror",
 ];
+
+const REQUIRED_PACKAGES: &[&str] = &[
+    "debtor",
+    "debtor-domain",
+    "debtor-application",
+    "debtor-infra",
+    "debtor-web",
+];
+
+struct PackageDependencies {
+    normal: BTreeSet<String>,
+    build: BTreeSet<String>,
+}
+
 fn main() -> Result<(), String> {
     let metadata = Command::new("cargo")
         .args(["metadata", "--format-version", "1", "--no-deps"])
@@ -49,12 +63,25 @@ fn evaluate(document: &Value) -> Result<Vec<String>, String> {
             .get("name")
             .and_then(Value::as_str)
             .ok_or("cargo metadata package did not contain a name")?;
-        dependencies.insert(name.to_owned(), normal_dependencies(package)?);
+        dependencies.insert(
+            name.to_owned(),
+            PackageDependencies {
+                normal: dependencies_of_kind(package, None)?,
+                build: dependencies_of_kind(package, Some("build"))?,
+            },
+        );
     }
 
     let mut violations = Vec::new();
+    for required in REQUIRED_PACKAGES {
+        if !dependencies.contains_key(*required) {
+            violations.push(format!(
+                "required production package is missing: {required}"
+            ));
+        }
+    }
     if let Some(domain) = dependencies.get("debtor-domain") {
-        for dependency in domain {
+        for dependency in domain.normal.union(&domain.build) {
             if !DOMAIN_ALLOWED.contains(&dependency.as_str()) {
                 violations.push(format!(
                     "debtor-domain may only depend on pure domain libraries; found {dependency}"
@@ -63,7 +90,7 @@ fn evaluate(document: &Value) -> Result<Vec<String>, String> {
         }
     }
     if let Some(application) = dependencies.get("debtor-application") {
-        for dependency in application {
+        for dependency in application.normal.union(&application.build) {
             if !APPLICATION_ALLOWED.contains(&dependency.as_str()) {
                 violations.push(format!(
                     "debtor-application has an outward or unapproved dependency: {dependency}"
@@ -72,7 +99,7 @@ fn evaluate(document: &Value) -> Result<Vec<String>, String> {
         }
     }
     if let Some(web) = dependencies.get("debtor-web") {
-        for dependency in web {
+        for dependency in web.normal.union(&web.build) {
             if dependency == "debtor-infra" || dependency == "debtor" {
                 violations.push(format!(
                     "debtor-web must not depend outward on {dependency}"
@@ -81,7 +108,7 @@ fn evaluate(document: &Value) -> Result<Vec<String>, String> {
         }
     }
     if let Some(infra) = dependencies.get("debtor-infra") {
-        for dependency in infra {
+        for dependency in infra.normal.union(&infra.build) {
             if dependency == "debtor-web" || dependency == "debtor" {
                 violations.push(format!(
                     "debtor-infra must not depend outward on {dependency}"
@@ -91,11 +118,11 @@ fn evaluate(document: &Value) -> Result<Vec<String>, String> {
     }
     if let Some(root) = dependencies.get("debtor") {
         for dependency in ["debtor-application", "debtor-infra", "debtor-web"] {
-            if !root.contains(dependency) {
+            if !root.normal.contains(dependency) {
                 violations.push(format!("root composition crate is missing {dependency}"));
             }
         }
-        if root.contains("debtor-domain") {
+        if root.normal.contains("debtor-domain") || root.build.contains("debtor-domain") {
             violations
                 .push("root composition crate must not depend directly on debtor-domain".into());
         }
@@ -104,13 +131,19 @@ fn evaluate(document: &Value) -> Result<Vec<String>, String> {
     Ok(violations)
 }
 
-fn normal_dependencies(package: &Value) -> Result<BTreeSet<String>, String> {
+fn dependencies_of_kind(
+    package: &Value,
+    requested_kind: Option<&str>,
+) -> Result<BTreeSet<String>, String> {
     Ok(package
         .get("dependencies")
         .and_then(Value::as_array)
         .ok_or("cargo metadata package did not contain dependencies")?
         .iter()
-        .filter(|dependency| dependency.get("kind").is_none_or(Value::is_null))
+        .filter(|dependency| match requested_kind {
+            Some(kind) => dependency.get("kind").and_then(Value::as_str) == Some(kind),
+            None => dependency.get("kind").is_none_or(Value::is_null),
+        })
         .filter_map(|dependency| dependency.get("name").and_then(Value::as_str))
         .map(ToOwned::to_owned)
         .collect::<BTreeSet<_>>())
@@ -232,5 +265,53 @@ mod tests {
             .expect("dependency array")
             .push(json!({"name": "tokio", "kind": "dev"}));
         assert!(evaluate(&document).expect("fixture metadata").is_empty());
+    }
+
+    #[test]
+    fn rejects_missing_packages_and_build_edges() {
+        let document = graph(vec![
+            package(
+                "debtor-domain",
+                &["chrono", "rust_decimal", "serde", "thiserror"],
+            ),
+            package("debtor-application", &["debtor-domain"]),
+        ]);
+        let violations = evaluate(&document).expect("fixture metadata");
+        assert!(
+            violations
+                .iter()
+                .any(|violation| violation.contains("missing"))
+        );
+
+        let mut document = allowed_graph();
+        document["packages"][1]["dependencies"]
+            .as_array_mut()
+            .expect("dependency array")
+            .push(json!({"name": "sqlx", "kind": "build"}));
+        let violations = evaluate(&document).expect("fixture metadata");
+        assert!(
+            violations
+                .iter()
+                .any(|violation| violation.contains("debtor-application"))
+        );
+    }
+
+    #[test]
+    fn checks_the_package_name_even_when_a_dependency_is_renamed() {
+        let mut document = allowed_graph();
+        document["packages"][1]["dependencies"]
+            .as_array_mut()
+            .expect("dependency array")
+            .push(json!({
+                "name": "debtor-web",
+                "rename": "application_web_facade",
+                "kind": null
+            }));
+        let violations = evaluate(&document).expect("fixture metadata");
+        assert!(
+            violations
+                .iter()
+                .any(|violation| violation.contains("debtor-application"))
+        );
     }
 }

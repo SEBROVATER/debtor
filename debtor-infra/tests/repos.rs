@@ -4,17 +4,17 @@
 
 use chrono::NaiveDate;
 use debtor_application::{
-    ApplicationError, GroupRepository, ParticipantRepository, SpendingReader, SpendingRepository,
-    StorageReason,
+    ApplicationError, GroupRepository, ParticipantRepository, SpendingCursor,
+    SpendingPageDirection, SpendingReader, SpendingRepository, StorageReason,
 };
 use debtor_domain::currency::Currency;
 use debtor_domain::model::{Allocation, Color, Description, Name, Spending, SpendingType};
-use debtor_infra::db::repos::SqliteLedgerStore;
+use debtor_infra::db::repos::{SqliteLedgerRuntime, SqliteLedgerStore};
 use rust_decimal::Decimal;
 use sqlx::SqlitePool;
 
 async fn active_group_and_participant(pool: &SqlitePool) -> (SqliteLedgerStore, i64, i64) {
-    let store = SqliteLedgerStore::new(pool.clone());
+    let store = SqliteLedgerRuntime::new(pool.clone()).store();
     let group = store
         .create_group(Name::new("Trip").expect("valid name"), Currency::Usd)
         .await
@@ -47,6 +47,54 @@ fn spending(group_id: i64, participant_id: i64) -> Spending {
             amount: Decimal::new(1_000, 2),
         }],
     }
+}
+
+#[sqlx::test(migrations = "../migrations")]
+async fn spending_history_is_bounded_and_keyset_stable(pool: SqlitePool) {
+    let (store, group_id, participant_id) = active_group_and_participant(&pool).await;
+    store
+        .add_member(group_id, participant_id)
+        .await
+        .expect("add member");
+    for index in 0..26 {
+        let mut row = spending(group_id, participant_id);
+        row.description = Description::new(format!("Dinner {index}")).expect("description");
+        store.create_spending(row).await.expect("create spending");
+    }
+
+    let first = store
+        .spending_page(group_id, None)
+        .await
+        .expect("first page");
+    assert_eq!(first.items.len(), 25);
+    assert!(first.older.is_some());
+    assert!(first.newer.is_none());
+    assert_eq!(first.items[0].id, 26);
+    assert_eq!(first.items[24].id, 2);
+
+    let second = store
+        .spending_page(group_id, first.older)
+        .await
+        .expect("second page");
+    assert_eq!(second.items.len(), 1);
+    assert_eq!(second.items[0].id, 1);
+    assert!(second.older.is_none());
+    assert!(second.newer.is_some());
+
+    let back = store
+        .spending_page(
+            group_id,
+            Some(SpendingCursor {
+                direction: SpendingPageDirection::Newer,
+                spent_date: second.items[0].spent_date,
+                id: second.items[0].id,
+            }),
+        )
+        .await
+        .expect("newer page");
+    assert_eq!(back.items.len(), 25);
+    assert_eq!(back.items[0].id, 26);
+    assert_eq!(back.items[24].id, 2);
 }
 
 #[sqlx::test(migrations = "../migrations")]

@@ -13,7 +13,7 @@ use debtor_application::{
 use debtor_domain::currency::Currency;
 use debtor_domain::model::{Allocation, Color, Description, Name, Spending, SpendingType};
 use debtor_infra::db::connect;
-use debtor_infra::db::repos::SqliteLedgerStore;
+use debtor_infra::db::repos::SqliteLedgerRuntime;
 use sqlx::migrate::Migrator;
 use sqlx::sqlite::SqlitePool;
 
@@ -82,11 +82,11 @@ async fn file_database_uses_wal_full_and_persists_after_reopen() {
 }
 
 #[tokio::test]
-async fn concurrent_mutations_through_one_store_are_serialized() {
+async fn concurrent_mutations_through_cloned_runtime_handles_are_serialized() {
     let (path, pool) = migrated_database().await;
-    let store = Arc::new(SqliteLedgerStore::new(pool.clone()));
-    let first = store.clone();
-    let second = store.clone();
+    let runtime = SqliteLedgerRuntime::new(pool.clone());
+    let first = Arc::new(runtime.store());
+    let second = Arc::new(runtime.store());
     let first_task = tokio::spawn(async move {
         first
             .create_group(Name::new("First").expect("name"), Currency::Usd)
@@ -105,7 +105,6 @@ async fn concurrent_mutations_through_one_store_are_serialized() {
         .await
         .expect("group count");
     assert_eq!(count, 2);
-    drop(store);
     drop(pool);
     remove_database(&path);
 }
@@ -113,7 +112,8 @@ async fn concurrent_mutations_through_one_store_are_serialized() {
 #[tokio::test]
 async fn external_sqlite_lock_maps_to_contention_without_partial_write() {
     let (path, pool) = migrated_database().await;
-    let store = SqliteLedgerStore::new(pool.clone());
+    let runtime = SqliteLedgerRuntime::new(pool.clone());
+    let store = runtime.store();
     store
         .create_group(Name::new("Existing").expect("name"), Currency::Usd)
         .await
@@ -148,7 +148,8 @@ async fn external_sqlite_lock_maps_to_contention_without_partial_write() {
 #[tokio::test]
 async fn spending_eligibility_failure_rolls_back_without_parent_or_allocations() {
     let (path, pool) = migrated_database().await;
-    let store = SqliteLedgerStore::new(pool.clone());
+    let runtime = SqliteLedgerRuntime::new(pool.clone());
+    let store = runtime.store();
     let group = store
         .create_group(Name::new("Trip").expect("name"), Currency::Usd)
         .await
@@ -181,10 +182,11 @@ async fn spending_eligibility_failure_rolls_back_without_parent_or_allocations()
     let result = store.create_spending(spending).await;
     assert!(matches!(result, Err(ApplicationError::Conflict)));
     for table in ["spendings", "spending_payers", "spending_shares"] {
-        let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
-            .fetch_one(&pool)
-            .await
-            .expect("row count");
+        let count: i64 =
+            sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}")))
+                .fetch_one(&pool)
+                .await
+                .expect("row count");
         assert_eq!(count, 0, "partial row in {table}");
     }
 
@@ -196,7 +198,8 @@ async fn spending_eligibility_failure_rolls_back_without_parent_or_allocations()
 #[allow(clippy::too_many_lines)]
 async fn snapshot_never_mixes_uncommitted_group_parent_or_allocations() {
     let (path, pool) = migrated_database().await;
-    let store = SqliteLedgerStore::new(pool.clone());
+    let runtime = SqliteLedgerRuntime::new(pool.clone());
+    let store = runtime.store();
     let group = store
         .create_group(Name::new("Trip").expect("name"), Currency::Usd)
         .await

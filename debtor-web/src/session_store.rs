@@ -1,6 +1,10 @@
 //! Bounded in-memory session storage with deterministic expiry handling.
 
-use std::{collections::HashMap, fmt, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap},
+    fmt,
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 use time::OffsetDateTime;
@@ -14,6 +18,7 @@ use tower_sessions::{
 use crate::session::AUTHENTICATED;
 
 pub(crate) const ANONYMOUS_CAPACITY: usize = 4_096;
+pub(crate) const AUTHENTICATED_CAPACITY: usize = 32;
 
 const CAPACITY_ERROR: &str = "anonymous session capacity reached";
 
@@ -21,6 +26,8 @@ const CAPACITY_ERROR: &str = "anonymous session capacity reached";
 struct StoreState {
     records: HashMap<Id, Record>,
     anonymous_count: usize,
+    authenticated_count: usize,
+    expiry_index: BTreeMap<OffsetDateTime, BTreeSet<i128>>,
 }
 
 /// A process-local session store with bounded anonymous admission.
@@ -62,6 +69,8 @@ impl ReapingMemoryStore {
             state: Arc::new(Mutex::new(StoreState {
                 records: HashMap::new(),
                 anonymous_count: 0,
+                authenticated_count: 0,
+                expiry_index: BTreeMap::new(),
             })),
             now: Arc::new(clock),
         }
@@ -78,23 +87,62 @@ impl ReapingMemoryStore {
             .is_none_or(|value| value.as_bool() != Some(true))
     }
 
+    fn increment_count(state: &mut StoreState, record: &Record) {
+        if Self::is_anonymous(record) {
+            state.anonymous_count += 1;
+        } else {
+            state.authenticated_count += 1;
+        }
+    }
+
+    fn decrement_count(state: &mut StoreState, record: &Record) {
+        if Self::is_anonymous(record) {
+            state.anonymous_count -= 1;
+        } else {
+            state.authenticated_count -= 1;
+        }
+    }
+
+    fn index_record(state: &mut StoreState, record: &Record) {
+        state
+            .expiry_index
+            .entry(record.expiry_date)
+            .or_default()
+            .insert(record.id.0);
+    }
+
+    fn unindex_record(state: &mut StoreState, record: &Record) {
+        let remove_bucket = state
+            .expiry_index
+            .get_mut(&record.expiry_date)
+            .is_some_and(|ids| {
+                ids.remove(&record.id.0);
+                ids.is_empty()
+            });
+        if remove_bucket {
+            state.expiry_index.remove(&record.expiry_date);
+        }
+    }
+
     fn remove_record(state: &mut StoreState, id: &Id) -> Option<Record> {
         let record = state.records.remove(id)?;
-        if Self::is_anonymous(&record) {
-            state.anonymous_count -= 1;
-        }
+        Self::unindex_record(state, &record);
+        Self::decrement_count(state, &record);
         Some(record)
     }
 
     fn remove_expired(state: &mut StoreState, now: OffsetDateTime) {
-        let expired = state
-            .records
-            .iter()
-            .filter(|(_, record)| record.expiry_date <= now)
-            .map(|(id, _)| *id)
-            .collect::<Vec<_>>();
-        for id in expired {
-            Self::remove_record(state, &id);
+        while let Some((&expiry, _)) = state.expiry_index.first_key_value() {
+            if expiry > now {
+                break;
+            }
+            let ids = state.expiry_index.remove(&expiry).unwrap_or_default();
+            for id in ids {
+                let id = Id(id);
+                if let Some(record) = state.records.remove(&id) {
+                    Self::decrement_count(state, &record);
+                }
+            }
         }
     }
 
@@ -103,9 +151,13 @@ impl ReapingMemoryStore {
     }
 
     #[cfg(test)]
-    async fn counts(&self) -> (usize, usize) {
+    async fn counts(&self) -> (usize, usize, usize) {
         let state = self.state.lock().await;
-        (state.records.len(), state.anonymous_count)
+        (
+            state.records.len(),
+            state.anonymous_count,
+            state.authenticated_count,
+        )
     }
 }
 
@@ -120,15 +172,17 @@ impl SessionStore for ReapingMemoryStore {
         if anonymous && state.anonymous_count >= ANONYMOUS_CAPACITY {
             return Err(Self::capacity_error());
         }
+        if !anonymous && state.authenticated_count >= AUTHENTICATED_CAPACITY {
+            return Err(Self::capacity_error());
+        }
 
         while state.records.contains_key(&record.id) {
             record.id = Id::default();
         }
 
         state.records.insert(record.id, record.clone());
-        if anonymous && record.expiry_date > now {
-            state.anonymous_count += 1;
-        }
+        Self::increment_count(&mut state, record);
+        Self::index_record(&mut state, record);
         Ok(())
     }
 
@@ -138,24 +192,24 @@ impl SessionStore for ReapingMemoryStore {
         Self::remove_expired(&mut state, now);
 
         let new_anonymous = Self::is_anonymous(record);
-        let old_anonymous = state
-            .records
-            .get(&record.id)
-            .is_some_and(Self::is_anonymous);
-        let new_live_anonymous = new_anonymous && record.expiry_date > now;
-        let old_live_anonymous = old_anonymous;
-
-        if new_live_anonymous && !old_live_anonymous && state.anonymous_count >= ANONYMOUS_CAPACITY
-        {
+        let old = state.records.get(&record.id).cloned();
+        let old_anonymous = old.as_ref().is_some_and(Self::is_anonymous);
+        let old_authenticated = old.as_ref().is_some_and(|value| !Self::is_anonymous(value));
+        let available_anonymous = state.anonymous_count - usize::from(old_anonymous);
+        let available_authenticated = state.authenticated_count - usize::from(old_authenticated);
+        if new_anonymous && available_anonymous >= ANONYMOUS_CAPACITY {
             return Err(Self::capacity_error());
         }
-
-        match (old_live_anonymous, new_live_anonymous) {
-            (false, true) => state.anonymous_count += 1,
-            (true, false) => state.anonymous_count -= 1,
-            _ => {}
+        if !new_anonymous && available_authenticated >= AUTHENTICATED_CAPACITY {
+            return Err(Self::capacity_error());
+        }
+        if let Some(old) = old.as_ref() {
+            Self::unindex_record(&mut state, old);
+            Self::decrement_count(&mut state, old);
         }
         state.records.insert(record.id, record.clone());
+        Self::increment_count(&mut state, record);
+        Self::index_record(&mut state, record);
         Ok(())
     }
 
@@ -205,7 +259,7 @@ mod tests {
         session_store::ExpiredDeletion,
     };
 
-    use super::{ANONYMOUS_CAPACITY, ReapingMemoryStore};
+    use super::{ANONYMOUS_CAPACITY, AUTHENTICATED_CAPACITY, ReapingMemoryStore};
 
     fn clock() -> (Arc<Mutex<OffsetDateTime>>, ReapingMemoryStore) {
         let now = Arc::new(Mutex::new(OffsetDateTime::UNIX_EPOCH));
@@ -260,7 +314,7 @@ mod tests {
         store.create(&mut second).await.unwrap();
 
         assert_ne!(first.id, second.id);
-        assert_eq!(store.counts().await, (2, 2));
+        assert_eq!(store.counts().await, (2, 2, 0));
     }
 
     #[tokio::test]
@@ -289,7 +343,36 @@ mod tests {
         store.create(&mut authenticated).await.unwrap();
         assert_eq!(
             store.counts().await,
-            (ANONYMOUS_CAPACITY + 1, ANONYMOUS_CAPACITY)
+            (ANONYMOUS_CAPACITY + 1, ANONYMOUS_CAPACITY, 1)
+        );
+    }
+
+    #[tokio::test]
+    async fn authenticated_capacity_is_exact_without_eviction() {
+        let (_, store) = clock();
+        for _ in 0..AUTHENTICATED_CAPACITY {
+            let mut record = record(
+                Id::default(),
+                OffsetDateTime::UNIX_EPOCH + Duration::hours(1),
+            );
+            record.data.insert("authenticated".into(), json!(true));
+            store.create(&mut record).await.unwrap();
+        }
+        let first_id = {
+            let state = store.state.lock().await;
+            *state.records.keys().next().unwrap()
+        };
+        let first = store.load(&first_id).await.unwrap().unwrap();
+        let mut rejected = record(
+            Id::default(),
+            OffsetDateTime::UNIX_EPOCH + Duration::hours(1),
+        );
+        rejected.data.insert("authenticated".into(), json!(true));
+        assert!(store.create(&mut rejected).await.is_err());
+        assert!(store.load(&first.id).await.unwrap().is_some());
+        assert_eq!(
+            store.counts().await,
+            (AUTHENTICATED_CAPACITY, 0, AUTHENTICATED_CAPACITY)
         );
     }
 
@@ -309,7 +392,7 @@ mod tests {
             OffsetDateTime::UNIX_EPOCH + Duration::hours(2),
         );
         store.create(&mut record).await.unwrap();
-        assert_eq!(store.counts().await, (1, 1));
+        assert_eq!(store.counts().await, (1, 1, 0));
     }
 
     #[tokio::test]
@@ -322,7 +405,7 @@ mod tests {
         store.create(&mut expired).await.unwrap();
         *now.lock().unwrap() = OffsetDateTime::UNIX_EPOCH + Duration::hours(1);
         assert!(store.load(&expired.id).await.unwrap().is_none());
-        assert_eq!(store.counts().await, (0, 0));
+        assert_eq!(store.counts().await, (0, 0, 0));
 
         let mut next = record(
             Id::default(),
@@ -330,9 +413,9 @@ mod tests {
         );
         store.create(&mut next).await.unwrap();
         store.delete_expired().await.unwrap();
-        assert_eq!(store.counts().await, (1, 1));
+        assert_eq!(store.counts().await, (1, 1, 0));
         store.delete(&next.id).await.unwrap();
-        assert_eq!(store.counts().await, (0, 0));
+        assert_eq!(store.counts().await, (0, 0, 0));
     }
 
     #[tokio::test]
@@ -343,12 +426,12 @@ mod tests {
             OffsetDateTime::UNIX_EPOCH + Duration::hours(1),
         );
         store.create(&mut record).await.unwrap();
-        assert_eq!(store.counts().await, (1, 1));
+        assert_eq!(store.counts().await, (1, 1, 0));
         record.data.insert("authenticated".into(), json!(true));
         store.save(&record).await.unwrap();
-        assert_eq!(store.counts().await, (1, 0));
+        assert_eq!(store.counts().await, (1, 0, 1));
         record.data.remove("authenticated");
         store.save(&record).await.unwrap();
-        assert_eq!(store.counts().await, (1, 1));
+        assert_eq!(store.counts().await, (1, 1, 0));
     }
 }

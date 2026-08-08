@@ -3,7 +3,7 @@ name = "password-hash"
 description = "Generate the Debtor administrator Argon2id password hash"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.97"
 publish = false
 
 # Keep this helper independent from the production workspace.

@@ -178,6 +178,12 @@ pub struct GroupTemplate {
     pub available_participants: Vec<MemberRow>,
     /// Spending rows.
     pub spendings: Vec<SpendingRow>,
+    /// Cursor link for older spending rows.
+    pub older_spendings: Option<String>,
+    /// Cursor link for newer spending rows.
+    pub newer_spendings: Option<String>,
+    /// Whether an empty cursor page should offer the newest page.
+    pub show_newest_spendings: bool,
     /// Whether mutations are blocked.
     pub archived: bool,
     /// Inline error.

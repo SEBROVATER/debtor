@@ -6,13 +6,14 @@ use axum::{
     response::{IntoResponse, Redirect, Response},
 };
 use chrono::NaiveDate;
-use debtor_application::{EqualSpendingCommand, ExactSpendingCommand, PayerSelection};
+use debtor_application::{
+    PayerInput, ShareInput, SpendingCursor, SpendingInput, SpendingPageDirection,
+};
 use debtor_domain::{
     currency::Currency,
     expenses::{PayerMode, ShareMode, infer_payer_mode, infer_share_mode},
     model::{Allocation, Spending, SpendingType},
 };
-use rust_decimal::Decimal;
 use tower_sessions::Session;
 
 use super::{
@@ -67,6 +68,7 @@ pub(crate) async fn edit_spending_form(
         &state,
         &session,
         group_id,
+        None,
         Some(&spending),
         None,
         None,
@@ -185,59 +187,38 @@ async fn save_spending(
     if let Err(response) = require_writable_group(&state, group_id).await {
         return response;
     }
-    let mut member_ids = match state.participants.members(group_id).await {
-        Ok(members) => members
-            .into_iter()
-            .filter(|(p, m)| m.is_active && !p.is_archived)
-            .map(|(p, _)| p.id)
-            .collect::<Vec<_>>(),
-        Err(error) => return map_error(error),
-    };
     let editing = if let Some(id) = spending_id {
         let spending = match state.spendings.spending(group_id, id).await {
-            Ok(spending) => {
-                member_ids.extend(
-                    spending
-                        .payers
-                        .iter()
-                        .chain(&spending.shares)
-                        .map(|a| a.participant_id),
-                );
-                spending
-            }
+            Ok(spending) => spending,
             Err(error) => return map_error(error),
         };
-        member_ids.sort_unstable();
-        member_ids.dedup();
         Some(spending)
     } else {
         None
     };
-    let form = match parse_expense_form(form, &member_ids) {
+    let form = match parse_expense_form(form) {
         Ok(value) => value,
         Err(error) => return error_response(error.status, error.message),
     };
-    let parsed = match parse_expense(group_id, &member_ids, &form) {
+    let input = match parse_expense(group_id, &form) {
         Ok(value) => value,
         Err(message) => {
-            return form_error(&state, &session, group_id, editing.as_ref(), message, &form).await;
+            return form_error(
+                &state,
+                &session,
+                group_id,
+                None,
+                editing.as_ref(),
+                message,
+                &form,
+            )
+            .await;
         }
     };
-    let result = match parsed {
-        ParsedExpense::Equal(command) => {
-            if let Some(id) = spending_id {
-                state.spendings.update_equal(id, command).await
-            } else {
-                state.spendings.create_equal(command).await
-            }
-        }
-        ParsedExpense::Exact(command) => {
-            if let Some(id) = spending_id {
-                state.spendings.update_exact(id, command).await
-            } else {
-                state.spendings.create_exact(command).await
-            }
-        }
+    let result = if let Some(id) = spending_id {
+        state.spendings.update_input(id, input).await
+    } else {
+        state.spendings.create_input(input).await
     };
     match result {
         Ok(_) => Redirect::to(&format!("/groups/{group_id}")).into_response(),
@@ -246,6 +227,7 @@ async fn save_spending(
                 &state,
                 &session,
                 group_id,
+                None,
                 editing.as_ref(),
                 error.to_string(),
                 &form,
@@ -260,6 +242,7 @@ async fn form_error(
     state: &AppState,
     session: &Session,
     group_id: i64,
+    cursor: Option<SpendingCursor>,
     editing: Option<&Spending>,
     message: String,
     form: &ExpenseForm,
@@ -268,6 +251,7 @@ async fn form_error(
         state,
         session,
         group_id,
+        cursor,
         editing,
         Some(message),
         Some(form),
@@ -280,109 +264,95 @@ async fn form_error(
     }
 }
 
-enum ParsedExpense {
-    Equal(EqualSpendingCommand),
-    Exact(ExactSpendingCommand),
-}
-fn parse_expense(
-    group_id: i64,
-    member_ids: &[i64],
-    form: &ExpenseForm,
-) -> Result<ParsedExpense, String> {
-    let total = form
-        .total
-        .parse::<Decimal>()
-        .map_err(|_| "Total must be a valid amount.".to_string())?;
-    let currency = form
-        .currency
-        .parse::<Currency>()
-        .map_err(|_| "Currency is invalid.".to_string())?;
-    let spending_type = form
-        .spending_type
-        .parse::<SpendingType>()
-        .map_err(|_| "Category is invalid.".to_string())?;
-    let spent_date = NaiveDate::parse_from_str(&form.spent_date, "%Y-%m-%d")
-        .map_err(|_| "Date must be a valid ISO date.".to_string())?;
+fn parse_expense(group_id: i64, form: &ExpenseForm) -> Result<SpendingInput, String> {
     let payers = match form.payer_mode.as_str() {
-        "single" => PayerSelection::Single(
-            form.single_payer_id
-                .filter(|id| *id > 0)
-                .ok_or("Choose who paid.")?,
-        ),
-        "multiple" => PayerSelection::Exact(strict_allocations(
-            member_ids,
-            &form.extra,
-            "payer_",
-            "paid amounts",
-        )?),
+        "single" => PayerInput::Single(form.single_payer_id.unwrap_or_default()),
+        "multiple" => PayerInput::Exact(raw_allocations(&form.extra, "payer_")),
         _ => return Err("Choose how many people paid.".into()),
     };
-    let share_participant_ids = member_ids
-        .iter()
-        .copied()
-        .filter(|id| form.extra.contains_key(&format!("share_{id}")))
-        .collect();
-    match form.split_mode.as_str() {
-        "equal" => Ok(ParsedExpense::Equal(EqualSpendingCommand {
-            group_id,
-            description: form.description.clone(),
-            total,
-            currency,
-            spending_type,
-            spent_date,
-            payers,
-            share_participant_ids,
-        })),
-        "exact" => Ok(ParsedExpense::Exact(ExactSpendingCommand {
-            group_id,
-            description: form.description.clone(),
-            total,
-            currency,
-            spending_type,
-            spent_date,
-            payers,
-            shares: strict_allocations(member_ids, &form.extra, "exact_", "owed amounts")?,
-        })),
-        _ => Err("Choose how the expense is split.".into()),
-    }
-}
-fn strict_allocations(
-    ids: &[i64],
-    fields: &HashMap<String, String>,
-    prefix: &str,
-    field: &str,
-) -> Result<Vec<Allocation>, String> {
-    let mut seen = BTreeSet::new();
-    let mut values = Vec::new();
-    for id in ids {
-        let raw = fields
-            .get(&format!("{prefix}{id}"))
-            .map_or("", String::as_str)
-            .trim();
-        if raw.is_empty() {
-            continue;
-        }
-        if !seen.insert(*id) {
-            return Err(format!("A participant appears twice in {field}."));
-        }
-        let amount = raw
-            .parse::<Decimal>()
-            .map_err(|_| format!("Every {field} entry must be a valid amount."))?;
-        if amount <= Decimal::ZERO {
-            return Err(format!("Every {field} entry must be positive."));
-        }
-        values.push(Allocation {
-            participant_id: *id,
-            amount,
-        });
-    }
-    Ok(values)
+    let shares = match form.split_mode.as_str() {
+        "equal" => ShareInput::Equal(raw_ids(&form.extra, "share_")),
+        "exact" => ShareInput::Exact(raw_allocations(&form.extra, "exact_")),
+        _ => return Err("Choose how the expense is split.".into()),
+    };
+    Ok(SpendingInput {
+        group_id,
+        description: form.description.clone(),
+        total: form.total.clone(),
+        currency: form.currency.clone(),
+        spending_type: form.spending_type.clone(),
+        spent_date: form.spent_date.clone(),
+        payers,
+        shares,
+    })
 }
 
+fn raw_ids(fields: &HashMap<String, String>, prefix: &str) -> Vec<i64> {
+    let mut ids = fields
+        .keys()
+        .filter_map(|key| key.strip_prefix(prefix).and_then(|id| id.parse().ok()))
+        .collect::<Vec<_>>();
+    ids.sort_unstable();
+    ids
+}
+
+fn raw_allocations(fields: &HashMap<String, String>, prefix: &str) -> Vec<(i64, String)> {
+    let mut values = fields
+        .iter()
+        .filter_map(|(key, value)| {
+            key.strip_prefix(prefix)
+                .and_then(|id| id.parse().ok())
+                .map(|id| (id, value.clone()))
+        })
+        .filter(|(_, value)| !value.trim().is_empty())
+        .collect::<Vec<_>>();
+    values.sort_unstable_by_key(|(id, _)| *id);
+    values
+}
+
+pub(super) fn parse_cursor(raw: Option<&str>) -> Result<Option<SpendingCursor>, &'static str> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let mut fields = raw.split(':');
+    let direction = match fields.next() {
+        Some("older") => SpendingPageDirection::Older,
+        Some("newer") => SpendingPageDirection::Newer,
+        _ => return Err("Invalid spending history cursor."),
+    };
+    let spent_date = fields
+        .next()
+        .and_then(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d").ok())
+        .ok_or("Invalid spending history cursor.")?;
+    let id = fields
+        .next()
+        .and_then(|value| value.parse::<i64>().ok())
+        .filter(|value| *value > 0)
+        .ok_or("Invalid spending history cursor.")?;
+    if fields.next().is_some() {
+        return Err("Invalid spending history cursor.");
+    }
+    Ok(Some(SpendingCursor {
+        direction,
+        spent_date,
+        id,
+    }))
+}
+
+fn encode_cursor(cursor: SpendingCursor) -> String {
+    let direction = match cursor.direction {
+        SpendingPageDirection::Older => "older",
+        SpendingPageDirection::Newer => "newer",
+    };
+    format!("{direction}:{}:{}", cursor.spent_date, cursor.id)
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn build_group_template(
     state: &AppState,
     session: &Session,
     id: i64,
+    cursor: Option<SpendingCursor>,
     editing: Option<&Spending>,
     error: Option<String>,
     submitted: Option<&ExpenseForm>,
@@ -416,7 +386,9 @@ pub(super) async fn build_group_template(
         .filter(|p| !active_ids.contains(&p.id) && !inactive_ids.contains(&p.id))
         .map(|p| member_row(&p, false, false))
         .collect();
-    let spendings = state.spendings.list_spendings(id).await?;
+    let had_cursor = cursor.is_some();
+    let spending_page = state.spendings.spending_page(id, cursor).await?;
+    let show_newest_spendings = had_cursor && spending_page.items.is_empty();
     let mut form_members = active_members.clone();
     if let Some(spending) = editing {
         let historical_ids: BTreeSet<_> = spending
@@ -453,7 +425,8 @@ pub(super) async fn build_group_template(
         members: active_members,
         inactive_members,
         available_participants: available,
-        spendings: spendings
+        spendings: spending_page
+            .items
             .into_iter()
             .map(|s| SpendingRow {
                 id: s.id,
@@ -463,6 +436,9 @@ pub(super) async fn build_group_template(
                 spent_date: s.spent_date.to_string(),
             })
             .collect(),
+        older_spendings: spending_page.older.map(encode_cursor),
+        newer_spendings: spending_page.newer.map(encode_cursor),
+        show_newest_spendings,
         archived: group.is_archived,
         error,
         create_name,
@@ -603,6 +579,7 @@ fn expense_view(
     }
     view
 }
+
 fn apply_submitted_expense(view: &mut ExpenseFormView, form: &ExpenseForm) {
     view.description.clone_from(&form.description);
     view.total.clone_from(&form.total);
@@ -647,4 +624,22 @@ fn named_allocations(items: &[Allocation], names: &BTreeMap<i64, String>) -> Vec
             amount: a.amount.to_string(),
         })
         .collect()
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::{SpendingPageDirection, parse_cursor};
+
+    #[test]
+    fn cursor_parser_accepts_only_strict_direction_date_and_positive_id() {
+        let cursor = parse_cursor(Some("older:2026-01-02:7"))
+            .expect("valid cursor")
+            .expect("cursor value");
+        assert_eq!(cursor.direction, SpendingPageDirection::Older);
+        assert_eq!(cursor.id, 7);
+        assert!(parse_cursor(Some("sideways:2026-01-02:7")).is_err());
+        assert!(parse_cursor(Some("older:2026-01-02:0")).is_err());
+        assert!(parse_cursor(Some("older:2026-01-02:7:extra")).is_err());
+    }
 }

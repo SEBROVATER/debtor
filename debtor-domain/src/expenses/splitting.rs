@@ -44,7 +44,9 @@ pub fn equal_split(
     let count = Decimal::from(ids.len() as u64);
     let base_units = (units / count).trunc();
     let remainder = units - base_units * count;
-    let remainder = remainder.to_usize().unwrap_or_default();
+    let remainder = remainder
+        .to_usize()
+        .ok_or(ValidationError::ArithmeticOverflow)?;
     Ok(ids
         .into_iter()
         .enumerate()

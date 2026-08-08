@@ -23,6 +23,7 @@ debtor (root)
 ```bash
 cargo fmt --all -- --check
 cargo run --bin architecture-check --locked
+cargo deny check
 cargo check --workspace --all-features --locked
 SQLX_OFFLINE=true cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --all-features --locked
@@ -35,6 +36,7 @@ The independent password-helper checks are:
 
 ```bash
 cargo fmt --manifest-path tools/password-hash/Cargo.toml -- --check
+cargo deny --manifest-path tools/password-hash/Cargo.toml check
 cargo clippy --manifest-path tools/password-hash/Cargo.toml --all-targets --all-features --locked -- -D warnings
 cargo test --manifest-path tools/password-hash/Cargo.toml --locked
 ```
@@ -45,7 +47,11 @@ The database schema is pre-release. After migration or canonical monetary-persis
 
 The server enforces fixed request budgets: 8 KiB login bodies, 256 KiB other form bodies, 64 shared in-flight permits for user and static traffic, four login permits, and four separate probe permits. Safe reads and login have a 30-second budget; debt reads have 90 seconds. An admitted ledger mutation is not cut off by the generic read timeout and must receive a definitive commit or rollback response, so the production reverse proxy must not impose a shorter mutation timeout.
 
-Sessions are process-local and restart-invalidation is intentional. Anonymous login/CSRF sessions use a fixed 10-minute inactivity lifetime and are admitted up to 4,096 live records; authenticated sessions use a fixed 30-day inactivity lifetime and do not consume anonymous capacity. Expired records are removed lazily during load/admission and by a supervised five-minute deletion pass. A cleanup failure marks readiness unhealthy and initiates fatal shutdown; login session-capacity or storage failures return a retryable sanitized `503`. No session-capacity environment knobs are supported.
+Sessions are process-local and restart-invalidation is intentional. Anonymous login/CSRF sessions use a fixed 10-minute inactivity lifetime and are admitted up to 4,096 live records; authenticated sessions use a fixed 30-day inactivity lifetime and are capped at 32 without consuming anonymous capacity. Expiry cleanup uses indexed buckets rather than scanning all records. A correct login at the authenticated cap flushes the anonymous session and returns a retryable sanitized `503` without evicting existing users. Expired records are removed lazily during load/admission and by a supervised five-minute deletion pass. A cleanup failure marks readiness unhealthy and initiates fatal shutdown; login session-capacity or storage failures return a retryable sanitized `503`. No session-capacity environment knobs are supported.
+
+Ordinary group expense history is rendered as 25-item keyset pages ordered by date and ID; complete history materialization is reserved for debt snapshots. Malformed history cursors return a sanitized `400`. The stable historical exchange-rate cache is bounded to 4,096 entries with deterministic LRU eviction.
+
+The Rust process is intended to remain behind a private-interface reverse proxy. TLS and HTTP/3 terminate at the edge, and mutation requests received as QUIC 0-RTT early data must be disabled or rejected with `425 Too Early`. See the non-normative [Caddy example](deploy/Caddyfile.example); Caddy is not a runtime dependency.
 
 `/healthz` is allocation-light process liveness and remains healthy while the process is running. `/readyz` is the local SQLite readiness probe: it acquires a pool connection and runs a trivial query with a one-second total budget, returning a sanitized `503` when SQLite is closed, unavailable, or contended. Both probes bypass sessions and use the dedicated four-request probe budget. Frankfurter availability, session counts, and ledger contents do not gate readiness. Use `/healthz` for process liveness and `/readyz` for local traffic admission or orchestrator readiness.
 

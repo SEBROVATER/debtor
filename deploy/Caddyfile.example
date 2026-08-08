@@ -1,0 +1,18 @@
+# Non-normative edge example. Replace the hostname and keep Debtor bound to
+# a private interface. Caddy terminates TLS/HTTP/3 and forwards HTTP/1.1.
+example.com {
+	encode gzip
+
+	# Never replay mutation requests received as QUIC 0-RTT early data.
+	@unsafe_early_data {
+		header Early-Data 1
+		not method GET HEAD
+	}
+	respond @unsafe_early_data 425
+
+	reverse_proxy 127.0.0.1:3000 {
+		# Replace, rather than trust, client-supplied forwarding values.
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+}

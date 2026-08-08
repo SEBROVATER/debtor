@@ -65,6 +65,7 @@ pub(crate) async fn create_group_participant(
             &session,
             id,
             None,
+            None,
             Some(error.to_string()),
             None,
             Some(ParticipantDraft { name, color }),

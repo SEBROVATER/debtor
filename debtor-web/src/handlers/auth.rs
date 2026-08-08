@@ -61,7 +61,7 @@ pub(crate) async fn login(
         Ok(AuthenticationAttempt::Authenticated) => {
             if session::establish(&session).await.is_err() {
                 let _ = session::flush(&session).await;
-                return super::response::session_error();
+                return super::response::session_unavailable();
             }
             state.authentication.complete_login(client).await;
             Redirect::to("/groups").into_response()
