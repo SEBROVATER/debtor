@@ -17,7 +17,7 @@ The foundation is intentionally single-process, single-administrator, local SQLi
 5. Cap authenticated sessions at 32 without eviction. A full-cap correct-password login flushes the anonymous session and returns retryable `503`; existing authenticated sessions are never evicted.
 6. Cap stable historical rate contexts at 4,096 with deterministic standard-library LRU indexing. Cache eviction can refetch only.
 7. Use 25-item keyset pagination for ordinary spending history and direct complete aggregate reads for detail/edit/delete. Full snapshots remain reserved for debt calculation.
-8. Keep HTTP/3/QUIC at the reverse proxy. The application remains a private TCP HTTP backend; unsafe early data must not reach mutations.
+8. Keep HTTP/3/QUIC at the reverse proxy. The application remains a private HTTP/1.1 TCP backend; the edge owns certificates, `Alt-Svc`, HTTP/2 or HTTP/1.1 fallback, forwarding-header sanitation, early-data rejection, body limits, and mutation-compatible backend transport timeouts.
 9. Trim dependency features before isolated Askama, reqwest, tower-sessions, and SQLx upgrades. `cargo-deny` enforces advisories, sources, and reviewed permissive licensing; Dependabot groups weekly patch/minor updates and leaves majors isolated.
 10. Architecture fitness checks required package presence and normal/build dependency direction from `cargo metadata`. Responsibility boundaries are enforced by targeted compile/integration tests rather than brittle source-token scans.
 
@@ -26,7 +26,7 @@ The foundation is intentionally single-process, single-administrator, local SQLi
 - Financial policy has one reusable application authority for HTML and future adapters.
 - Authenticated memory is bounded without invalidating existing administrator sessions.
 - Ordinary pages remain bounded as history grows while debt calculations retain snapshot semantics.
-- HTTP/3 can be adopted at the edge without introducing application QUIC/TLS complexity.
+- HTTP/3 can be adopted at the edge without introducing application QUIC/TLS complexity, provided rollout validates UDP fallback, early-data rejection, and identical client-IP resolution across protocols.
 - Dependency upgrades remain reviewable and reversible, at the cost of several isolated migration stages.
 - Pre-release local databases may still need recreation after index/schema changes.
 

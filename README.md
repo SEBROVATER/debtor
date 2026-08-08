@@ -51,7 +51,23 @@ Sessions are process-local and restart-invalidation is intentional. Anonymous lo
 
 Ordinary group expense history is rendered as 25-item keyset pages ordered by date and ID; complete history materialization is reserved for debt snapshots. Malformed history cursors return a sanitized `400`. The stable historical exchange-rate cache is bounded to 4,096 entries with deterministic LRU eviction.
 
-The Rust process is intended to remain behind a private-interface reverse proxy. TLS and HTTP/3 terminate at the edge, and mutation requests received as QUIC 0-RTT early data must be disabled or rejected with `425 Too Early`. See the non-normative [Caddy example](deploy/Caddyfile.example); Caddy is not a runtime dependency.
+## Edge Deployment
+
+The Rust process remains behind a private-interface reverse proxy. TLS, certificates, HTTP/3, `Alt-Svc`, and HTTP/2 or HTTP/1.1 fallback terminate at the edge; Caddy is not a runtime dependency. See the non-normative [Caddy example](deploy/Caddyfile.example).
+
+- Set `APP_TRUSTED_PROXY_CIDRS` to the edge's backend source CIDR and `APP_TRUSTED_PROXY_HEADER=x-forwarded-for` only when the edge replaces untrusted forwarding input.
+- Reject unsafe marked early-data requests with `425 Too Early`, or disable early data. `GET` and `HEAD` are the only safe exception.
+- Keep backend HTTP/1.1 connection reuse enabled. A bounded dial or response-header timeout is acceptable, but do not set a post-dispatch mutation timeout shorter than Debtor's definitive commit/rollback path.
+- Enforce edge limits no larger than 8 KiB for `/login` and 256 KiB for other forms.
+- Start HTTP/3 with a short `Alt-Svc` lifetime. Before increasing it, verify UDP/443, HTTP/2 or HTTP/1.1 fallback when UDP is blocked, `425` for unsafe early data, and identical resolved client IPs/rate limits for HTTP/3 and fallback requests.
+
+Validate an edge rollout with controlled test traffic before increasing the `Alt-Svc` lifetime:
+
+1. Confirm the initial response advertises the short lifetime and that UDP/443 reaches the edge.
+2. Block UDP from a test client and confirm the same endpoint succeeds over HTTP/2 or HTTP/1.1.
+3. Send a marked unsafe early-data request and confirm it receives `425` without reaching Debtor.
+4. Make controlled failed login attempts from the same client over HTTP/3 and fallback transport; the limiter must resolve the same client identity and apply one shared budget.
+5. Inspect edge telemetry for backend connection reuse and verify no edge timeout cuts off a deliberately slow, admitted mutation before its final response.
 
 `/healthz` is allocation-light process liveness and remains healthy while the process is running. `/readyz` is the local SQLite readiness probe: it acquires a pool connection and runs a trivial query with a one-second total budget, returning a sanitized `503` when SQLite is closed, unavailable, or contended. Both probes bypass sessions and use the dedicated four-request probe budget. Frankfurter availability, session counts, and ledger contents do not gate readiness. Use `/healthz` for process liveness and `/readyz` for local traffic admission or orchestrator readiness.
 

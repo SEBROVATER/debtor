@@ -1,9 +1,33 @@
 # Non-normative edge example. Replace the hostname and keep Debtor bound to
 # a private interface. Caddy terminates TLS/HTTP/3 and forwards HTTP/1.1.
+# Configure APP_TRUSTED_PROXY_CIDRS for Caddy's backend source CIDR and
+# APP_TRUSTED_PROXY_HEADER=x-forwarded-for. Caddy is not a runtime dependency.
 example.com {
 	encode gzip
 
-	# Never replay mutation requests received as QUIC 0-RTT early data.
+	# Start HTTP/3 rollout with a short Alt-Svc lifetime at the edge/CDN, then
+	# lengthen it only after validating UDP fallback and client-IP parity. Caddy
+	# may manage Alt-Svc automatically; do not add a conflicting second header.
+
+	# Match the application's form limits before proxying requests.
+	@login {
+		method POST
+		path /login
+	}
+	request_body @login {
+		max_size 8KiB
+	}
+	@other_forms {
+		method POST
+		not path /login
+	}
+	request_body @other_forms {
+		max_size 256KiB
+	}
+
+	# Never replay mutation requests received as marked QUIC/TLS 0-RTT early
+	# data. Verify that every upstream edge sends Early-Data: 1; otherwise
+	# disable early data there instead of relying on this matcher.
 	@unsafe_early_data {
 		header Early-Data 1
 		not method GET HEAD
@@ -11,8 +35,22 @@ example.com {
 	respond @unsafe_early_data 425
 
 	reverse_proxy 127.0.0.1:3000 {
-		# Replace, rather than trust, client-supplied forwarding values.
+		# Remove client-supplied forwarding values, then set Caddy's immediate
+		# peer identity. Validate identical behavior over HTTP/3 and TCP fallback.
+		header_up -X-Forwarded-For
 		header_up X-Forwarded-For {remote_host}
+		header_up -X-Forwarded-Proto
 		header_up X-Forwarded-Proto {scheme}
+
+		# Reuse a private HTTP/1.1 backend connection. Bound connection setup and
+		# response headers, but do not add read/write/stream timeouts that can cut
+		# off an admitted mutation before its definitive commit or rollback.
+		transport http {
+			versions 1.1
+			dial_timeout 5s
+			response_header_timeout 95s
+			keepalive 30s
+			keepalive_idle_conns_per_host 32
+		}
 	}
 }

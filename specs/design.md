@@ -85,6 +85,14 @@ Unsafe requests MUST use one shared CSRF-validating form extractor before route-
 
 Trusted proxies MUST strip untrusted forwarding input or append their immediate peer while preserving chain order. Only proxies within `APP_TRUSTED_PROXY_CIDRS` may supply the selected `APP_TRUSTED_PROXY_HEADER` format.
 
+## Edge Proxy Contract
+
+- TLS, automatic certificates, HTTP/3/QUIC, `Alt-Svc`, and client-facing HTTP/2 or HTTP/1.1 fallback are edge responsibilities. Debtor remains a private HTTP/1.1 TCP backend and has no QUIC, TLS-certificate, or UDP listener dependency.
+- The edge MUST sanitize forwarding headers before each backend request. Its source address/CIDR and selected forwarding-header mode MUST match `APP_TRUSTED_PROXY_CIDRS` and `APP_TRUSTED_PROXY_HEADER`. Client-IP resolution and login-rate-limit behavior MUST be identical over HTTP/3 and TCP fallback protocols.
+- The edge MUST reject unsafe early-data requests with `425 Too Early`, or disable TLS/QUIC early data entirely. Only `GET` and `HEAD` may be allowed through an explicitly marked early-data path; CSRF does not make a replay-safe mutation.
+- The edge MUST reuse backend connections and use a private HTTP/1.1 transport. Backend connect and response-header timeouts may be bounded, but no proxy read, write, stream, or request timeout may be shorter than an admitted mutation's definitive completion. Edge body limits MUST be at most 8 KiB for `/login` and 256 KiB for other form endpoints.
+- Roll out HTTP/3 with a short `Alt-Svc` lifetime first, verify UDP/443 reachability and edge telemetry, then increase the advertised lifetime. Before increasing it, verify that blocked UDP still falls back to HTTP/2 or HTTP/1.1, unsafe early data receives `425`, and the same forwarded client identity is resolved through each protocol.
+
 ## Local Run Contract
 
 After copying `.env.example` to `.env` and supplying a valid `APP_ADMIN_PASSWORD_HASH`, `cargo run` MUST be sufficient to run the complete local application. It MUST load configuration, create/connect and migrate SQLite, enable foreign keys, compose adapters and services, bind the configured address, log the local URL including its `http://` scheme without secrets, and shut down gracefully. The independent password helper is run with `cargo run --manifest-path tools/password-hash/Cargo.toml`.
@@ -100,7 +108,7 @@ Local startup MUST NOT require Docker, a frontend build, manual migrations, SQLx
 - `/healthz` is process liveness. `/readyz` checks SQLite and mandatory in-process supervisor health only; Frankfurter availability and ledger contents MUST NOT gate startup or readiness.
 - Shutdown MUST stop admission, drain for at most ten seconds, attempt a bounded WAL checkpoint, close the pool, and preserve WAL sidecars if checkpointing fails. Structured logs MUST be secret-safe. SQLite adapter diagnostics MAY emit only fixed operation names and bounded result-code categories; they MUST NOT emit SQL, database messages, values, identifiers, or request-derived data.
 - Stable historical exchange-rate cache contexts MUST be capped at 4,096 with deterministic LRU eviction; current/future contexts MUST roll over by UTC date. Eviction may refetch but MUST NOT alter quote correctness or cross-context fallback.
-- HTTP/3/QUIC MUST terminate at the sanitizing reverse proxy, not the Debtor process. The proxy MUST support HTTP/2 or HTTP/1.1 fallback, sanitize forwarding headers, reject unsafe QUIC/TLS 0-RTT early data with `425` or disable it, and never impose a shorter post-dispatch mutation timeout.
+- HTTP/3/QUIC MUST terminate at the sanitizing reverse proxy, not the Debtor process. The proxy MUST follow the edge proxy contract for fallback, forwarding-header sanitation, early-data rejection, body limits, backend transport reuse/timeouts, `Alt-Svc` rollout, and cross-protocol client-IP validation.
 - The production workspace MUST use the pinned Rust toolchain and locked dependency checks. Architecture fitness MUST verify required package presence and dependency direction; targeted tests enforce responsibility ownership. Dependency advisories, sources, and permissive-license policy MUST be checked in CI.
 
 ## Maintenance
