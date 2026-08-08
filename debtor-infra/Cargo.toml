@@ -10,20 +10,19 @@ rust-version.workspace = true
 async-trait = { workspace = true }
 debtor-domain = { workspace = true }
 debtor-application = { workspace = true }
-rust_decimal = { workspace = true }
+rust_decimal = { workspace = true, features = ["serde-with-arbitrary-precision"] }
 sqlx = { workspace = true }
 argon2 = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
+serde_json = { workspace = true, features = ["arbitrary_precision"] }
 tracing = { workspace = true }
 tokio = { workspace = true }
-chrono = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
 futures = { workspace = true }
 
 [dev-dependencies]
-sqlx = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["io-util"] }
 tracing-subscriber = { workspace = true }
 
 [lints]

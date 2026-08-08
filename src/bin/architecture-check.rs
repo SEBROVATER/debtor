@@ -8,7 +8,7 @@ use std::{
 
 use serde_json::Value;
 
-const DOMAIN_ALLOWED: &[&str] = &["chrono", "rust_decimal", "serde", "thiserror"];
+const DOMAIN_ALLOWED: &[&str] = &["chrono", "rust_decimal", "thiserror"];
 const APPLICATION_ALLOWED: &[&str] = &[
     "async-trait",
     "chrono",
@@ -172,10 +172,7 @@ mod tests {
 
     fn allowed_graph() -> Value {
         graph(vec![
-            package(
-                "debtor-domain",
-                &["chrono", "rust_decimal", "serde", "thiserror"],
-            ),
+            package("debtor-domain", &["chrono", "rust_decimal", "thiserror"]),
             package(
                 "debtor-application",
                 &[
@@ -270,10 +267,7 @@ mod tests {
     #[test]
     fn rejects_missing_packages_and_build_edges() {
         let document = graph(vec![
-            package(
-                "debtor-domain",
-                &["chrono", "rust_decimal", "serde", "thiserror"],
-            ),
+            package("debtor-domain", &["chrono", "rust_decimal", "thiserror"]),
             package("debtor-application", &["debtor-domain"]),
         ]);
         let violations = evaluate(&document).expect("fixture metadata");
