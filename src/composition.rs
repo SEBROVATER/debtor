@@ -6,7 +6,7 @@ use debtor_application::{
     AuthenticationService, AuthenticationUseCases, Clock, DebtService, DebtUseCases, GroupReader,
     GroupRepository, GroupService, GroupUseCases, LedgerSnapshotReader, ParticipantRepository,
     ParticipantService, ParticipantUseCases, ReadinessService, ReadinessUseCases, SpendingReader,
-    SpendingRepository, SpendingService, SpendingUseCases, UtcClock,
+    SpendingEligibilityReader, SpendingRepository, SpendingService, SpendingUseCases, UtcClock,
 };
 use debtor_infra::auth::{ArgonPasswordGate, MemoryLoginAttemptLimiter};
 use debtor_infra::db::repos::SqliteLedgerRuntime;
@@ -32,6 +32,7 @@ pub(crate) struct BuiltApp {
     pub(crate) cleanup_health: CleanupHealth,
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn build_app(config: Config) -> Result<BuiltApp> {
     let proxy =
         TrustedProxyConfig::parse(&config.trusted_proxy_cidrs, &config.trusted_proxy_header)
@@ -65,6 +66,7 @@ pub(crate) async fn build_app(config: Config) -> Result<BuiltApp> {
     let group_reader: Arc<dyn GroupReader> = store.clone();
     let group_repository: Arc<dyn GroupRepository> = store.clone();
     let participant_repository: Arc<dyn ParticipantRepository> = store.clone();
+    let spending_eligibility: Arc<dyn SpendingEligibilityReader> = store.clone();
     let spending_reader: Arc<dyn SpendingReader> = store.clone();
     let snapshot_reader: Arc<dyn LedgerSnapshotReader> = store.clone();
     let spending_repository: Arc<dyn SpendingRepository> = store;
@@ -72,10 +74,11 @@ pub(crate) async fn build_app(config: Config) -> Result<BuiltApp> {
         Arc::new(GroupService::new(group_reader.clone(), group_repository));
     let participants: Arc<dyn ParticipantUseCases> =
         Arc::new(ParticipantService::new(participant_repository.clone()));
-    let spendings: Arc<dyn SpendingUseCases> = Arc::new(
-        SpendingService::new(spending_reader.clone(), spending_repository)
-            .with_eligibility(participant_repository),
-    );
+    let spendings: Arc<dyn SpendingUseCases> = Arc::new(SpendingService::new(
+        spending_reader.clone(),
+        spending_repository,
+        spending_eligibility,
+    ));
     let rates = Arc::new(FrankfurterClient::with_base_url(&config.exchange_base_url));
     let clock: Arc<dyn Clock> = Arc::new(UtcClock);
     let debts: Arc<dyn DebtUseCases> =

@@ -246,3 +246,113 @@ async fn corrupted_persisted_money_is_rejected(pool: SqlitePool) {
         Err(ApplicationError::Storage(StorageReason::InvalidData))
     ));
 }
+
+#[sqlx::test(migrations = "../migrations")]
+async fn corrupted_persisted_non_monetary_values_are_rejected(pool: SqlitePool) {
+    let (store, group_id, participant_id) = active_group_and_participant(&pool).await;
+    store
+        .add_member(group_id, participant_id)
+        .await
+        .expect("add member");
+    let created = store
+        .create_spending(spending(group_id, participant_id))
+        .await
+        .expect("create spending");
+
+    let mut connection = pool.acquire().await.expect("test connection");
+    sqlx::query("PRAGMA ignore_check_constraints = ON")
+        .execute(&mut *connection)
+        .await
+        .expect("allow deliberate corruption");
+
+    sqlx::query("UPDATE groups SET is_archived = 2 WHERE id = ?")
+        .bind(group_id)
+        .execute(&mut *connection)
+        .await
+        .expect("corrupt group boolean");
+    assert!(matches!(
+        debtor_application::GroupReader::group(&store, group_id).await,
+        Err(ApplicationError::Storage(StorageReason::InvalidData))
+    ));
+    sqlx::query("UPDATE groups SET is_archived = 0 WHERE id = ?")
+        .bind(group_id)
+        .execute(&mut *connection)
+        .await
+        .expect("restore group boolean");
+
+    sqlx::query("UPDATE participants SET color = 'invalid' WHERE id = ?")
+        .bind(participant_id)
+        .execute(&mut *connection)
+        .await
+        .expect("corrupt participant color");
+    assert!(matches!(
+        store.participant(participant_id).await,
+        Err(ApplicationError::Storage(StorageReason::InvalidData))
+    ));
+    sqlx::query("UPDATE participants SET color = '#112233' WHERE id = ?")
+        .bind(participant_id)
+        .execute(&mut *connection)
+        .await
+        .expect("restore participant color");
+
+    sqlx::query("UPDATE group_members SET is_active = 2 WHERE group_id = ? AND participant_id = ?")
+        .bind(group_id)
+        .bind(participant_id)
+        .execute(&mut *connection)
+        .await
+        .expect("corrupt membership boolean");
+    assert!(matches!(
+        store.group_members(group_id).await,
+        Err(ApplicationError::Storage(StorageReason::InvalidData))
+    ));
+    sqlx::query("UPDATE group_members SET is_active = 1 WHERE group_id = ? AND participant_id = ?")
+        .bind(group_id)
+        .bind(participant_id)
+        .execute(&mut *connection)
+        .await
+        .expect("restore membership boolean");
+
+    for (query, value, restore_query, original) in [
+        (
+            "UPDATE spendings SET description = ? WHERE id = ?",
+            "",
+            "UPDATE spendings SET description = ? WHERE id = ?",
+            "Dinner",
+        ),
+        (
+            "UPDATE spendings SET currency = ? WHERE id = ?",
+            "XXX",
+            "UPDATE spendings SET currency = ? WHERE id = ?",
+            "USD",
+        ),
+        (
+            "UPDATE spendings SET spending_type = ? WHERE id = ?",
+            "invalid",
+            "UPDATE spendings SET spending_type = ? WHERE id = ?",
+            "food",
+        ),
+        (
+            "UPDATE spendings SET spent_date = ? WHERE id = ?",
+            "not-a-date",
+            "UPDATE spendings SET spent_date = ? WHERE id = ?",
+            "2026-01-01",
+        ),
+    ] {
+        sqlx::query(query)
+            .bind(value)
+            .bind(created.id)
+            .execute(&mut *connection)
+            .await
+            .expect("corrupt spending field");
+        assert!(matches!(
+            store.spending(group_id, created.id).await,
+            Err(ApplicationError::Storage(StorageReason::InvalidData))
+        ));
+        sqlx::query(restore_query)
+            .bind(original)
+            .bind(created.id)
+            .execute(&mut *connection)
+            .await
+            .expect("restore spending field");
+    }
+}

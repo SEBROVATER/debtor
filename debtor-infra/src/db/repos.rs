@@ -10,8 +10,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use debtor_application::{
     ApplicationError, DatabaseReadiness, GroupReader, GroupRepository, LedgerSnapshot,
-    LedgerSnapshotReader, ParticipantRepository, SpendingCursor, SpendingPage,
-    SpendingPageDirection, SpendingReader, SpendingRepository, SpendingSummary, StorageReason,
+    LedgerSnapshotReader, ParticipantRepository, SpendingCursor, SpendingEligibilityReader,
+    SpendingPage, SpendingPageDirection, SpendingReader, SpendingRepository, SpendingSummary,
+    StorageReason,
 };
 use debtor_domain::currency::Currency;
 use debtor_domain::model::{
@@ -502,7 +503,19 @@ impl ParticipantRepository for SqliteLedgerStore {
             .into_iter()
             .map(|row| {
                 let participant_id = row.id;
-                Ok((participant(DbParticipant { id: participant_id, name: row.name, color: row.color, is_archived: row.is_archived })?, GroupMember { group_id, participant_id, is_active: row.is_active != 0 }))
+                Ok((
+                    participant(DbParticipant {
+                        id: participant_id,
+                        name: row.name,
+                        color: row.color,
+                        is_archived: row.is_archived,
+                    })?,
+                    GroupMember {
+                        group_id,
+                        participant_id,
+                        is_active: decoded_bool(row.is_active)?,
+                    },
+                ))
             })
             .collect()
     }
@@ -537,6 +550,24 @@ impl ParticipantRepository for SqliteLedgerStore {
             .execute(&self.pool)
             .await
             .map_err(storage)?)
+    }
+}
+
+#[async_trait]
+impl SpendingEligibilityReader for SqliteLedgerStore {
+    async fn eligible_participant_ids(
+        &self,
+        group_id: EntityId,
+    ) -> Result<BTreeSet<EntityId>, ApplicationError> {
+        self.group(group_id).await?;
+        sqlx::query_scalar!(
+            "SELECT gm.participant_id AS \"participant_id!: i64\" FROM group_members gm JOIN participants p ON p.id = gm.participant_id WHERE gm.group_id = ? AND gm.is_active = 1 AND p.is_archived = 0 ORDER BY gm.participant_id",
+            group_id
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage)
+        .map(|ids| ids.into_iter().collect())
     }
 }
 
@@ -694,7 +725,7 @@ fn group(row: DbGroup) -> Result<Group, ApplicationError> {
             .map_err(|_| ApplicationError::Storage(StorageReason::InvalidData))?,
         currency: Currency::from_str(&row.currency)
             .map_err(|_| ApplicationError::Storage(StorageReason::InvalidData))?,
-        is_archived: row.is_archived != 0,
+        is_archived: decoded_bool(row.is_archived)?,
     })
 }
 
@@ -705,8 +736,16 @@ fn participant(row: DbParticipant) -> Result<Participant, ApplicationError> {
             .map_err(|_| ApplicationError::Storage(StorageReason::InvalidData))?,
         color: Color::new(row.color)
             .map_err(|_| ApplicationError::Storage(StorageReason::InvalidData))?,
-        is_archived: row.is_archived != 0,
+        is_archived: decoded_bool(row.is_archived)?,
     })
+}
+
+fn decoded_bool(value: i64) -> Result<bool, ApplicationError> {
+    match value {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(ApplicationError::Storage(StorageReason::InvalidData)),
+    }
 }
 
 async fn participant_by_id(

@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT gm.participant_id AS \"participant_id!: i64\" FROM group_members gm JOIN participants p ON p.id = gm.participant_id WHERE gm.group_id = ? AND gm.is_active = 1 AND p.is_archived = 0 ORDER BY gm.participant_id",
+  "describe": {
+    "columns": [
+      {
+        "name": "participant_id!: i64",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "group_members",
+            "name": "participant_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "c9a311f7e02287871b91e7dd869426fdaaddf2e2de9553fce543144091e55f0c"
+}
