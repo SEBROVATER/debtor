@@ -15,7 +15,7 @@ use super::decoding::{
     spending_summary,
 };
 use super::snapshots::complete_spendings;
-use super::{SqliteLedgerStore, changed, group_mutable, group_mutable_in_transaction, storage};
+use super::{SqliteLedgerStore, group_write_failure, group_write_failure_in_transaction, storage};
 
 async fn payer_rows(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
@@ -148,7 +148,15 @@ async fn save_spending(
     let spending_type = spending.spending_type.code();
     let spent_date = spending.spent_date.to_string();
     let id = if update {
-        changed(sqlx::query!("UPDATE spendings SET description = ?, total_amount = ?, currency = ?, spending_type = ?, spent_date = ?, updated_at = datetime('now') WHERE id = ? AND group_id = ? AND EXISTS (SELECT 1 FROM groups WHERE id = ? AND is_archived = 0)", description, total_amount, currency, spending_type, spent_date, spending.id, spending.group_id, spending.group_id).execute(&mut *tx).await.map_err(storage)?)?;
+        let result = sqlx::query!("UPDATE spendings SET description = ?, total_amount = ?, currency = ?, spending_type = ?, spent_date = ?, updated_at = datetime('now') WHERE id = ? AND group_id = ? AND EXISTS (SELECT 1 FROM groups WHERE id = ? AND is_archived = 0)", description, total_amount, currency, spending_type, spent_date, spending.id, spending.group_id, spending.group_id).execute(&mut *tx).await.map_err(storage)?;
+        if result.rows_affected() == 0 {
+            return Err(group_write_failure_in_transaction(
+                &mut tx,
+                spending.group_id,
+                ApplicationError::NotFound,
+            )
+            .await);
+        }
         sqlx::query!(
             "DELETE FROM spending_payers WHERE spending_id = ?",
             spending.id
@@ -167,8 +175,12 @@ async fn save_spending(
     } else {
         let result = sqlx::query!("INSERT INTO spendings (group_id, description, total_amount, currency, spending_type, spent_date) SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM groups WHERE id = ? AND is_archived = 0)", spending.group_id, description, total_amount, currency, spending_type, spent_date, spending.group_id).execute(&mut *tx).await.map_err(storage)?;
         if result.rows_affected() == 0 {
-            group_mutable_in_transaction(&mut tx, spending.group_id).await?;
-            return Err(ApplicationError::Storage(StorageReason::Unexpected));
+            return Err(group_write_failure_in_transaction(
+                &mut tx,
+                spending.group_id,
+                ApplicationError::Storage(StorageReason::Unexpected),
+            )
+            .await);
         }
         result.last_insert_rowid()
     };
@@ -272,8 +284,9 @@ impl SpendingRepository for SqliteLedgerStore {
         let _write_guard = self.write_guard().await?;
         let result = sqlx::query!("DELETE FROM spendings WHERE id = ? AND group_id = ? AND EXISTS (SELECT 1 FROM groups WHERE id = ? AND is_archived = 0)", spending_id, group_id, group_id).execute(&self.pool).await.map_err(storage)?;
         if result.rows_affected() == 0 {
-            group_mutable(&self.pool, group_id).await?;
-            return Err(ApplicationError::NotFound);
+            return Err(
+                group_write_failure(&self.pool, group_id, ApplicationError::NotFound).await,
+            );
         }
         Ok(())
     }

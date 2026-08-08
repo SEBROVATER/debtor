@@ -4,7 +4,7 @@ use debtor_domain::currency::Currency;
 use debtor_domain::model::{EntityId, Group, Name};
 
 use super::decoding::{DbGroup, group};
-use super::{SqliteLedgerStore, changed, storage};
+use super::{SqliteLedgerStore, changed, group_write_failure, storage};
 
 #[async_trait]
 impl GroupReader for SqliteLedgerStore {
@@ -55,8 +55,16 @@ impl GroupRepository for SqliteLedgerStore {
         currency: Currency,
     ) -> Result<Group, ApplicationError> {
         let _write_guard = self.write_guard().await?;
-        changed(sqlx::query!("UPDATE groups SET name = ?, currency = ?, updated_at = datetime('now') WHERE id = ? AND is_archived = 0", name.as_str(), currency.code(), id)
-            .execute(&self.pool).await.map_err(storage)?)?;
+        let result = sqlx::query!("UPDATE groups SET name = ?, currency = ?, updated_at = datetime('now') WHERE id = ? AND is_archived = 0", name.as_str(), currency.code(), id)
+            .execute(&self.pool).await.map_err(storage)?;
+        if result.rows_affected() == 0 {
+            return Err(group_write_failure(
+                &self.pool,
+                id,
+                ApplicationError::Storage(debtor_application::StorageReason::Unexpected),
+            )
+            .await);
+        }
         self.group(id).await
     }
 
@@ -83,10 +91,7 @@ impl GroupRepository for SqliteLedgerStore {
         let result = sqlx::query!("DELETE FROM groups WHERE id = ? AND is_archived = 0 AND NOT EXISTS (SELECT 1 FROM spendings WHERE group_id = ?)", id, id)
             .execute(&self.pool).await.map_err(storage)?;
         if result.rows_affected() == 0 {
-            if self.group(id).await.is_err() {
-                return Err(ApplicationError::NotFound);
-            }
-            return Err(ApplicationError::Conflict);
+            return Err(group_write_failure(&self.pool, id, ApplicationError::Conflict).await);
         }
         Ok(())
     }

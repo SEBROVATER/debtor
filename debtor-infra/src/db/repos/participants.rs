@@ -3,7 +3,10 @@ use debtor_application::{ApplicationError, GroupReader, ParticipantRepository};
 use debtor_domain::model::{Color, EntityId, GroupMember, Name, Participant};
 
 use super::decoding::{DbGroupMember, DbParticipant, decoded_bool, participant};
-use super::{SqliteLedgerStore, changed, group_mutable, group_mutable_in_transaction, storage};
+use super::{
+    SqliteLedgerStore, changed, group_mutable, group_write_failure,
+    group_write_failure_in_transaction, participant_mutable, participant_write_failure, storage,
+};
 
 async fn participant_by_id(
     pool: &sqlx::SqlitePool,
@@ -19,21 +22,6 @@ async fn participant_by_id(
     .map_err(storage)?
     .ok_or(ApplicationError::NotFound)
     .and_then(participant)
-}
-
-async fn participant_mutable(
-    pool: &sqlx::SqlitePool,
-    id: EntityId,
-) -> Result<(), ApplicationError> {
-    match sqlx::query_scalar!("SELECT is_archived FROM participants WHERE id = ?", id)
-        .fetch_optional(pool)
-        .await
-        .map_err(storage)?
-    {
-        Some(0) => Ok(()),
-        Some(_) => Err(ApplicationError::Conflict),
-        None => Err(ApplicationError::NotFound),
-    }
 }
 
 #[async_trait]
@@ -89,10 +77,12 @@ impl ParticipantRepository for SqliteLedgerStore {
         let membership = sqlx::query!("INSERT INTO group_members (group_id, participant_id) SELECT ?, ? WHERE EXISTS (SELECT 1 FROM groups WHERE id = ? AND is_archived = 0)", group_id, id, group_id)
             .execute(&mut *tx).await.map_err(storage)?;
         if membership.rows_affected() == 0 {
-            group_mutable_in_transaction(&mut tx, group_id).await?;
-            return Err(ApplicationError::Storage(
-                debtor_application::StorageReason::Unexpected,
-            ));
+            return Err(group_write_failure_in_transaction(
+                &mut tx,
+                group_id,
+                ApplicationError::Storage(debtor_application::StorageReason::Unexpected),
+            )
+            .await);
         }
         tx.commit().await.map_err(storage)?;
         participant_by_id(&self.pool, id).await
@@ -108,12 +98,12 @@ impl ParticipantRepository for SqliteLedgerStore {
         let result = sqlx::query!("UPDATE participants SET name = ?, color = ?, updated_at = datetime('now') WHERE id = ? AND is_archived = 0", name.as_str(), color.as_str(), id)
             .execute(&self.pool).await.map_err(storage)?;
         if result.rows_affected() == 0 {
-            return match participant_by_id(&self.pool, id).await? {
-                Participant {
-                    is_archived: true, ..
-                } => Err(ApplicationError::Conflict),
-                _ => Err(ApplicationError::NotFound),
-            };
+            return Err(participant_write_failure(
+                &self.pool,
+                id,
+                ApplicationError::Storage(debtor_application::StorageReason::Unexpected),
+            )
+            .await);
         }
         participant_by_id(&self.pool, id).await
     }
@@ -165,7 +155,13 @@ impl ParticipantRepository for SqliteLedgerStore {
         active: bool,
     ) -> Result<(), ApplicationError> {
         let _write_guard = self.write_guard().await?;
-        changed(sqlx::query!("UPDATE group_members SET is_active = ? WHERE group_id = ? AND participant_id = ? AND EXISTS (SELECT 1 FROM groups WHERE id = ? AND is_archived = 0)", i64::from(active), group_id, participant_id, group_id)
-            .execute(&self.pool).await.map_err(storage)?)
+        let result = sqlx::query!("UPDATE group_members SET is_active = ? WHERE group_id = ? AND participant_id = ? AND EXISTS (SELECT 1 FROM groups WHERE id = ? AND is_archived = 0)", i64::from(active), group_id, participant_id, group_id)
+            .execute(&self.pool).await.map_err(storage)?;
+        if result.rows_affected() == 0 {
+            return Err(
+                group_write_failure(&self.pool, group_id, ApplicationError::NotFound).await,
+            );
+        }
+        Ok(())
     }
 }

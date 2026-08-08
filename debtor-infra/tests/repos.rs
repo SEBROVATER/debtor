@@ -239,6 +239,42 @@ async fn archived_group_rejects_spending_delete_and_preserves_history(pool: Sqli
 }
 
 #[sqlx::test(migrations = "../migrations")]
+async fn archived_mutation_races_consistently_return_conflict(pool: SqlitePool) {
+    let (store, group_id, participant_id) = active_group_and_participant(&pool).await;
+    store
+        .add_member(group_id, participant_id)
+        .await
+        .expect("add member");
+    let spending = store
+        .create_spending(spending(group_id, participant_id))
+        .await
+        .expect("create spending");
+    store
+        .set_group_archived(group_id, true)
+        .await
+        .expect("archive group");
+
+    let mut updated = spending;
+    updated.description = Description::new("Updated dinner").expect("description");
+    for result in [
+        store
+            .update_group(
+                group_id,
+                Name::new("Renamed trip").expect("name"),
+                Currency::Eur,
+            )
+            .await
+            .map(|_| ()),
+        store
+            .set_member_active(group_id, participant_id, false)
+            .await,
+        store.update_spending(updated).await.map(|_| ()),
+    ] {
+        assert!(matches!(result, Err(ApplicationError::Conflict)));
+    }
+}
+
+#[sqlx::test(migrations = "../migrations")]
 async fn archived_participant_rejects_direct_update(pool: SqlitePool) {
     let (store, _, participant_id) = active_group_and_participant(&pool).await;
     store

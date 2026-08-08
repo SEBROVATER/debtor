@@ -80,6 +80,40 @@ async fn group_mutable(pool: &SqlitePool, id: EntityId) -> Result<(), Applicatio
     }
 }
 
+async fn participant_mutable(pool: &SqlitePool, id: EntityId) -> Result<(), ApplicationError> {
+    match sqlx::query_scalar!("SELECT is_archived FROM participants WHERE id = ?", id)
+        .fetch_optional(pool)
+        .await
+        .map_err(storage)?
+    {
+        Some(0) => Ok(()),
+        Some(_) => Err(ApplicationError::Conflict),
+        None => Err(ApplicationError::NotFound),
+    }
+}
+
+async fn group_write_failure(
+    pool: &SqlitePool,
+    id: EntityId,
+    fallback: ApplicationError,
+) -> ApplicationError {
+    match group_mutable(pool, id).await {
+        Ok(()) => fallback,
+        Err(error) => error,
+    }
+}
+
+async fn participant_write_failure(
+    pool: &SqlitePool,
+    id: EntityId,
+    fallback: ApplicationError,
+) -> ApplicationError {
+    match participant_mutable(pool, id).await {
+        Ok(()) => fallback,
+        Err(error) => error,
+    }
+}
+
 // This is only used after a conditional write was rejected, to retain the public error distinction.
 async fn group_mutable_in_transaction(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
@@ -93,6 +127,17 @@ async fn group_mutable_in_transaction(
         Some(0) => Ok(()),
         Some(_) => Err(ApplicationError::Conflict),
         None => Err(ApplicationError::NotFound),
+    }
+}
+
+async fn group_write_failure_in_transaction(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    id: EntityId,
+    fallback: ApplicationError,
+) -> ApplicationError {
+    match group_mutable_in_transaction(tx, id).await {
+        Ok(()) => fallback,
+        Err(error) => error,
     }
 }
 
