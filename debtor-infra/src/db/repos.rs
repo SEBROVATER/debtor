@@ -142,10 +142,46 @@ async fn group_write_failure_in_transaction(
 }
 
 fn storage(error: sqlx::Error) -> ApplicationError {
+    let (operation, category) = sqlite_diagnostic(&error);
+    tracing::warn!(
+        target: "debtor.storage",
+        event = "sqlite_storage_error",
+        operation,
+        category,
+    );
     if is_sqlite_contention(&error) {
         ApplicationError::Storage(StorageReason::Contention)
     } else {
         ApplicationError::Storage(StorageReason::Unexpected)
+    }
+}
+
+fn sqlite_diagnostic(error: &sqlx::Error) -> (&'static str, &'static str) {
+    if let Some(database_error) = error.as_database_error() {
+        return (
+            "statement",
+            sqlite_result_category(database_error.code().as_deref()),
+        );
+    }
+    match error {
+        sqlx::Error::PoolTimedOut => ("pool_acquire", "timeout"),
+        sqlx::Error::PoolClosed => ("pool_acquire", "closed"),
+        sqlx::Error::Io(_) => ("connection", "io"),
+        sqlx::Error::Protocol(_) => ("connection", "protocol"),
+        _ => ("adapter", "other"),
+    }
+}
+
+fn sqlite_result_category(code: Option<&str>) -> &'static str {
+    match code {
+        Some("5" | "6") => "contention",
+        Some("1") => "statement",
+        Some("8") => "readonly",
+        Some("10") => "io",
+        Some("11" | "26") => "integrity",
+        Some("14") => "open",
+        Some("19") => "constraint",
+        _ => "other",
     }
 }
 
@@ -168,8 +204,69 @@ fn changed(result: sqlx::sqlite::SqliteQueryResult) -> Result<(), ApplicationErr
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
+    use std::{
+        io::Write,
+        sync::{Arc, Mutex as StdMutex},
+    };
+
     use super::*;
     use debtor_application::DatabaseReadiness;
+    use tracing_subscriber::fmt::MakeWriter;
+
+    #[derive(Clone)]
+    struct SharedWriter(Arc<StdMutex<Vec<u8>>>);
+
+    struct Writer(Arc<StdMutex<Vec<u8>>>);
+
+    impl Write for Writer {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("writer lock").extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> MakeWriter<'a> for SharedWriter {
+        type Writer = Writer;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            Writer(self.0.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn sqlite_diagnostic_logs_only_fixed_operation_and_category() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("test pool");
+        let error = sqlx::query("SELECT sqlite_diagnostic_secret_sentinel")
+            .execute(&pool)
+            .await
+            .expect_err("invalid statement");
+        let buffer = Arc::new(StdMutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_max_level(tracing::Level::WARN)
+            .with_writer(SharedWriter(buffer.clone()))
+            .finish();
+
+        let result = tracing::subscriber::with_default(subscriber, || storage(error));
+
+        assert!(matches!(
+            result,
+            ApplicationError::Storage(StorageReason::Unexpected)
+        ));
+        let output =
+            String::from_utf8(buffer.lock().expect("log buffer").clone()).expect("UTF-8 logs");
+        assert!(output.contains("sqlite_storage_error"));
+        assert!(output.contains("operation=\"statement\""));
+        assert!(output.contains("category=\"statement\""));
+        assert!(!output.contains("sqlite_diagnostic_secret_sentinel"));
+    }
 
     #[tokio::test]
     async fn write_gate_timeout_is_contention_before_database_work() {
