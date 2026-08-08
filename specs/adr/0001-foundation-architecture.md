@@ -6,7 +6,7 @@
 
 ## Context
 
-Debtor is a private, single-administrator ledger with exact multi-currency accounting, preserved historical identities, server-rendered HTML, and process-local authentication. The project needs explicit boundaries and operational assumptions before more feature work is added. Without them, direct framework and persistence concerns can spread inward, SQLite behavior can be interpreted differently by callers, and resource limits can remain implicit.
+Debtor is a private, permanently single-administrator ledger with exact multi-currency accounting, preserved historical identities, server-rendered HTML, and process-local authentication. The project needs explicit boundaries and operational assumptions before more feature work is added. Without them, direct framework and persistence concerns can spread inward, SQLite behavior can be interpreted differently by callers, and resource limits can remain implicit.
 
 `specs/design.md` remains the normative product and architecture contract. This ADR records the rationale and consequences of the accepted foundation decisions. If a later ADR changes one of these decisions, it MUST identify the superseded section and `specs/design.md` MUST be synchronized in the same change.
 
@@ -40,7 +40,7 @@ Complete spending aggregates are read from one database snapshot. Debt calculati
 
 ### 6. Application-owned policy
 
-The application layer owns authentication admission and verification orchestration and spending payer/share mode policy. Web owns HTTP extraction, trusted-proxy resolution, CSRF and session mechanics, cookies, Askama view models, and harmless read composition. Infrastructure remains the final transactional eligibility guard for persisted allocations.
+The application layer owns lifecycle decisions, authentication admission and verification orchestration, and spending payer/share mode policy. Web owns HTTP extraction, trusted-proxy resolution, CSRF and session mechanics, cookies, Askama view models, and harmless read composition. Infrastructure remains the final transactional eligibility guard for persisted allocations.
 
 ### 7. Bounded login limiting
 
@@ -48,7 +48,7 @@ Login attempts remain limited to five attempts per trusted client IP in a rollin
 
 ### 8. Exact and bounded rate processing
 
-JSON exchange-rate numbers are decoded lexically with arbitrary precision into `Decimal`. Provider requests use a five-second connect timeout, 20-second total timeout, and 64 KiB response limit. At most four provider calls are in flight globally, and identical uncached keys use per-key single-flight. Each debt calculation deduplicates unique rate contexts and fetches at most four concurrently. Completion order MUST NOT change balances, rate disclosure order, or warnings. Existing historical/current, stale, and provisional semantics remain authoritative.
+JSON exchange-rate numbers are decoded lexically with arbitrary precision into `Decimal`. Provider requests use a five-second connect timeout, 20-second total timeout, and 64 KiB response limit. At most four provider calls are in flight globally, and identical uncached keys use per-key single-flight. Each debt calculation deduplicates unique rate contexts and fetches at most four concurrently. Both cache classes are capped at 4,096 entries with deterministic LRU eviction. Completion order MUST NOT change balances, rate disclosure order, or warnings. Existing historical/current, stale, and provisional semantics remain authoritative.
 
 ### 9. Bounded process-local sessions
 
@@ -58,7 +58,7 @@ Anonymous login/CSRF sessions use ten-minute inactivity expiry and are explicitl
 
 Login form bodies are limited to 8 KiB and other form bodies to 256 KiB. User traffic has 64 in-flight request permits and login has four. Health and readiness use a separate four-request probe budget so user saturation cannot starve orchestration. Safe dynamic reads and login have a 30-second timeout; debts have a 90-second timeout; probes have a two-second outer timeout and a one-second inner SQLite readiness timeout.
 
-Ledger mutations have bounded body, authentication, admission, write-gate, and SQLite waits, but no generic timeout after the use case begins. They MUST return a definitive commit or rollback result; this release does not add idempotency keys. A reverse proxy MUST NOT impose a shorter mutation timeout after dispatch.
+Ledger mutations use one 30-second absolute deadline for all pre-dispatch work, including body extraction, authentication, CSRF, and asynchronous web prechecks, followed by bounded admission, write-gate, and SQLite waits. There is no generic timeout after the use case begins. Mutations MUST return a definitive commit or rollback result; this release does not add idempotency keys. A reverse proxy MUST NOT impose a shorter mutation timeout after dispatch.
 
 ### 11. Local readiness and shutdown
 
@@ -66,7 +66,7 @@ Ledger mutations have bounded body, authentication, admission, write-gate, and S
 
 ### 12. Pre-release migration policy
 
-Pre-release migrations MAY be rewritten and local databases MAY need to be recreated. Database compatibility is not promised. The repository MUST keep committed SQLx offline metadata synchronized with checked queries and migrations.
+Pre-release migrations MAY be rewritten and local databases MAY need to be recreated. Breaking Rust APIs, configuration, and routes are also allowed when they remove superseded paths rather than preserve shims. Security, accounting, and historical-integrity invariants remain mandatory. Database compatibility is not promised. The repository MUST keep committed SQLx offline metadata synchronized with checked queries and migrations.
 
 ## Consequences
 

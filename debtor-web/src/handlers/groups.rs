@@ -41,7 +41,8 @@ pub(crate) async fn create_group(
     if let Err(response) = require_auth(&session).await {
         return response;
     }
-    let form = match parse_group_form(form.into_inner()) {
+    let csrf_form = form;
+    let form = match parse_group_form(csrf_form.ordered()) {
         Ok(form) => form,
         Err(error) => return error_response(error.status, error.message),
     };
@@ -50,17 +51,17 @@ pub(crate) async fn create_group(
         currency: currency_value,
         ..
     } = form;
-    let Ok(currency) = currency_value.parse::<Currency>() else {
-        return render_group_create_error(
-            &state,
-            &session,
-            name,
-            currency_value,
-            "Invalid currency.".into(),
-        )
-        .await;
-    };
-    match state.groups.create_group(name.clone(), currency).await {
+    if let Err(response) = csrf_form.dispatch() {
+        return response;
+    }
+    match state
+        .groups
+        .create_group(debtor_application::GroupInput {
+            name: name.clone(),
+            currency: currency_value.clone(),
+        })
+        .await
+    {
         Ok(_) => Redirect::to("/groups").into_response(),
         Err(debtor_application::ApplicationError::Validation(error)) => {
             render_group_create_error(&state, &session, name, currency_value, error.to_string())
@@ -130,7 +131,8 @@ pub(crate) async fn update_group(
     if let Err(response) = require_auth(&session).await {
         return response;
     }
-    let form = match parse_group_form(form.into_inner()) {
+    let csrf_form = form;
+    let form = match parse_group_form(csrf_form.ordered()) {
         Ok(form) => form,
         Err(error) => return error_response(error.status, error.message),
     };
@@ -142,18 +144,20 @@ pub(crate) async fn update_group(
         currency: currency_value,
         ..
     } = form;
-    let Ok(currency) = currency_value.parse::<Currency>() else {
-        return render_group_edit_error(
-            &state,
-            &session,
+    if let Err(response) = csrf_form.dispatch() {
+        return response;
+    }
+    match state
+        .groups
+        .update_group(
             id,
-            name,
-            currency_value,
-            "Invalid currency.".into(),
+            debtor_application::GroupInput {
+                name: name.clone(),
+                currency: currency_value.clone(),
+            },
         )
-        .await;
-    };
-    match state.groups.update_group(id, name.clone(), currency).await {
+        .await
+    {
         Ok(_) => Redirect::to(&format!("/groups/{id}")).into_response(),
         Err(debtor_application::ApplicationError::Validation(error)) => {
             render_group_edit_error(
@@ -198,12 +202,15 @@ pub(crate) async fn delete_group(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<i64>,
-    _form: CsrfValidatedForm,
+    form: CsrfValidatedForm,
 ) -> Response {
     if let Err(response) = require_auth(&session).await {
         return response;
     }
     if let Err(response) = require_writable_group(&state, id).await {
+        return response;
+    }
+    if let Err(response) = form.dispatch() {
         return response;
     }
     match state.groups.delete_empty(id).await {
@@ -335,9 +342,12 @@ async fn archive(
     session: Session,
     id: i64,
     archived: bool,
-    _form: CsrfValidatedForm,
+    form: CsrfValidatedForm,
 ) -> Response {
     if let Err(response) = require_auth(&session).await {
+        return response;
+    }
+    if let Err(response) = form.dispatch() {
         return response;
     }
     match state.groups.set_archived(id, archived).await {

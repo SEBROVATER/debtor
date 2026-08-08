@@ -16,7 +16,7 @@ It MUST NOT provide statistics, ratio/percentage/weighted splits, repayment trac
 
 ## User Model
 
-There is exactly one administrator. Authentication is a password gate with no username, user table, registration, or participant login. Participants are accounting identities, not application users.
+There is exactly one administrator as a permanent product boundary. Authentication is a password gate with no username, user table, registration, participant login, tenant, or multi-user authorization model. Participants are accounting identities, not application users.
 
 ## Architecture
 
@@ -34,7 +34,7 @@ The diagram expresses permitted direction, not an exhaustive list of direct Carg
 - `debtor-web` owns Axum, forms, middleware, Askama rendering, and HTTP error mapping; handlers contain no financial, SQL, network, or cryptographic logic.
 - The root crate owns configuration, composition, migrations, process lifecycle, and server startup.
 - Application-facing failures MUST use structured, safe reason categories. Raw SQLx, HTTP, provider, cryptography, and other adapter diagnostics MUST NOT cross inward-facing ports or reach user-facing responses.
-- Spending input policy MUST be application-owned: transport adapters may decode field structure and preserve raw submitted text, but application commands MUST parse amounts/codes, validate payer/share selections, construct allocations, and apply financial invariants for every inbound adapter.
+- Lifecycle and spending input policy MUST be application-owned: transport adapters may decode field structure and preserve raw submitted text, but application commands MUST parse amounts/codes, validate payer/share selections, construct allocations, inspect archived lifecycle state, and apply financial invariants for every inbound adapter. Transactional persistence guards remain mandatory for race-safe facts.
 - Debt arithmetic, quantization, and settlement failures MUST return checked domain errors and map to a fixed, sanitized application calculation reason; they MUST NOT panic, default failed conversions to zero, or return partial transfers.
 - The supported first-release production topology is one application process with one local SQLite volume behind a sanitizing HTTPS reverse proxy. Direct insecure HTTP is debug/local only. Multiple application instances and external SQLite writers are unsupported.
 - SQLite persistence uses explicit WAL with `synchronous=FULL`, a five-second busy timeout, one process-local ledger write gate with a five-second acquisition timeout, and snapshot-consistent reads. Among admitted valid operations, the last committed write wins; optimistic revision columns are not used.
@@ -68,7 +68,7 @@ A spending retains its source currency; a group currency is a freely changeable 
 - Historical mode is the default and requests a rate for each spending date.
 - Current mode uses the UTC calculation date for every spending and is not persisted.
 - Future dates in historical mode use the latest current rate and are marked provisional.
-- Cache keys include source, target, original requested date, and effective fetch date. Past historical entries may live for the process lifetime; current and future historical entries refresh on UTC day rollover.
+- Cache keys include source, target, original requested date, and effective fetch date. Both stable and refreshable cache classes are capped at 4,096 entries with deterministic LRU eviction. Past historical entries may live for the process lifetime; current and future historical entries refresh on UTC day rollover.
 - Exchange-rate JSON numbers MUST be decoded lexically with arbitrary precision into `Decimal`. Provider calls use a five-second connect timeout, 20-second total timeout, and 64 KiB response limit. At most four provider calls may be in flight globally, identical uncached keys use per-key single-flight, and each debt calculation deduplicates unique rate contexts with at most four concurrent requests. Completion order MUST NOT change balances, disclosures, or warnings.
 - On provider failure, the latest context-matching prior quote MAY be used with a stale warning. Without one, only the debts view returns retryable `503`; CRUD remains available.
 - Final balances are quantized to target minor units with largest-remainder allocation and participant ID tie-breaking, preserving an exact zero sum.
@@ -104,7 +104,7 @@ Local startup MUST NOT require Docker, a frontend build, manual migrations, SQLx
 - Login form bodies MUST be limited to 8 KiB and other form bodies to 256 KiB.
 - User traffic MUST be limited to 64 in-flight requests and login to four in-flight requests. Health and readiness MUST use a separate four-request probe budget so user saturation cannot starve orchestration.
 - Safe dynamic reads and login MUST have a 30-second timeout. Debts MUST have a 90-second timeout. Probes MUST have a two-second outer timeout and a one-second inner SQLite readiness timeout.
-- Ledger mutations MUST bound body, authentication, admission, write-gate, and SQLite waits, but MUST NOT be cut off by a generic timeout after the use case begins. They MUST return a definitive commit or rollback result. A reverse proxy MUST NOT impose a shorter mutation timeout after dispatch.
+- Ledger mutations MUST use a 30-second absolute pre-dispatch deadline for body extraction, authentication, CSRF, and asynchronous web prechecks, then bound write-gate and SQLite waits. Once the use case is dispatched it MUST NOT be cut off by a generic timeout and MUST return a definitive commit or rollback result. A reverse proxy MUST NOT impose a shorter mutation timeout after dispatch.
 - `/healthz` is process liveness. `/readyz` checks SQLite and mandatory in-process supervisor health only; Frankfurter availability and ledger contents MUST NOT gate startup or readiness.
 - Shutdown MUST stop admission, drain for at most ten seconds, attempt a bounded WAL checkpoint, close the pool, and preserve WAL sidecars if checkpointing fails. Structured logs MUST be secret-safe. SQLite adapter diagnostics MAY emit only fixed operation names and bounded result-code categories; they MUST NOT emit SQL, database messages, values, identifiers, or request-derived data.
 - Stable historical exchange-rate cache contexts MUST be capped at 4,096 with deterministic LRU eviction; current/future contexts MUST roll over by UTC date. Eviction may refetch but MUST NOT alter quote correctness or cross-context fallback.
@@ -113,4 +113,4 @@ Local startup MUST NOT require Docker, a frontend build, manual migrations, SQLx
 
 ## Maintenance
 
-This document is the product and architecture source of truth. Update it before changing behavior, then synchronize the relevant ADR, README status, configuration examples, migrations, tests, and SQLx metadata in the same change. Pre-release migrations MAY be rewritten and database compatibility is not promised.
+This document is the product and architecture source of truth. Update it before changing behavior, then synchronize the relevant ADR, README status, configuration examples, migrations, tests, and SQLx metadata in the same change. Before first deployment, breaking Rust APIs, configuration, routes, and database schemas are allowed when they produce a cleaner architecture; remove superseded paths rather than preserving shims. Security, accounting, and historical-integrity invariants remain mandatory. Pre-release migrations MAY be rewritten and database compatibility is not promised.

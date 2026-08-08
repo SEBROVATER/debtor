@@ -153,12 +153,15 @@ pub(crate) async fn delete_spending(
     State(state): State<AppState>,
     session: Session,
     Path((group_id, spending_id)): Path<(i64, i64)>,
-    _form: CsrfValidatedForm,
+    form: CsrfValidatedForm,
 ) -> Response {
     if let Err(response) = require_auth(&session).await {
         return response;
     }
     if let Err(response) = require_writable_group(&state, group_id).await {
+        return response;
+    }
+    if let Err(response) = form.dispatch() {
         return response;
     }
     match state.spendings.delete(group_id, spending_id).await {
@@ -177,7 +180,8 @@ async fn save_spending(
     if let Err(response) = require_auth(&session).await {
         return response;
     }
-    let form = form.into_inner();
+    let csrf_form = form;
+    let form = csrf_form.ordered();
     if let Err(response) = require_writable_group(&state, group_id).await {
         return response;
     }
@@ -208,6 +212,9 @@ async fn save_spending(
             .await;
         }
     };
+    if let Err(response) = csrf_form.dispatch() {
+        return response;
+    }
     let result = if let Some(id) = spending_id {
         state.spendings.update_input(id, input).await
     } else {

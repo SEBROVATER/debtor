@@ -119,6 +119,7 @@ pub fn router_with_sessions<S: SessionStore + Clone>(
         .layer(middleware::from_fn(app_middleware::security_headers))
         .layer(middleware::from_fn(app_middleware::require_authenticated))
         .layer(sessions)
+        .layer(middleware::from_fn(app_middleware::mutation_preflight))
         .layer(middleware::from_fn(app_middleware::safe_read_timeout))
         .layer(RequestBodyLimitLayer::new(256 * 1024))
         .layer(

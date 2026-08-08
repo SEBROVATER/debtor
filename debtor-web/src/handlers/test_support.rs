@@ -6,9 +6,9 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use debtor_application::{
     ApplicationError, AuthenticationService, AuthenticationUseCases, Clock, DebtResult,
-    DebtUseCases, GroupUseCases, LoginAdmission, LoginAttemptLimiter, ParticipantUseCases,
-    PasswordVerifier, RateMode, ReadinessUseCases, SpendingInput, SpendingPage, SpendingUseCases,
-    UtcClock,
+    DebtUseCases, GroupInput, GroupUseCases, LoginAdmission, LoginAttemptLimiter,
+    ParticipantUseCases, PasswordVerifier, RateMode, ReadinessUseCases, SpendingInput,
+    SpendingPage, SpendingUseCases, UtcClock,
 };
 use debtor_domain::{
     currency::Currency,
@@ -146,34 +146,26 @@ impl GroupUseCases for FakeGroups {
         Ok(self.group.clone())
     }
 
-    async fn create_group(
-        &self,
-        name: String,
-        currency: Currency,
-    ) -> Result<Group, ApplicationError> {
+    async fn create_group(&self, input: GroupInput) -> Result<Group, ApplicationError> {
         if self.create_validation_error {
             return Err(validation_error());
         }
-        self.created
-            .lock()
-            .expect("group calls lock")
-            .push((name, currency));
+        self.created.lock().expect("group calls lock").push((
+            input.name,
+            input.currency.parse().map_err(|_| validation_error())?,
+        ));
         Ok(self.group.clone())
     }
 
-    async fn update_group(
-        &self,
-        id: i64,
-        name: String,
-        currency: Currency,
-    ) -> Result<Group, ApplicationError> {
+    async fn update_group(&self, id: i64, input: GroupInput) -> Result<Group, ApplicationError> {
         if self.update_validation_error {
             return Err(validation_error());
         }
-        self.updated
-            .lock()
-            .expect("group calls lock")
-            .push((id, name, currency));
+        self.updated.lock().expect("group calls lock").push((
+            id,
+            input.name,
+            input.currency.parse().map_err(|_| validation_error())?,
+        ));
         Ok(self.group.clone())
     }
 
@@ -274,10 +266,6 @@ struct FakeSpendings;
 
 #[async_trait]
 impl SpendingUseCases for FakeSpendings {
-    async fn list_spendings(&self, _: i64) -> Result<Vec<Spending>, ApplicationError> {
-        Ok(Vec::new())
-    }
-
     async fn spending(&self, _: i64, _: i64) -> Result<Spending, ApplicationError> {
         Err(ApplicationError::NotFound)
     }

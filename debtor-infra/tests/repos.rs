@@ -4,7 +4,7 @@
 
 use chrono::NaiveDate;
 use debtor_application::{
-    ApplicationError, GroupRepository, ParticipantRepository, SpendingCursor,
+    ApplicationError, GroupRepository, ParticipantReader, ParticipantRepository, SpendingCursor,
     SpendingPageDirection, SpendingReader, SpendingRepository, StorageReason,
 };
 use debtor_domain::currency::Currency;

@@ -18,11 +18,13 @@ Preserve `root -> web/infra -> application -> domain`. Domain owns pure rules; a
 - Never use `cargo build --release` for testing, validation, checks, or routine development. Use debug `cargo check`, `cargo test`, and `cargo run` only.
 - Update `specs/design.md` first when behavior changes, then synchronize README, config examples, migrations, tests, and SQLx metadata.
 - Prefer the smallest correct change. Do not overwrite unrelated worktree changes or add compatibility paths without a concrete consumer.
+- Debtor is permanently single-administrator. Participants are accounting identities; do not add user, tenant, registration, participant-authentication, or multi-user authorization abstractions.
+- Before first deployment, breaking Rust APIs, configuration, routes, and database schemas are allowed when they produce a cleaner architecture. Remove superseded paths rather than keeping shims; security, accounting, and historical-integrity invariants remain mandatory.
 
 ## Commands
 
 ```bash
-cargo check
+cargo check --workspace --all-features --locked
 cargo test --workspace --all-features --locked
 cargo test -p <crate>
 cargo fmt --all -- --check
@@ -32,5 +34,7 @@ cargo run
 ```
 
 The password helper is an independent workspace. Validate it with `cargo fmt --manifest-path tools/password-hash/Cargo.toml -- --check`, `cargo clippy --manifest-path tools/password-hash/Cargo.toml --all-targets --all-features --locked -- -D warnings`, and `cargo test --manifest-path tools/password-hash/Cargo.toml --locked`.
+
+When checked SQL or migrations change, migrate a temporary SQLite database and run `SQLX_OFFLINE=false DATABASE_URL=sqlite:///tmp/debtor-sqlx.db?mode=rwc cargo sqlx prepare --workspace --check`.
 
 Copy `.env.example` to `.env` and set `APP_ADMIN_PASSWORD_HASH` before running. Generate a hash with `cargo run --manifest-path tools/password-hash/Cargo.toml`.

@@ -3,22 +3,32 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use debtor_domain::model::{Color, EntityId, GroupMember, Name, Participant};
 
-use crate::ApplicationError;
+use crate::{ApplicationError, GroupReader};
 
-/// Reads and writes participant identities and memberships.
+/// Reads participant identities and group memberships.
 #[async_trait]
-pub trait ParticipantRepository: Send + Sync {
+pub trait ParticipantReader: Send + Sync {
     /// Lists participants by archive state.
     async fn list_participants(&self, archived: bool)
     -> Result<Vec<Participant>, ApplicationError>;
+    /// Loads one participant.
+    async fn participant(&self, id: EntityId) -> Result<Participant, ApplicationError>;
+    /// Lists group memberships with participant data.
+    async fn group_members(
+        &self,
+        group_id: EntityId,
+    ) -> Result<Vec<(Participant, GroupMember)>, ApplicationError>;
+}
+
+/// Writes participant identities and memberships.
+#[async_trait]
+pub trait ParticipantRepository: Send + Sync {
     /// Creates a participant.
     async fn create_participant(
         &self,
         name: Name,
         color: Color,
     ) -> Result<Participant, ApplicationError>;
-    /// Loads one participant.
-    async fn participant(&self, id: EntityId) -> Result<Participant, ApplicationError>;
     /// Creates a participant and active membership atomically.
     async fn create_group_participant(
         &self,
@@ -41,11 +51,6 @@ pub trait ParticipantRepository: Send + Sync {
         id: EntityId,
         archived: bool,
     ) -> Result<(), ApplicationError>;
-    /// Lists group memberships with participant data.
-    async fn group_members(
-        &self,
-        group_id: EntityId,
-    ) -> Result<Vec<(Participant, GroupMember)>, ApplicationError>;
     /// Adds an active group membership.
     async fn add_member(
         &self,
@@ -114,13 +119,23 @@ pub trait ParticipantUseCases: Send + Sync {
 
 /// Participant and membership workflow implementation.
 pub struct ParticipantService {
+    reader: Arc<dyn ParticipantReader>,
     repository: Arc<dyn ParticipantRepository>,
+    groups: Arc<dyn GroupReader>,
 }
 
 impl ParticipantService {
     /// Creates a service with injected persistence.
-    pub fn new(repository: Arc<dyn ParticipantRepository>) -> Self {
-        Self { repository }
+    pub fn new(
+        reader: Arc<dyn ParticipantReader>,
+        repository: Arc<dyn ParticipantRepository>,
+        groups: Arc<dyn GroupReader>,
+    ) -> Self {
+        Self {
+            reader,
+            repository,
+            groups,
+        }
     }
 }
 
@@ -130,7 +145,7 @@ impl ParticipantUseCases for ParticipantService {
         &self,
         archived: bool,
     ) -> Result<Vec<Participant>, ApplicationError> {
-        self.repository.list_participants(archived).await
+        self.reader.list_participants(archived).await
     }
 
     async fn create_participant(
@@ -144,7 +159,7 @@ impl ParticipantUseCases for ParticipantService {
     }
 
     async fn participant(&self, id: EntityId) -> Result<Participant, ApplicationError> {
-        self.repository.participant(id).await
+        self.reader.participant(id).await
     }
 
     async fn update_participant(
@@ -153,6 +168,9 @@ impl ParticipantUseCases for ParticipantService {
         name: String,
         color: String,
     ) -> Result<Participant, ApplicationError> {
+        if self.reader.participant(id).await?.is_archived {
+            return Err(ApplicationError::Conflict);
+        }
         self.repository
             .update_participant(id, Name::new(name)?, Color::new(color)?)
             .await
@@ -164,6 +182,9 @@ impl ParticipantUseCases for ParticipantService {
         name: String,
         color: String,
     ) -> Result<Participant, ApplicationError> {
+        if self.groups.group(group_id).await?.is_archived {
+            return Err(ApplicationError::Conflict);
+        }
         self.repository
             .create_group_participant(group_id, Name::new(name)?, Color::new(color)?)
             .await
@@ -177,7 +198,7 @@ impl ParticipantUseCases for ParticipantService {
         &self,
         group_id: EntityId,
     ) -> Result<Vec<(Participant, GroupMember)>, ApplicationError> {
-        self.repository.group_members(group_id).await
+        self.reader.group_members(group_id).await
     }
 
     async fn add_member(
@@ -185,6 +206,11 @@ impl ParticipantUseCases for ParticipantService {
         group_id: EntityId,
         participant_id: EntityId,
     ) -> Result<(), ApplicationError> {
+        if self.groups.group(group_id).await?.is_archived
+            || self.reader.participant(participant_id).await?.is_archived
+        {
+            return Err(ApplicationError::Conflict);
+        }
         self.repository.add_member(group_id, participant_id).await
     }
 
@@ -193,6 +219,9 @@ impl ParticipantUseCases for ParticipantService {
         group_id: EntityId,
         participant_id: EntityId,
     ) -> Result<(), ApplicationError> {
+        if self.groups.group(group_id).await?.is_archived {
+            return Err(ApplicationError::Conflict);
+        }
         self.repository
             .set_member_active(group_id, participant_id, false)
             .await
@@ -226,11 +255,51 @@ mod tests {
     }
 
     #[async_trait]
-    impl ParticipantRepository for Fake {
+    impl GroupReader for Fake {
+        async fn list_groups(
+            &self,
+            _: bool,
+        ) -> Result<Vec<debtor_domain::model::Group>, ApplicationError> {
+            Ok(Vec::new())
+        }
+
+        async fn group(
+            &self,
+            id: EntityId,
+        ) -> Result<debtor_domain::model::Group, ApplicationError> {
+            Ok(debtor_domain::model::Group {
+                id,
+                name: Name::new("Trip").expect("valid group name"),
+                currency: debtor_domain::currency::Currency::Usd,
+                is_archived: false,
+            })
+        }
+    }
+
+    #[async_trait]
+    impl ParticipantReader for Fake {
         async fn list_participants(&self, _: bool) -> Result<Vec<Participant>, ApplicationError> {
             Ok(Vec::new())
         }
 
+        async fn participant(&self, id: EntityId) -> Result<Participant, ApplicationError> {
+            Ok(participant(id))
+        }
+
+        async fn group_members(
+            &self,
+            group_id: EntityId,
+        ) -> Result<Vec<(Participant, GroupMember)>, ApplicationError> {
+            self.member_requests
+                .lock()
+                .expect("member requests lock")
+                .push(group_id);
+            Ok(Vec::new())
+        }
+    }
+
+    #[async_trait]
+    impl ParticipantRepository for Fake {
         async fn create_participant(
             &self,
             name: Name,
@@ -246,10 +315,6 @@ mod tests {
                 color,
                 is_archived: false,
             })
-        }
-
-        async fn participant(&self, id: EntityId) -> Result<Participant, ApplicationError> {
-            Ok(participant(id))
         }
 
         async fn create_group_participant(
@@ -292,17 +357,6 @@ mod tests {
             Ok(())
         }
 
-        async fn group_members(
-            &self,
-            group_id: EntityId,
-        ) -> Result<Vec<(Participant, GroupMember)>, ApplicationError> {
-            self.member_requests
-                .lock()
-                .expect("member requests lock")
-                .push(group_id);
-            Ok(Vec::new())
-        }
-
         async fn add_member(&self, _: EntityId, _: EntityId) -> Result<(), ApplicationError> {
             Ok(())
         }
@@ -329,7 +383,7 @@ mod tests {
             member_requests: Mutex::new(Vec::new()),
             deactivated: Mutex::new(Vec::new()),
         });
-        let service = ParticipantService::new(fake.clone());
+        let service = ParticipantService::new(fake.clone(), fake.clone(), fake.clone());
 
         service
             .create_participant("  Ada  ".into(), "#aabbcc".into())

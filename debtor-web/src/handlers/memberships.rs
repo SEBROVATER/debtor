@@ -24,11 +24,15 @@ pub(crate) async fn add_member(
     if let Err(response) = require_auth(&session).await {
         return response;
     }
-    let form = match parse_member_form(form.into_inner()) {
+    let csrf_form = form;
+    let form = match parse_member_form(csrf_form.ordered()) {
         Ok(form) => form,
         Err(error) => return error_response(error.status, error.message),
     };
     if let Err(response) = require_writable_group(&state, id).await {
+        return response;
+    }
+    if let Err(response) = csrf_form.dispatch() {
         return response;
     }
     match state.participants.add_member(id, form.participant_id).await {
@@ -46,7 +50,8 @@ pub(crate) async fn create_group_participant(
     if let Err(response) = require_auth(&session).await {
         return response;
     }
-    let form = match parse_participant_form(form.into_inner()) {
+    let csrf_form = form;
+    let form = match parse_participant_form(csrf_form.ordered()) {
         Ok(form) => form,
         Err(error) => return error_response(error.status, error.message),
     };
@@ -54,6 +59,9 @@ pub(crate) async fn create_group_participant(
         return response;
     }
     let ParticipantForm { name, color, .. } = form;
+    if let Err(response) = csrf_form.dispatch() {
+        return response;
+    }
     match state
         .participants
         .create_group_participant(id, name.clone(), color.clone())
@@ -87,12 +95,15 @@ pub(crate) async fn deactivate_member(
     State(state): State<AppState>,
     session: Session,
     Path((group_id, participant_id)): Path<(i64, i64)>,
-    _form: CsrfValidatedForm,
+    form: CsrfValidatedForm,
 ) -> Response {
     if let Err(response) = require_auth(&session).await {
         return response;
     }
     if let Err(response) = require_writable_group(&state, group_id).await {
+        return response;
+    }
+    if let Err(response) = form.dispatch() {
         return response;
     }
     match state

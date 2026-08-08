@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
+use std::fmt;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -11,7 +12,6 @@ use rust_decimal::Decimal;
 use serde::Deserialize;
 use tokio::sync::{Mutex, Notify, Semaphore};
 
-const DEFAULT_BASE_URL: &str = "https://api.frankfurter.dev/v2";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const TOTAL_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
@@ -19,6 +19,23 @@ const MAX_IN_FLIGHT_REQUESTS: usize = 4;
 const STABLE_CACHE_CAPACITY: usize = 4_096;
 type CacheKey = (Currency, Currency, NaiveDate, NaiveDate);
 type FlightResult = Result<RateQuote, UnavailableReason>;
+
+/// Safe startup failure for local exchange-provider configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrankfurterConfigurationError {
+    /// The configured endpoint is not an acceptable HTTP(S) base URL.
+    InvalidBaseUrl,
+    /// The HTTP client could not be initialized locally.
+    ClientConstruction,
+}
+
+impl fmt::Display for FrankfurterConfigurationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("invalid exchange-rate provider configuration")
+    }
+}
+
+impl std::error::Error for FrankfurterConfigurationError {}
 
 struct StableCache {
     values: HashMap<CacheKey, RateQuote>,
@@ -81,6 +98,8 @@ impl StableCache {
 
 struct RefreshableCache {
     values: HashMap<CacheKey, RateQuote>,
+    access_order: BTreeMap<u64, CacheKey>,
+    next_access: u64,
     last_rollover: Option<NaiveDate>,
     evictions: u64,
 }
@@ -89,6 +108,8 @@ impl RefreshableCache {
     fn new() -> Self {
         Self {
             values: HashMap::new(),
+            access_order: BTreeMap::new(),
+            next_access: 0,
             last_rollover: None,
             evictions: 0,
         }
@@ -121,19 +142,48 @@ impl RefreshableCache {
         }
         let before = self.values.len();
         self.values.retain(|key, _| {
-            key.3 >= today || newest_fallbacks.values().any(|candidate| candidate == key)
+            // A former future request becomes an ordinary historical context.
+            !(key.2 > key.3 && key.2 < today)
+                && (key.3 >= today || newest_fallbacks.values().any(|candidate| candidate == key))
         });
+        self.access_order
+            .retain(|_, key| self.values.contains_key(key));
         self.evictions = self.evictions.saturating_add(
             u64::try_from(before - self.values.len()).map_or(u64::MAX, |count| count),
         );
     }
 
-    fn get(&self, key: &CacheKey) -> Option<RateQuote> {
-        self.values.get(key).cloned()
+    fn next_sequence(&mut self) -> u64 {
+        if self.next_access == u64::MAX {
+            self.access_order.clear();
+            for (sequence, key) in self.values.keys().copied().enumerate() {
+                self.access_order.insert(sequence as u64, key);
+            }
+            self.next_access = self.values.len() as u64;
+        }
+        let sequence = self.next_access;
+        self.next_access += 1;
+        sequence
     }
 
-    fn insert(&mut self, key: CacheKey, value: RateQuote) {
+    fn touch(&mut self, key: CacheKey, value: RateQuote) {
+        self.access_order.retain(|_, candidate| *candidate != key);
+        let sequence = self.next_sequence();
         self.values.insert(key, value);
+        self.access_order.insert(sequence, key);
+        while self.values.len() > STABLE_CACHE_CAPACITY {
+            let Some((_, oldest)) = self.access_order.pop_first() else {
+                break;
+            };
+            self.values.remove(&oldest);
+            self.evictions = self.evictions.saturating_add(1);
+        }
+    }
+
+    fn get(&mut self, key: &CacheKey) -> Option<RateQuote> {
+        let value = self.values.get(key).cloned()?;
+        self.touch(*key, value.clone());
+        Some(value)
     }
 }
 
@@ -184,8 +234,8 @@ impl Flight {
 /// Frankfurter v2 exchange provider with dated process-local caching.
 #[derive(Clone)]
 pub struct FrankfurterClient {
-    http: Option<reqwest::Client>,
-    base_url: String,
+    http: reqwest::Client,
+    base_url: reqwest::Url,
     stable_cache: Arc<RwLock<StableCache>>,
     refreshable_cache: Arc<RwLock<RefreshableCache>>,
     in_flight: Arc<Mutex<HashMap<CacheKey, Arc<Flight>>>>,
@@ -193,33 +243,53 @@ pub struct FrankfurterClient {
 }
 
 impl FrankfurterClient {
-    /// Creates a client using the public v2 endpoint.
-    pub fn new() -> Self {
-        Self::with_base_url(DEFAULT_BASE_URL)
+    /// Creates a client using a custom endpoint, intended for local tests.
+    #[cfg(test)]
+    #[allow(clippy::expect_used, clippy::missing_panics_doc)]
+    pub fn with_base_url(base_url: &str) -> Self {
+        Self::try_with_base_url(base_url).expect("the test/default provider URL is valid")
     }
 
-    /// Creates a client using a custom endpoint, intended for local tests.
-    pub fn with_base_url(base_url: &str) -> Self {
+    /// Validates and constructs a client without making a provider request.
+    ///
+    /// # Errors
+    ///
+    /// Returns a safe category when the URL is invalid or the HTTP client cannot initialize.
+    pub fn try_with_base_url(base_url: &str) -> Result<Self, FrankfurterConfigurationError> {
+        let mut base_url = reqwest::Url::parse(base_url)
+            .map_err(|_| FrankfurterConfigurationError::InvalidBaseUrl)?;
+        if !matches!(base_url.scheme(), "http" | "https")
+            || !base_url.username().is_empty()
+            || base_url.password().is_some()
+            || base_url.query().is_some()
+            || base_url.fragment().is_some()
+        {
+            return Err(FrankfurterConfigurationError::InvalidBaseUrl);
+        }
+        if !base_url.path().ends_with('/') {
+            let path = format!("{}/", base_url.path());
+            base_url.set_path(&path);
+        }
         let http = reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(TOTAL_TIMEOUT)
             .read_timeout(TOTAL_TIMEOUT)
             .build()
-            .ok();
-        Self {
+            .map_err(|_| FrankfurterConfigurationError::ClientConstruction)?;
+        Ok(Self {
             http,
-            base_url: base_url.trim_end_matches('/').to_owned(),
+            base_url,
             stable_cache: Arc::new(RwLock::new(StableCache::new())),
             refreshable_cache: Arc::new(RwLock::new(RefreshableCache::new())),
             in_flight: Arc::new(Mutex::new(HashMap::new())),
             requests: Arc::new(Semaphore::new(MAX_IN_FLIGHT_REQUESTS)),
-        }
+        })
     }
 
     #[cfg(test)]
     fn with_http_client(base_url: &str, http: reqwest::Client) -> Self {
         let mut client = Self::with_base_url(base_url);
-        client.http = Some(http);
+        client.http = http;
         client
     }
 
@@ -243,12 +313,6 @@ impl FrankfurterClient {
             stable_evictions: stable.evictions,
             refreshable_evictions: refreshable.evictions,
         })
-    }
-}
-
-impl Default for FrankfurterClient {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -332,16 +396,13 @@ impl FrankfurterClient {
 
     async fn fetch_with_permit(&self, key: CacheKey, today: NaiveDate) -> FlightResult {
         let (base, quote, original_requested_date, fetch_date) = key;
-        let Some(http) = self.http.as_ref() else {
-            return self.stale_or_error(key, today);
-        };
-        let url = format!(
-            "{}/rate/{}/{}?date={fetch_date}",
-            self.base_url,
-            base.code(),
-            quote.code()
-        );
-        let mut response = match http.get(url).send().await {
+        let mut url = self
+            .base_url
+            .join(&format!("rate/{}/{}", base.code(), quote.code()))
+            .map_err(|_| UnavailableReason::ExchangeRates)?;
+        url.query_pairs_mut()
+            .append_pair("date", &fetch_date.to_string());
+        let mut response = match self.http.get(url).send().await {
             Ok(response) if response.status().is_success() => response,
             Ok(_) | Err(_) => return self.stale_or_error(key, today),
         };
@@ -385,7 +446,7 @@ impl FrankfurterClient {
                 .write()
                 .map_err(|_| UnavailableReason::ExchangeRates)?;
             cache.prune_on_rollover(today);
-            cache.insert(key, value.clone());
+            cache.touch(key, value.clone());
         }
         Ok(value)
     }
@@ -537,6 +598,22 @@ mod tests {
         assert!(output.contains("current_unavailable"));
         assert!(!output.contains("provider-sentinel"));
         assert!(!output.contains("sentinel"));
+    }
+
+    #[test]
+    fn provider_base_url_rejects_unsafe_components_but_allows_local_http() {
+        for url in [
+            "ftp://provider.example/v2",
+            "https://user:password@provider.example/v2",
+            "https://provider.example/v2?token=sentinel",
+            "https://provider.example/v2#fragment",
+        ] {
+            assert!(matches!(
+                FrankfurterClient::try_with_base_url(url),
+                Err(FrankfurterConfigurationError::InvalidBaseUrl)
+            ), "{url}");
+        }
+        assert!(FrankfurterClient::try_with_base_url("http://127.0.0.1:3000/v2").is_ok());
     }
 
     #[tokio::test]
@@ -842,7 +919,7 @@ mod tests {
             (Currency::Usd, Currency::Eur, today, today),
         ];
         for key in keys {
-            cache.insert(key, quote(key));
+            cache.touch(key, quote(key));
         }
 
         cache.prune_on_rollover(today);
@@ -929,22 +1006,18 @@ mod tests {
         fetch_date: NaiveDate,
         effective_date: NaiveDate,
     ) {
-        client
-            .refreshable_cache
-            .write()
-            .expect("cache lock")
-            .insert(
-                (base, quote, requested_date, fetch_date),
-                RateQuote {
-                    base,
-                    quote,
-                    requested_date,
-                    effective_date,
-                    rate: Decimal::ONE,
-                    is_stale: false,
-                    is_provisional: requested_date > fetch_date,
-                },
-            );
+        client.refreshable_cache.write().expect("cache lock").touch(
+            (base, quote, requested_date, fetch_date),
+            RateQuote {
+                base,
+                quote,
+                requested_date,
+                effective_date,
+                rate: Decimal::ONE,
+                is_stale: false,
+                is_provisional: requested_date > fetch_date,
+            },
+        );
     }
 
     async fn server_with_responses(

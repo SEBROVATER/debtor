@@ -27,7 +27,8 @@ pub(crate) async fn login(
     session: Session,
     form: CsrfValidatedForm,
 ) -> Response {
-    let fields = match form.0.required_fields(&["csrf", "password"]) {
+    let ordered = form.ordered();
+    let fields = match ordered.required_fields(&["csrf", "password"]) {
         Ok(fields) => fields,
         Err(message) => return error_response(StatusCode::BAD_REQUEST, message),
     };
@@ -77,10 +78,13 @@ pub(crate) async fn login(
 }
 
 pub(crate) async fn logout(session: Session, form: CsrfValidatedForm) -> Response {
-    let _fields = match form.0.required_fields(&["csrf"]) {
+    let _fields = match form.ordered().required_fields(&["csrf"]) {
         Ok(fields) => fields,
         Err(message) => return error_response(StatusCode::BAD_REQUEST, message),
     };
+    if let Err(response) = form.dispatch() {
+        return response;
+    }
     match session::flush(&session).await {
         Ok(()) => Redirect::to("/login").into_response(),
         Err(_) => super::response::session_error(),

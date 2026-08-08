@@ -7,3 +7,5 @@ CLAUDE.md
 /tools/password-hash/target
 .playwright-mcp/
 debtor.db
+debtor.db-wal
+debtor.db-shm

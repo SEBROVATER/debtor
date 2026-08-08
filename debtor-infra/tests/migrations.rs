@@ -31,6 +31,8 @@ const INDEXES: &[&str] = &[
     "idx_spendings_spent_date",
     "idx_spendings_type",
     "idx_spendings_group_date",
+    "idx_spending_payers_participant",
+    "idx_spending_shares_participant",
 ];
 
 async fn pool_with_pragma() -> SqlitePool {

@@ -7,12 +7,65 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Redirect, Response},
 };
-use std::time::Duration;
-use std::time::Instant;
+use std::{
+    future::Future,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
+};
 use tower::BoxError;
 use tower_sessions::Session;
 
 use crate::session;
+
+const MUTATION_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Shared absolute deadline for work before a ledger mutation is dispatched.
+#[derive(Clone)]
+pub(crate) struct MutationPreflight {
+    deadline: tokio::time::Instant,
+    dispatched: Arc<AtomicBool>,
+}
+
+impl MutationPreflight {
+    fn new() -> Self {
+        Self {
+            deadline: tokio::time::Instant::now() + MUTATION_DEADLINE,
+            dispatched: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Runs one pre-dispatch operation within the request's remaining budget.
+    pub(crate) async fn wait<T>(&self, future: impl Future<Output = T>) -> Result<T, Response> {
+        if self.dispatched.load(Ordering::Acquire) {
+            return Err(timeout_response());
+        }
+        tokio::time::timeout_at(self.deadline, future)
+            .await
+            .map_err(|_| timeout_response())
+    }
+
+    /// Irreversibly marks the request as dispatched to its state-changing operation.
+    #[allow(clippy::result_large_err)]
+    pub(crate) fn dispatch(&self) -> Result<(), Response> {
+        if tokio::time::Instant::now() >= self.deadline
+            || self.dispatched.swap(true, Ordering::AcqRel)
+        {
+            return Err(timeout_response());
+        }
+        Ok(())
+    }
+}
+
+/// Adds one preflight object to protected unsafe requests only.
+pub async fn mutation_preflight(mut request: Request<Body>, next: Next) -> Response {
+    if !matches!(*request.method(), Method::GET | Method::HEAD) {
+        request.extensions_mut().insert(MutationPreflight::new());
+    }
+    next.run(request).await
+}
 
 /// Rejects unauthenticated requests before protected handlers are selected.
 pub async fn require_authenticated(
@@ -20,7 +73,15 @@ pub async fn require_authenticated(
     request: Request<Body>,
     next: Next,
 ) -> Response {
-    match session::authenticated(&session).await {
+    let authenticated = if let Some(preflight) = request.extensions().get::<MutationPreflight>() {
+        match preflight.wait(session::authenticated(&session)).await {
+            Ok(value) => value,
+            Err(response) => return response,
+        }
+    } else {
+        session::authenticated(&session).await
+    };
+    match authenticated {
         Ok(true) => {
             session.set_expiry(Some(session::authenticated_expiry()));
             next.run(request).await

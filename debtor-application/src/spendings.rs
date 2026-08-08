@@ -63,8 +63,6 @@ pub struct SpendingPage {
 /// Reads complete spending aggregates and bounded history summaries.
 #[async_trait]
 pub trait SpendingReader: Send + Sync {
-    /// Lists a group's complete spendings.
-    async fn spendings(&self, group_id: EntityId) -> Result<Vec<Spending>, ApplicationError>;
     /// Loads one complete spending.
     async fn spending(
         &self,
@@ -146,8 +144,6 @@ pub struct SpendingInput {
 /// Inbound spending operations.
 #[async_trait]
 pub trait SpendingUseCases: Send + Sync {
-    /// Lists a group's complete spending history.
-    async fn list_spendings(&self, group_id: EntityId) -> Result<Vec<Spending>, ApplicationError>;
     /// Loads one spending scoped to a group.
     async fn spending(
         &self,
@@ -279,12 +275,38 @@ async fn validate_eligible(
     Ok(())
 }
 
+async fn validate_update_eligible(
+    eligibility: &dyn SpendingEligibilityReader,
+    original: &Spending,
+    updated: &Spending,
+) -> Result<(), ApplicationError> {
+    let eligible = eligibility
+        .eligible_participant_ids(updated.group_id)
+        .await?;
+    let original_payers = original
+        .payers
+        .iter()
+        .map(|allocation| allocation.participant_id)
+        .collect::<BTreeSet<_>>();
+    let original_shares = original
+        .shares
+        .iter()
+        .map(|allocation| allocation.participant_id)
+        .collect::<BTreeSet<_>>();
+    if updated.payers.iter().any(|allocation| {
+        !eligible.contains(&allocation.participant_id)
+            && !original_payers.contains(&allocation.participant_id)
+    }) || updated.shares.iter().any(|allocation| {
+        !eligible.contains(&allocation.participant_id)
+            && !original_shares.contains(&allocation.participant_id)
+    }) {
+        return Err(ValidationError::InvalidParticipantId.into());
+    }
+    Ok(())
+}
+
 #[async_trait]
 impl SpendingUseCases for SpendingService {
-    async fn list_spendings(&self, group_id: EntityId) -> Result<Vec<Spending>, ApplicationError> {
-        self.reader.spendings(group_id).await
-    }
-
     async fn spending(
         &self,
         group_id: EntityId,
@@ -313,7 +335,8 @@ impl SpendingUseCases for SpendingService {
         input: SpendingInput,
     ) -> Result<Spending, ApplicationError> {
         let spending = parse_input(input, spending_id)?;
-        validate_eligible(self.eligibility.as_ref(), spending.group_id, &spending).await?;
+        let original = self.reader.spending(spending.group_id, spending_id).await?;
+        validate_update_eligible(self.eligibility.as_ref(), &original, &spending).await?;
         self.repository.update_spending(spending).await
     }
 
@@ -355,19 +378,15 @@ mod tests {
     }
 
     struct SpendingFake {
-        listed_groups: Mutex<Vec<EntityId>>,
         read_requests: Mutex<Vec<(EntityId, EntityId)>>,
         created: Mutex<Vec<Spending>>,
         updated: Mutex<Vec<Spending>>,
         fail_update: bool,
+        eligible: BTreeSet<EntityId>,
     }
 
     #[async_trait]
     impl SpendingReader for SpendingFake {
-        async fn spendings(&self, group_id: EntityId) -> Result<Vec<Spending>, ApplicationError> {
-            self.listed_groups.lock().unwrap().push(group_id);
-            Ok(Vec::new())
-        }
         async fn spending(
             &self,
             group_id: EntityId,
@@ -377,7 +396,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((group_id, spending_id));
-            Err(ApplicationError::NotFound)
+            parse_input(equal_input(), spending_id)
         }
 
         async fn spending_page(
@@ -417,7 +436,7 @@ mod tests {
             &self,
             _: EntityId,
         ) -> Result<BTreeSet<EntityId>, ApplicationError> {
-            Ok([PARTICIPANT_ONE, PARTICIPANT_TWO].into_iter().collect())
+            Ok(self.eligible.clone())
         }
     }
 
@@ -456,11 +475,11 @@ mod tests {
     #[tokio::test]
     async fn spending_service_parses_raw_input_for_create_update_and_scopes_reads() {
         let fake = Arc::new(SpendingFake {
-            listed_groups: Mutex::new(Vec::new()),
             read_requests: Mutex::new(Vec::new()),
             created: Mutex::new(Vec::new()),
             updated: Mutex::new(Vec::new()),
             fail_update: false,
+            eligible: [PARTICIPANT_ONE, PARTICIPANT_TWO].into_iter().collect(),
         });
         let service = SpendingService::new(fake.clone(), fake.clone(), fake.clone());
 
@@ -468,11 +487,7 @@ mod tests {
         service.create_input(exact_input()).await.unwrap();
         service.update_input(99, equal_input()).await.unwrap();
         service.update_input(100, exact_input()).await.unwrap();
-        assert!(matches!(
-            service.spending(GROUP_ID, 77).await,
-            Err(ApplicationError::NotFound)
-        ));
-        service.list_spendings(GROUP_ID).await.unwrap();
+        service.spending(GROUP_ID, 77).await.unwrap();
 
         let created = fake.created.lock().unwrap();
         assert_eq!(created[0].description.as_str(), "Dinner");
@@ -493,18 +508,20 @@ mod tests {
         let updated = fake.updated.lock().unwrap();
         assert_eq!(updated[0].id, 99);
         assert_eq!(updated[1].id, 100);
-        assert_eq!(*fake.read_requests.lock().unwrap(), vec![(GROUP_ID, 77)]);
-        assert_eq!(*fake.listed_groups.lock().unwrap(), vec![GROUP_ID]);
+        assert_eq!(
+            *fake.read_requests.lock().unwrap(),
+            vec![(GROUP_ID, 99), (GROUP_ID, 100), (GROUP_ID, 77)]
+        );
     }
 
     #[tokio::test]
     async fn spending_input_covers_all_payer_and_share_modes_and_validates_selection() {
         let fake = Arc::new(SpendingFake {
-            listed_groups: Mutex::new(Vec::new()),
             read_requests: Mutex::new(Vec::new()),
             created: Mutex::new(Vec::new()),
             updated: Mutex::new(Vec::new()),
             fail_update: false,
+            eligible: [PARTICIPANT_ONE, PARTICIPANT_TWO].into_iter().collect(),
         });
         let service = SpendingService::new(fake.clone(), fake.clone(), fake);
 
@@ -550,16 +567,50 @@ mod tests {
     #[tokio::test]
     async fn spending_service_propagates_repository_errors() {
         let fake = Arc::new(SpendingFake {
-            listed_groups: Mutex::new(Vec::new()),
             read_requests: Mutex::new(Vec::new()),
             created: Mutex::new(Vec::new()),
             updated: Mutex::new(Vec::new()),
             fail_update: true,
+            eligible: [PARTICIPANT_ONE, PARTICIPANT_TWO].into_iter().collect(),
         });
         let error = SpendingService::new(fake.clone(), fake.clone(), fake)
             .update_input(9, exact_input())
             .await
             .unwrap_err();
         assert!(matches!(error, ApplicationError::Conflict));
+    }
+
+    #[tokio::test]
+    async fn spending_update_grandfathers_only_existing_inactive_roles() {
+        let fake = Arc::new(SpendingFake {
+            read_requests: Mutex::new(Vec::new()),
+            created: Mutex::new(Vec::new()),
+            updated: Mutex::new(Vec::new()),
+            fail_update: false,
+            eligible: [PARTICIPANT_ONE].into_iter().collect(),
+        });
+        let service = SpendingService::new(fake.clone(), fake.clone(), fake.clone());
+
+        service.update_input(9, equal_input()).await.unwrap();
+
+        let mut introduces_inactive_participant = equal_input();
+        introduces_inactive_participant.shares = ShareInput::Equal(vec![PARTICIPANT_ONE, 3]);
+        assert!(matches!(
+            service
+                .update_input(9, introduces_inactive_participant)
+                .await,
+            Err(ApplicationError::Validation(
+                ValidationError::InvalidParticipantId
+            ))
+        ));
+
+        let mut changes_inactive_role = equal_input();
+        changes_inactive_role.payers = PayerInput::Single(PARTICIPANT_TWO);
+        assert!(matches!(
+            service.update_input(9, changes_inactive_role).await,
+            Err(ApplicationError::Validation(
+                ValidationError::InvalidParticipantId
+            ))
+        ));
     }
 }

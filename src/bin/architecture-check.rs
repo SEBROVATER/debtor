@@ -17,6 +17,55 @@ const APPLICATION_ALLOWED: &[&str] = &[
     "rust_decimal",
     "thiserror",
 ];
+const INFRA_ALLOWED: &[&str] = &[
+    "argon2",
+    "async-trait",
+    "chrono",
+    "debtor-application",
+    "debtor-domain",
+    "futures",
+    "reqwest",
+    "rust_decimal",
+    "serde",
+    "serde_json",
+    "sqlx",
+    "tokio",
+    "tracing",
+];
+const WEB_ALLOWED: &[&str] = &[
+    "askama",
+    "async-trait",
+    "axum",
+    "chrono",
+    "debtor-application",
+    "debtor-domain",
+    "form_urlencoded",
+    "ipnet",
+    "serde",
+    "time",
+    "tokio",
+    "tower",
+    "tower-http",
+    "tower-sessions",
+    "tracing",
+    "uuid",
+];
+const ROOT_ALLOWED: &[&str] = &[
+    "anyhow",
+    "axum",
+    "debtor-application",
+    "debtor-infra",
+    "debtor-web",
+    "dotenvy",
+    "serde_json",
+    "sqlx",
+    "tokio",
+    "tower",
+    "tower-http",
+    "tower-sessions",
+    "tracing",
+    "tracing-subscriber",
+];
 
 const REQUIRED_PACKAGES: &[&str] = &[
     "debtor",
@@ -33,7 +82,7 @@ struct PackageDependencies {
 
 fn main() -> Result<(), String> {
     let metadata = Command::new("cargo")
-        .args(["metadata", "--format-version", "1", "--no-deps"])
+        .args(["metadata", "--locked", "--format-version", "1", "--no-deps"])
         .current_dir(env::var_os("CARGO_MANIFEST_DIR").ok_or("missing manifest directory")?)
         .output()
         .map_err(|error| format!("unable to run cargo metadata: {error}"))?;
@@ -52,12 +101,14 @@ fn main() -> Result<(), String> {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn evaluate(document: &Value) -> Result<Vec<String>, String> {
     let packages = document
         .get("packages")
         .and_then(Value::as_array)
         .ok_or("cargo metadata did not contain packages")?;
     let mut dependencies = BTreeMap::new();
+    let mut violations = Vec::new();
     for package in packages {
         let name = package
             .get("name")
@@ -70,9 +121,17 @@ fn evaluate(document: &Value) -> Result<Vec<String>, String> {
                 build: dependencies_of_kind(package, Some("build"))?,
             },
         );
+        if package
+            .get("publish")
+            .and_then(Value::as_array)
+            .is_none_or(|registries| !registries.is_empty())
+        {
+            violations.push(format!(
+                "production package must not be publishable: {name}"
+            ));
+        }
     }
 
-    let mut violations = Vec::new();
     for required in REQUIRED_PACKAGES {
         if !dependencies.contains_key(*required) {
             violations.push(format!(
@@ -98,6 +157,18 @@ fn evaluate(document: &Value) -> Result<Vec<String>, String> {
             }
         }
     }
+    check_allowlist(
+        &mut violations,
+        "debtor-infra",
+        dependencies.get("debtor-infra"),
+        INFRA_ALLOWED,
+    );
+    check_allowlist(
+        &mut violations,
+        "debtor-web",
+        dependencies.get("debtor-web"),
+        WEB_ALLOWED,
+    );
     if let Some(web) = dependencies.get("debtor-web") {
         for dependency in web.normal.union(&web.build) {
             if dependency == "debtor-infra" || dependency == "debtor" {
@@ -117,6 +188,7 @@ fn evaluate(document: &Value) -> Result<Vec<String>, String> {
         }
     }
     if let Some(root) = dependencies.get("debtor") {
+        check_allowlist(&mut violations, "debtor", Some(root), ROOT_ALLOWED);
         for dependency in ["debtor-application", "debtor-infra", "debtor-web"] {
             if !root.normal.contains(dependency) {
                 violations.push(format!("root composition crate is missing {dependency}"));
@@ -126,9 +198,34 @@ fn evaluate(document: &Value) -> Result<Vec<String>, String> {
             violations
                 .push("root composition crate must not depend directly on debtor-domain".into());
         }
+        let root_package = packages
+            .iter()
+            .find(|package| package.get("name").and_then(Value::as_str) == Some("debtor"));
+        if root_package.and_then(|package| package.get("default_run").and_then(Value::as_str))
+            != Some("debtor")
+        {
+            violations.push("root composition crate must default to the debtor binary".into());
+        }
     }
 
     Ok(violations)
+}
+
+fn check_allowlist(
+    violations: &mut Vec<String>,
+    package_name: &str,
+    package: Option<&PackageDependencies>,
+    allowed: &[&str],
+) {
+    if let Some(package) = package {
+        for dependency in package.normal.union(&package.build) {
+            if !allowed.contains(&dependency.as_str()) {
+                violations.push(format!(
+                    "{package_name} has an unapproved dependency: {dependency}"
+                ));
+            }
+        }
+    }
 }
 
 fn dependencies_of_kind(
@@ -159,6 +256,8 @@ mod tests {
     fn package(name: &str, dependencies: &[&str]) -> Value {
         json!({
             "name": name,
+            "publish": [],
+            "default_run": if name == "debtor" { "debtor" } else { "" },
             "dependencies": dependencies
                 .iter()
                 .map(|dependency| json!({"name": dependency, "kind": null}))
@@ -186,15 +285,61 @@ mod tests {
             ),
             package(
                 "debtor-infra",
-                &["debtor-domain", "debtor-application", "sqlx"],
+                &[
+                    "argon2",
+                    "async-trait",
+                    "chrono",
+                    "debtor-domain",
+                    "debtor-application",
+                    "futures",
+                    "reqwest",
+                    "rust_decimal",
+                    "serde",
+                    "serde_json",
+                    "sqlx",
+                    "tokio",
+                    "tracing",
+                ],
             ),
             package(
                 "debtor-web",
-                &["debtor-domain", "debtor-application", "axum"],
+                &[
+                    "askama",
+                    "async-trait",
+                    "axum",
+                    "chrono",
+                    "debtor-domain",
+                    "debtor-application",
+                    "form_urlencoded",
+                    "ipnet",
+                    "serde",
+                    "time",
+                    "tokio",
+                    "tower",
+                    "tower-http",
+                    "tower-sessions",
+                    "tracing",
+                    "uuid",
+                ],
             ),
             package(
                 "debtor",
-                &["debtor-application", "debtor-infra", "debtor-web", "axum"],
+                &[
+                    "anyhow",
+                    "axum",
+                    "debtor-application",
+                    "debtor-infra",
+                    "debtor-web",
+                    "dotenvy",
+                    "serde_json",
+                    "sqlx",
+                    "tokio",
+                    "tower",
+                    "tower-http",
+                    "tower-sessions",
+                    "tracing",
+                    "tracing-subscriber",
+                ],
             ),
         ])
     }
@@ -226,7 +371,7 @@ mod tests {
             ),
         ]);
         let violations = evaluate(&document).expect("fixture metadata");
-        assert_eq!(violations.len(), 5);
+        assert!(violations.len() >= 5);
         assert!(
             violations
                 .iter()

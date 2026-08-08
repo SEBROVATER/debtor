@@ -100,10 +100,3 @@ impl LedgerSnapshotReader for SqliteLedgerStore {
         ledger_snapshot(&self.pool, group_id).await
     }
 }
-
-pub(super) async fn complete_spendings(
-    pool: &sqlx::SqlitePool,
-    group_id: EntityId,
-) -> Result<Vec<Spending>, ApplicationError> {
-    Ok(ledger_snapshot(pool, group_id).await?.spendings)
-}

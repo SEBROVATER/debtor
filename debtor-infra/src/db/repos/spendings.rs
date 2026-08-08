@@ -14,7 +14,6 @@ use super::decoding::{
     DbAllocation, DbSpending, DbSpendingSummary, allocation, canonical_decimal, invalid,
     spending_summary,
 };
-use super::snapshots::complete_spendings;
 use super::{SqliteLedgerStore, group_write_failure, group_write_failure_in_transaction, storage};
 
 async fn payer_rows(
@@ -208,9 +207,6 @@ impl SpendingEligibilityReader for SqliteLedgerStore {
 
 #[async_trait]
 impl SpendingReader for SqliteLedgerStore {
-    async fn spendings(&self, group_id: EntityId) -> Result<Vec<Spending>, ApplicationError> {
-        complete_spendings(&self.pool, group_id).await
-    }
     async fn spending(
         &self,
         group_id: EntityId,

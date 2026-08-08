@@ -49,11 +49,15 @@ pub(crate) async fn create_participant(
     if let Err(response) = require_auth(&session).await {
         return response;
     }
-    let form = match parse_participant_form(form.into_inner()) {
+    let csrf_form = form;
+    let form = match parse_participant_form(csrf_form.ordered()) {
         Ok(form) => form,
         Err(error) => return error_response(error.status, error.message),
     };
     let ParticipantForm { name, color, .. } = form;
+    if let Err(response) = csrf_form.dispatch() {
+        return response;
+    }
     match state
         .participants
         .create_participant(name.clone(), color.clone())
@@ -90,11 +94,15 @@ pub(crate) async fn update_participant(
     if let Err(response) = require_auth(&session).await {
         return response;
     }
-    let form = match parse_participant_form(form.into_inner()) {
+    let csrf_form = form;
+    let form = match parse_participant_form(csrf_form.ordered()) {
         Ok(form) => form,
         Err(error) => return error_response(error.status, error.message),
     };
     let ParticipantForm { name, color, .. } = form;
+    if let Err(response) = csrf_form.dispatch() {
+        return response;
+    }
     match state
         .participants
         .update_participant(id, name.clone(), color.clone())
@@ -132,9 +140,12 @@ async fn set_participant_archive(
     session: Session,
     id: i64,
     archived: bool,
-    _form: CsrfValidatedForm,
+    form: CsrfValidatedForm,
 ) -> Response {
     if let Err(response) = require_auth(&session).await {
+        return response;
+    }
+    if let Err(response) = form.dispatch() {
         return response;
     }
     match state.participants.set_archived(id, archived).await {

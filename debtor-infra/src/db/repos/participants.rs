@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use debtor_application::{ApplicationError, GroupReader, ParticipantRepository};
+use debtor_application::{ApplicationError, GroupReader, ParticipantReader, ParticipantRepository};
 use debtor_domain::model::{Color, EntityId, GroupMember, Name, Participant};
 
 use super::decoding::{DbGroupMember, DbParticipant, decoded_bool, participant};
@@ -25,7 +25,7 @@ async fn participant_by_id(
 }
 
 #[async_trait]
-impl ParticipantRepository for SqliteLedgerStore {
+impl ParticipantReader for SqliteLedgerStore {
     async fn list_participants(
         &self,
         archived: bool,
@@ -35,6 +35,25 @@ impl ParticipantRepository for SqliteLedgerStore {
             .fetch_all(&self.pool).await.map_err(storage)?.into_iter().map(participant).collect()
     }
 
+    async fn participant(&self, id: EntityId) -> Result<Participant, ApplicationError> {
+        participant_by_id(&self.pool, id).await
+    }
+
+    async fn group_members(
+        &self,
+        group_id: EntityId,
+    ) -> Result<Vec<(Participant, GroupMember)>, ApplicationError> {
+        self.group(group_id).await?;
+        sqlx::query_as!(DbGroupMember, "SELECT p.id AS \"id!: i64\", p.name, p.color, p.is_archived, gm.is_active AS \"is_active!: i64\" FROM group_members gm JOIN participants p ON p.id = gm.participant_id WHERE gm.group_id = ? ORDER BY p.name, p.id", group_id)
+            .fetch_all(&self.pool).await.map_err(storage)?.into_iter().map(|row| {
+                let participant_id = row.id;
+                Ok((participant(DbParticipant { id: participant_id, name: row.name, color: row.color, is_archived: row.is_archived })?, GroupMember { group_id, participant_id, is_active: decoded_bool(row.is_active)? }))
+            }).collect()
+    }
+}
+
+#[async_trait]
+impl ParticipantRepository for SqliteLedgerStore {
     async fn create_participant(
         &self,
         name: Name,
@@ -50,10 +69,6 @@ impl ParticipantRepository for SqliteLedgerStore {
         .await
         .map_err(storage)?
         .last_insert_rowid();
-        participant_by_id(&self.pool, id).await
-    }
-
-    async fn participant(&self, id: EntityId) -> Result<Participant, ApplicationError> {
         participant_by_id(&self.pool, id).await
     }
 
@@ -116,18 +131,6 @@ impl ParticipantRepository for SqliteLedgerStore {
         let _write_guard = self.write_guard().await?;
         changed(sqlx::query!("UPDATE participants SET is_archived = ?, updated_at = datetime('now') WHERE id = ?", i64::from(archived), id)
             .execute(&self.pool).await.map_err(storage)?)
-    }
-
-    async fn group_members(
-        &self,
-        group_id: EntityId,
-    ) -> Result<Vec<(Participant, GroupMember)>, ApplicationError> {
-        self.group(group_id).await?;
-        sqlx::query_as!(DbGroupMember, "SELECT p.id AS \"id!: i64\", p.name, p.color, p.is_archived, gm.is_active AS \"is_active!: i64\" FROM group_members gm JOIN participants p ON p.id = gm.participant_id WHERE gm.group_id = ? ORDER BY p.name, p.id", group_id)
-            .fetch_all(&self.pool).await.map_err(storage)?.into_iter().map(|row| {
-                let participant_id = row.id;
-                Ok((participant(DbParticipant { id: participant_id, name: row.name, color: row.color, is_archived: row.is_archived })?, GroupMember { group_id, participant_id, is_active: decoded_bool(row.is_active)? }))
-            }).collect()
     }
 
     async fn add_member(

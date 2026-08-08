@@ -428,3 +428,112 @@ fn validate_allocations(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod spending_validation_tests {
+    use super::*;
+
+    fn date() -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 1, 1).expect("constant date")
+    }
+
+    fn allocation(id: EntityId, amount: i64) -> Allocation {
+        Allocation {
+            participant_id: id,
+            amount: Decimal::new(amount, 2),
+        }
+    }
+
+    fn spending() -> Spending {
+        Spending {
+            id: 1,
+            group_id: 1,
+            description: Description::new("Dinner").expect("constant description"),
+            total: Decimal::new(1000, 2),
+            currency: Currency::Usd,
+            spending_type: SpendingType::Food,
+            spent_date: date(),
+            payers: vec![allocation(1, 1000)],
+            shares: vec![allocation(2, 1000)],
+        }
+    }
+
+    #[test]
+    fn spending_validation_rejects_total_and_date_failures() {
+        let mut value = spending();
+        value.total = Decimal::ZERO;
+        assert_eq!(
+            value.validate(),
+            Err(ValidationError::NonPositive { field: "total" })
+        );
+        value = spending();
+        value.total = Decimal::new(1001, 3);
+        assert_eq!(
+            value.validate(),
+            Err(ValidationError::InvalidPrecision {
+                currency: Currency::Usd
+            })
+        );
+        value = spending();
+        value.total = Decimal::new(1_000_000_000_000, 0);
+        assert_eq!(value.validate(), Err(ValidationError::AmountTooLarge));
+        value = spending();
+        value.spent_date = NaiveDate::from_ymd_opt(2024, 12, 31).expect("constant date");
+        assert_eq!(value.validate(), Err(ValidationError::DateTooEarly));
+    }
+
+    #[test]
+    fn spending_validation_rejects_every_allocation_failure() {
+        let mut value = spending();
+        value.payers.clear();
+        assert_eq!(
+            value.validate(),
+            Err(ValidationError::EmptyAllocations { field: "payer" })
+        );
+        value = spending();
+        value.payers[0].participant_id = 0;
+        assert_eq!(value.validate(), Err(ValidationError::InvalidParticipantId));
+        value = spending();
+        value.payers.push(allocation(1, 1));
+        assert_eq!(
+            value.validate(),
+            Err(ValidationError::DuplicateParticipant { participant_id: 1 })
+        );
+        value = spending();
+        value.payers[0].amount = Decimal::ZERO;
+        assert_eq!(
+            value.validate(),
+            Err(ValidationError::NonPositive { field: "payer" })
+        );
+        value = spending();
+        value.payers[0].amount = Decimal::new(10001, 3);
+        assert_eq!(
+            value.validate(),
+            Err(ValidationError::InvalidPrecision {
+                currency: Currency::Usd
+            })
+        );
+        value = spending();
+        value.payers[0].amount = Decimal::new(1_000_000_000_000, 0);
+        assert_eq!(value.validate(), Err(ValidationError::AmountTooLarge));
+        value = spending();
+        value.payers[0].amount = Decimal::new(999, 2);
+        assert_eq!(
+            value.validate(),
+            Err(ValidationError::AllocationTotalMismatch { field: "payer" })
+        );
+        value = spending();
+        value.shares.clear();
+        assert_eq!(
+            value.validate(),
+            Err(ValidationError::EmptyAllocations { field: "share" })
+        );
+        value = spending();
+        value.shares[0].amount = Decimal::new(999, 2);
+        assert_eq!(
+            value.validate(),
+            Err(ValidationError::AllocationTotalMismatch { field: "share" })
+        );
+    }
+}

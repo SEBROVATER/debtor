@@ -5,10 +5,12 @@ use anyhow::{Context, Result};
 mod composition;
 mod config;
 mod runtime;
+mod startup_error;
 
 use composition::build_app;
 use config::Config;
 use runtime::{SignalReceivers, run_runtime};
+use startup_error::StartupError;
 
 #[cfg(test)]
 use runtime::{
@@ -30,7 +32,8 @@ async fn main() -> Result<()> {
                 .unwrap_or_else(|_| "debtor=info,tower_http=info".into()),
         )
         .init();
-    let config = Config::from_lookup(|name| std::env::var(name).ok(), cfg!(debug_assertions))?;
+    let config = Config::from_lookup(|name| std::env::var(name).ok(), cfg!(debug_assertions))
+        .map_err(|_| StartupError::Configuration)?;
     tracing::info!(
         target: "debtor.startup",
         event = "startup_stage",

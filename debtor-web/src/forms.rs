@@ -9,18 +9,31 @@ use axum::{
 };
 use tower_sessions::Session;
 
+use crate::middleware::MutationPreflight;
 use crate::session;
 
 /// Decoded URL-encoded pairs in their original wire order.
+#[derive(Clone)]
 pub struct OrderedForm(pub Vec<(String, String)>);
 
 /// An ordered form whose synchronizer token was validated before the handler ran.
-pub(crate) struct CsrfValidatedForm(pub(crate) OrderedForm);
+pub(crate) struct CsrfValidatedForm {
+    form: OrderedForm,
+    preflight: Option<MutationPreflight>,
+}
 
 impl CsrfValidatedForm {
     /// Returns the validated ordered form for route-specific parsing.
-    pub(crate) fn into_inner(self) -> OrderedForm {
-        self.0
+    pub(crate) fn ordered(&self) -> OrderedForm {
+        self.form.clone()
+    }
+
+    /// Marks the request as dispatched immediately before its first mutation.
+    #[allow(clippy::result_large_err)]
+    pub(crate) fn dispatch(&self) -> Result<(), Response> {
+        self.preflight
+            .as_ref()
+            .map_or(Ok(()), MutationPreflight::dispatch)
     }
 }
 
@@ -32,24 +45,49 @@ where
 
     async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
         let (mut parts, body) = req.into_parts();
-        let session = Session::from_request_parts(&mut parts, state)
-            .await
-            .map_err(|_| session_rejection())?;
-        let form = OrderedForm::from_request(Request::from_parts(parts, body), state).await?;
+        let preflight = parts.extensions.get::<MutationPreflight>().cloned();
+        let session = match &preflight {
+            Some(preflight) => preflight
+                .wait(Session::from_request_parts(&mut parts, state))
+                .await?
+                .map_err(|_| session_rejection())?,
+            None => Session::from_request_parts(&mut parts, state)
+                .await
+                .map_err(|_| session_rejection())?,
+        };
+        let form = match &preflight {
+            Some(preflight) => {
+                preflight
+                    .wait(OrderedForm::from_request(
+                        Request::from_parts(parts, body),
+                        state,
+                    ))
+                    .await??
+            }
+            None => OrderedForm::from_request(Request::from_parts(parts, body), state).await?,
+        };
         let tokens = form
             .0
             .iter()
             .filter(|(key, _)| key == "csrf")
             .map(|(_, value)| value.as_str())
             .collect::<Vec<_>>();
-        if tokens.len() != 1
-            || !session::matches_csrf(&session, tokens[0])
+        let csrf_matches = match &preflight {
+            Some(preflight) => preflight
+                .wait(session::matches_csrf(
+                    &session,
+                    tokens.first().copied().unwrap_or_default(),
+                ))
+                .await?
+                .map_err(|_| session_rejection())?,
+            None => session::matches_csrf(&session, tokens.first().copied().unwrap_or_default())
                 .await
-                .map_err(|_| session_rejection())?
-        {
+                .map_err(|_| session_rejection())?,
+        };
+        if tokens.len() != 1 || !csrf_matches {
             return Err(csrf_rejection());
         }
-        Ok(Self(form))
+        Ok(Self { form, preflight })
     }
 }
 

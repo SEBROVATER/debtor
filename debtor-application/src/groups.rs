@@ -6,6 +6,15 @@ use debtor_domain::model::{EntityId, Group, Name};
 
 use crate::ApplicationError;
 
+/// Transport-neutral raw group input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupInput {
+    /// Group name before domain normalization.
+    pub name: String,
+    /// Settlement currency code before parsing.
+    pub currency: String,
+}
+
 /// Reads group records.
 #[async_trait]
 pub trait GroupReader: Send + Sync {
@@ -46,17 +55,12 @@ pub trait GroupUseCases: Send + Sync {
     /// Loads one group.
     async fn group(&self, id: EntityId) -> Result<Group, ApplicationError>;
     /// Creates a group.
-    async fn create_group(
-        &self,
-        name: String,
-        currency: Currency,
-    ) -> Result<Group, ApplicationError>;
+    async fn create_group(&self, input: GroupInput) -> Result<Group, ApplicationError>;
     /// Updates a group.
     async fn update_group(
         &self,
         id: EntityId,
-        name: String,
-        currency: Currency,
+        input: GroupInput,
     ) -> Result<Group, ApplicationError>;
     /// Archives or restores a group.
     async fn set_archived(&self, id: EntityId, archived: bool) -> Result<(), ApplicationError>;
@@ -87,24 +91,28 @@ impl GroupUseCases for GroupService {
         self.reader.group(id).await
     }
 
-    async fn create_group(
-        &self,
-        name: String,
-        currency: Currency,
-    ) -> Result<Group, ApplicationError> {
+    async fn create_group(&self, input: GroupInput) -> Result<Group, ApplicationError> {
+        let currency = input.currency.parse::<Currency>().map_err(|_| {
+            debtor_domain::model::ValidationError::InvalidField { field: "currency" }
+        })?;
         self.repository
-            .create_group(Name::new(name)?, currency)
+            .create_group(Name::new(input.name)?, currency)
             .await
     }
 
     async fn update_group(
         &self,
         id: EntityId,
-        name: String,
-        currency: Currency,
+        input: GroupInput,
     ) -> Result<Group, ApplicationError> {
+        if self.reader.group(id).await?.is_archived {
+            return Err(ApplicationError::Conflict);
+        }
+        let currency = input.currency.parse::<Currency>().map_err(|_| {
+            debtor_domain::model::ValidationError::InvalidField { field: "currency" }
+        })?;
         self.repository
-            .update_group(id, Name::new(name)?, currency)
+            .update_group(id, Name::new(input.name)?, currency)
             .await
     }
 
@@ -113,6 +121,9 @@ impl GroupUseCases for GroupService {
     }
 
     async fn delete_empty(&self, id: EntityId) -> Result<(), ApplicationError> {
+        if self.reader.group(id).await?.is_archived {
+            return Err(ApplicationError::Conflict);
+        }
         self.repository.delete_empty_group(id).await
     }
 }
@@ -217,11 +228,20 @@ mod tests {
 
         let groups = service.list_groups(true).await.expect("list groups");
         service
-            .create_group("  Summer trip  ".into(), Currency::Eur)
+            .create_group(GroupInput {
+                name: "  Summer trip  ".into(),
+                currency: "EUR".into(),
+            })
             .await
             .expect("create group");
         service
-            .update_group(7, "  Updated trip  ".into(), Currency::Usd)
+            .update_group(
+                7,
+                GroupInput {
+                    name: "  Updated trip  ".into(),
+                    currency: "USD".into(),
+                },
+            )
             .await
             .expect("update group");
 
@@ -246,7 +266,10 @@ mod tests {
             fail_create: true,
         });
         let error = GroupService::new(failing.clone(), failing)
-            .create_group("Trip".into(), Currency::Usd)
+            .create_group(GroupInput {
+                name: "Trip".into(),
+                currency: "USD".into(),
+            })
             .await
             .expect_err("storage error");
         assert!(matches!(
