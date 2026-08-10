@@ -58,7 +58,7 @@ Anonymous login/CSRF sessions use ten-minute inactivity expiry and are explicitl
 
 Login form bodies are limited to 8 KiB and other form bodies to 256 KiB. User traffic has 64 in-flight request permits and login has four. Health and readiness use a separate four-request probe budget so user saturation cannot starve orchestration. Safe dynamic reads and login have a 30-second timeout; debts have a 90-second timeout; probes have a two-second outer timeout and a one-second inner SQLite readiness timeout.
 
-Ledger mutations use one 30-second absolute deadline for all pre-dispatch work, including body extraction, authentication, CSRF, and asynchronous web prechecks, followed by bounded admission, write-gate, and SQLite waits. There is no generic timeout after the use case begins. Mutations MUST return a definitive commit or rollback result; this release does not add idempotency keys. A reverse proxy MUST NOT impose a shorter mutation timeout after dispatch.
+Ledger mutations use one 30-second absolute deadline for all pre-dispatch work, including body extraction, authentication, CSRF, submission-token reservation, and asynchronous web prechecks, followed by bounded admission, write-gate, and SQLite waits. Every rendered unsafe form carries a bounded, expiring, session-bound single-use submission token. The server atomically reserves it immediately before dispatch; only one request may cross that boundary, and missing, unknown, expired, reserved, or consumed tokens return `409` without invoking a use case. Validation before dispatch does not consume the token. The token prevents duplicate dispatch but is not an idempotency key that replays a prior response. There is no generic timeout after the use case begins. Mutations MUST return a definitive commit or rollback result. A reverse proxy MUST NOT impose a shorter mutation timeout after dispatch.
 
 ### 11. Local readiness and shutdown
 
@@ -67,6 +67,10 @@ Ledger mutations use one 30-second absolute deadline for all pre-dispatch work, 
 ### 12. Pre-release migration policy
 
 Pre-release migrations MAY be rewritten and local databases MAY need to be recreated. Breaking Rust APIs, configuration, and routes are also allowed when they remove superseded paths rather than preserve shims. Security, accounting, and historical-integrity invariants remain mandatory. Database compatibility is not promised. The repository MUST keep committed SQLx offline metadata synchronized with checked queries and migrations.
+
+### 13. Native-first self-hosted HTMX enhancement
+
+Pinned self-hosted HTMX plus its pinned official `response-targets` extension are the only permitted client-side libraries and MAY progressively enhance native links and forms. The extension routes expected `4xx`/`5xx` fragments to declared status targets; custom HTMX extensions are forbidden. Every core interaction remains a valid full-page path when HTMX is unavailable. Custom application JavaScript, inline scripts, and inline script attributes are forbidden. HTMX static assets are session-free. Login and authenticated HTML use `Content-Security-Policy: default-src 'none'; script-src 'self'; script-src-attr 'none'; connect-src 'self'; style-src 'self' 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`.
 
 ## Consequences
 
@@ -84,6 +88,7 @@ Pre-release migrations MAY be rewritten and local databases MAY need to be recre
 - WAL sidecars and `synchronous=FULL` trade filesystem space and write latency for durability.
 - Per-key rate single-flight, bounded concurrency, session admission accounting, and supervised cleanup add implementation and test complexity.
 - Unsafe mutation requests cannot be cut off by a generic application timeout after dispatch, so reverse-proxy configuration must respect the mutation contract.
+- Native full-page fallbacks add route and focus-state obligations but keep core behavior recoverable without custom application JavaScript or HTMX runtime hooks.
 
 ## Rejected Alternatives
 

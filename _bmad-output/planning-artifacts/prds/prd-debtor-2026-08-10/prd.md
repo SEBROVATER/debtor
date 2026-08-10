@@ -31,7 +31,8 @@ Debtor is for one administrator who records both personal and shared Spendings i
 
 ### Lightweight User Journey
 
-- **UJ-1. Sebr reviews a travel group's month and all-time debts.** Sebr signs in as the sole Administrator, opens the travel Group, and records shared Spendings paid by one or more friends. On the Group page, Sebr sees current-month totals by Source Currency and equivalent totals in the Group Currency, including how much each Participant paid. Sebr then opens the all-time debts view to see current balances and advisory Settlement Transfers. If exchange-rate conversion is temporarily unavailable, the Source Currency summary and ledger operations remain usable while the converted summary reports a retryable failure.
+- **UJ-1. Sebr reviews a travel group's month and all-time debts.** Sebr signs in as the sole Administrator, opens the travel Group, and records a shared Spending paid by one friend. On the Group page, Sebr sees current-month totals by Source Currency and equivalent totals in the Group Currency, including how much each Participant paid across Spendings. Sebr then opens the all-time debts view to see current Balances and advisory Settlement Transfers. If exchange-rate conversion is temporarily unavailable, the Source Currency summary and ledger operations remain usable while the converted summary reports a retryable failure.
+- **UJ-2. Sebr prepares and maintains a Group.** Sebr creates a Group from the Groups list using only its name. Debtor assigns `USD` and opens Manage, where Sebr changes Group Currency if needed and adds Participants; setup lands when an active Participant enables Add Spending. Later, Sebr can archive a departing Participant only after a successful all-time Historical-mode calculation shows an exact zero Group Currency Balance. Missing rates leave the Participant active with retryable feedback. The contextual archived Participants view restores a returning Participant, while Manage and the archived Groups view handle Group archive, restore, and eligible deletion.
 
 ## Success Metrics
 
@@ -50,13 +51,13 @@ Debtor is for one administrator who records both personal and shared Spendings i
 ## Experience Principles
 
 - **Group-centered:** After login, the main page lists Groups. Spendings, monthly summaries, Participant management, and all-time debts remain within the selected Group.
-- **Progressive disclosure:** Adding a Spending stays behind a compact disclosure or overlay rather than occupying the Group page permanently.
+- **Focused entry:** A persistent Add Spending action opens a focused full-page form and returns to Transactions with the committed row visible.
 - **One web experience:** Debtor has one mobile-friendly web interface. It need not provide separate mobile and desktop designs or optimize its appearance for large desktop screens.
-- **Minimal and modern:** The interface avoids redundant animation and decorative effects. Core interaction uses native HTML and CSS behavior and remains functional without custom JavaScript.
+- **Minimal and modern:** The interface avoids redundant animation and decorative effects. Core interaction uses semantic server-rendered HTML and native HTML/CSS states; pinned self-hosted HTMX may enhance valid links/forms without custom application JavaScript.
 
 ## UX Acceptance Requirements
 
-- Core behavior must work through semantic server-rendered HTML without custom JavaScript.
+- Core behavior must work through semantic server-rendered HTML and valid native links/forms. Pinned self-hosted HTMX may progressively enhance those interactions; custom application JavaScript and inline script attributes are forbidden.
 - The single web experience must be mobile-friendly and remain usable on desktop without requiring a separate desktop design.
 - The interface must remain usable in the latest stable versions of Chrome, Firefox, Safari, and Edge at viewport widths down to 320 CSS pixels.
 - Every control must be reachable and operable without a pointer and must have a programmatic label and a visible focus indicator that is at least two CSS pixels thick and has at least 3:1 contrast against adjacent colors.
@@ -70,7 +71,7 @@ Debtor is for one administrator who records both personal and shared Spendings i
 
 - Password-gated single-Administrator web access.
 - Group lifecycle and Group-owned Participant lifecycle.
-- Exact Spending CRUD with multiple Payers and equal or exact Shares.
+- Exact Spending CRUD with one Payer and proportional or exact Shares.
 - Historical records that survive archival.
 - Dual Current-Month Summary by Source Currency and Group Currency.
 - All-time multi-currency Balances and advisory Settlement Transfers.
@@ -82,10 +83,10 @@ Debtor is for one administrator who records both personal and shared Spendings i
 - Reusing one Participant identity across Groups.
 - Repayment records, paid status, settlement checkpoints, payment initiation, or settlement date ranges.
 - Arbitrary timeframe summaries, statistics beyond the fixed Current-Month Summary, search, exports, receipt capture, recurring Spendings, or bank integrations.
-- Ratio, percentage, weighted, or itemized Share modes.
+- Multiple Payers or direct percentage and itemized Share modes.
 - Globally minimal Settlement Transfer count.
 - Manual exchange-rate refresh or sessions that survive process restart.
-- Native mobile or desktop applications, separate desktop UX, custom JavaScript, or decorative animation.
+- Native mobile or desktop applications, separate desktop UX, custom application JavaScript, or decorative animation.
 - Multiple application instances, external database writers, or broad deployment-topology flexibility.
 
 ### Deferred
@@ -97,7 +98,7 @@ Debtor is for one administrator who records both personal and shared Spendings i
 - **Administrator**: The single person authenticated to operate Debtor.
 - **Group**: A private ledger that owns Participants, Spendings, one Group Currency, current-month summaries, balances, and Settlement Transfers.
 - **Participant**: A Group-owned accounting identity. A Participant is not an application user and cannot be reused across Groups.
-- **Spending**: A dated transaction with a positive Total, one Source Currency, one category, one or more Payers, and Participant Shares.
+- **Spending**: A dated transaction with a positive Total, one Source Currency, one category, exactly one Payer, and Participant Shares.
 - **Payer**: A Participant who paid part or all of a Spending Total.
 - **Share**: The exact portion of a Spending Total attributed to a Participant.
 - **Source Currency**: The original currency retained by a Spending.
@@ -120,6 +121,7 @@ The Administrator can sign in with one configured password, remain authenticated
 - Anonymous visitors cannot view Groups or ledger data.
 - Restarting Debtor ends existing authenticated sessions.
 - Login and all state-changing actions reject requests that lack valid request protection.
+- Every unsafe form has one bounded, expiring, session-bound single-use submission token in addition to CSRF. Exactly one request can reserve it for dispatch; duplicate or invalid token use returns a clear conflict state without a second mutation.
 
 ### Group And Participant Management
 
@@ -131,6 +133,8 @@ The Administrator can create, edit, archive, and restore a Group. A Group with n
 
 **Consequences:**
 - Group names are trimmed, non-empty, and no longer than 100 Unicode characters.
+- Group creation asks only for the name, assigns `USD` as Group Currency, and opens the new Group in Manage so currency and Participants can be configured. Established Groups open in Summary.
+- Active Group and Participant lists exclude archived records; separate contextual archived views provide restoration access.
 - Archived Groups remain readable but expose no mutation controls.
 - Direct attempts to mutate an archived Group are rejected without changing state.
 
@@ -142,33 +146,37 @@ The Administrator can add, edit, archive, and restore Participants inside a Grou
 - There is no separate global Participant-management surface.
 - New Payers and Shares can use only active Participants owned by the selected Group.
 - Archived Participants remain visible in referenced history, Balances, and Settlement Transfers.
+- Archive is available and allowed only when a complete all-time Historical-mode calculation gives the Participant an exact zero Group Currency Balance. If required rates are unavailable without an eligible stale quote, archive remains blocked with retryable feedback and no state change.
+- Restore remains available without a Balance check when a Participant returns to the Group.
 - Participant names are trimmed, non-empty, and no longer than 100 Unicode characters.
 - Participant colors use normalized `#RRGGBB` form. New Participant forms suggest a varied valid color that the Administrator can change.
 
 ### Spending Ledger
 
-The selected Group keeps one Spending form and its Spending history close together on the Group page. The form uses compact progressive disclosure rather than permanently occupying the page or becoming a separate management surface.
+The Group shell keeps Add Spending persistently available without embedding the long form in a section. The action opens a focused full-page form and returns to Transactions with the committed Spending visible. HTMX may preview allocation changes on field change, while an explicit Preview submission provides the same native full-page behavior.
 
 #### FR-4: Record a Spending
 
-The Administrator can create a Spending with a description, date, category, positive Total, Source Currency, one or more Payers, and either equal or exact Shares.
+The Administrator can create a Spending with a description, date, category, positive Total, Source Currency, exactly one Payer, and either Proportional or Exact Shares.
 
 **Consequences:**
 - Source Currency and Group Currency options are `USD`, `EUR`, `RUB`, `KGS`, `TRY`, `KZT`, `UZS`, `CNY`, `KRW`, `JPY`, `OMR`, and `TJS`.
 - Category options and current display labels are `food`, `transport`, `housing`, `fun`, `shopping`, `bills`, `health`, and `other`.
 - Descriptions are trimmed, non-empty, and no longer than 200 Unicode characters.
 - Dates use strict `YYYY-MM-DD` form and cannot precede `2025-01-01`.
-- Payer mode and Share mode are independent.
-- Equal and exact are the only Share modes.
+- Description and Total start empty; Source Currency defaults to Group Currency; date defaults to the current UTC date; Category has no default.
+- Payer selection and Share editing use one Participant allocation table. No Payer is initially selected; selecting one assigns the full Total, and selecting a different row replaces the Payer.
+- Proportional and Exact are the only Share modes.
 - Submitted values remain present when validation fails, with errors shown inline.
 
 #### FR-5: Exact allocation
 
-Every accepted Spending preserves the Total exactly in Source Currency minor units: Payer amounts sum to the Total and Shares independently sum to the Total.
+Every accepted Spending preserves the Total exactly in Source Currency minor units: the single Payer pays the Total and Shares independently sum to the Total.
 
 **Consequences:**
 - Totals and Payer/Share amounts must be positive, cannot exceed `999_999_999_999`, and must satisfy Source Currency precision; zero values, excess precision, duplicate Participants, or mismatched totals are rejected.
-- Equal splitting assigns indivisible residual minor units deterministically by ascending Participant ID.
+- Proportional mode initially selects every active Participant with weight `1`, permits deselection, accepts positive decimal weights, displays resulting exact-currency amounts, and assigns residual minor units by largest fractional remainder with Participant ID as the tie-breaker.
+- Exact mode initially selects every active Participant with equal minor-unit Shares, permits deselection and amount editing, and displays the remaining or excess difference until the selected Shares equal the Total.
 - A Spending update may retain an archived Participant only in the same existing Payer or Share role; it cannot introduce or change that archived Participant's role.
 
 #### FR-6: Review and maintain history
@@ -179,7 +187,7 @@ The Administrator can browse, inspect, edit, and delete Spendings in an active G
 - History is ordered newest first and presented in pages of 25.
 - Spending details remain readable when their Group or Participants are archived and display each Participant's current name after a rename.
 - Editing may correct a Spending's Source Currency under the same validation as creation; subsequent historical calculations use the corrected stored Source Currency.
-- Editing infers the closest single/multiple-Payer and equal/exact-Share input modes from stored allocations.
+- Input modes and proportional weights are not persisted; every edit opens Exact with the stored single Payer and Share amounts.
 - Each successful Spending change is applied completely or not at all.
 
 ### Current-Month Spending Summary
@@ -248,6 +256,7 @@ The debts view identifies the conversion mode, calculation time, Group Currency,
 ### Security And Privacy
 
 - Every state-changing request, including login, must be authenticated where applicable and protected against cross-site request forgery.
+- Unsafe form replay must be suppressed server-side through a bounded, expiring, single-use session token that is atomically reserved before dispatch and distinct from CSRF.
 - Authentication must resist repeated login attempts and use secure session cookies in production.
 - Credentials, password hashes, session identifiers, request-protection tokens, and sensitive ledger or provider data must never appear in logs or user-facing errors.
 - Authenticated pages must not be cached by browsers or intermediaries.

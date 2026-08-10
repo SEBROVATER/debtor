@@ -1,0 +1,644 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Debtor Transactions key screen</title>
+  <style>
+    /* Governing spines: DESIGN.md — Brand & Style; Colors; Typography; Layout & Spacing; Shapes; Components (Page header, Group navigation, Add Spending action, Transaction row, Pagination). EXPERIENCE.md — Information Architecture; Component Patterns (Page header, Group navigation, Add Spending action, Transaction row, Pagination); State Patterns (Transactions cold load/page change, Spending mutation success); Interaction Focus Matrix (Pagination, Create/edit success); Responsive & Platform; Key Flows (Flow 1 steps 2, 6; Flow 4 steps 1–3). */
+    :root {
+      color-scheme: dark;
+      --background: #101113;
+      --surface: #181A1D;
+      --surface-strong: #202226;
+      --navigation: rgba(21, 22, 25, .96);
+      --text: #F5F0E7;
+      --muted: #AAA59C;
+      --rule: #6D6C69;
+      --accent: #F0D36C;
+      --on-accent: #211C08;
+      --warning: #E88467;
+      --warning-text: #F4BAA7;
+      --focus: #FFFFFF;
+    }
+
+    * { box-sizing: border-box; }
+
+    html { background: #090A0B; }
+
+    body {
+      margin: 0;
+      min-width: 320px;
+      color: var(--text);
+      background: #090A0B;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    button, a, summary { font: inherit; }
+
+    a, button, summary {
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    a:focus-visible,
+    button:focus-visible,
+    summary:focus-visible {
+      outline: 2px solid var(--focus);
+      outline-offset: 2px;
+    }
+
+    .study {
+      display: flex;
+      gap: 34px;
+      align-items: flex-start;
+      width: max-content;
+      min-width: 100%;
+      padding: 34px;
+    }
+
+    .frame-block { width: 390px; }
+
+    .frame-label {
+      margin: 0 0 10px;
+      color: var(--muted);
+      font-size: .68rem;
+      font-weight: 750;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+
+    .phone {
+      width: 390px;
+      height: 844px;
+      overflow: hidden;
+      border: 1px solid var(--rule);
+      border-radius: 34px;
+      background: var(--background);
+      box-shadow: 0 20px 70px rgba(0, 0, 0, .48);
+    }
+
+    .app {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      height: 100%;
+      background: var(--background);
+    }
+
+    .page-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      min-width: 0;
+      padding: 20px 20px 14px;
+      border-bottom: 4px double var(--rule);
+      background: var(--background);
+    }
+
+    .group-context { min-width: 0; }
+
+    .eyebrow {
+      margin: 0 0 3px;
+      overflow: hidden;
+      color: var(--muted);
+      font-size: .68rem;
+      font-weight: 750;
+      letter-spacing: .12em;
+      text-overflow: ellipsis;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .group-title {
+      margin: 0;
+      overflow: hidden;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 1.1rem;
+      font-weight: 500;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .sign-out {
+      display: grid;
+      flex: 0 0 auto;
+      min-width: 48px;
+      min-height: 48px;
+      place-items: center;
+      border: 0;
+      color: var(--muted);
+      background: transparent;
+      font-size: .75rem;
+      text-decoration: none;
+    }
+
+    .content {
+      min-height: 0;
+      overflow-y: auto;
+      padding: 18px 18px 26px;
+      scrollbar-color: var(--rule) var(--background);
+      scrollbar-width: thin;
+    }
+
+    .section-heading {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+
+    .section-heading h1 {
+      margin: 0;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 1.55rem;
+      font-weight: 500;
+      letter-spacing: -.035em;
+    }
+
+    .page-count {
+      margin: 0;
+      color: var(--muted);
+      font-size: .75rem;
+      white-space: nowrap;
+    }
+
+    .order-note {
+      margin: 0 0 13px;
+      color: var(--muted);
+      font-size: .75rem;
+      line-height: 1.45;
+    }
+
+    .transactions {
+      border-top: 1px solid var(--rule);
+    }
+
+    .transaction {
+      border-bottom: 1px solid var(--rule);
+      background: transparent;
+    }
+
+    .transaction summary {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 6px 12px;
+      align-content: center;
+      min-width: 48px;
+      min-height: 58px;
+      padding: 8px 2px;
+      color: var(--text);
+      cursor: pointer;
+      list-style: none;
+    }
+
+    .transaction summary::-webkit-details-marker { display: none; }
+
+    .transaction summary::before {
+      content: "+";
+      grid-row: 1 / span 2;
+      align-self: center;
+      width: 13px;
+      margin-right: -4px;
+      color: var(--muted);
+      font-size: .82rem;
+    }
+
+    .transaction[open] summary::before { content: "−"; }
+
+    .summary-name {
+      grid-column: 1;
+      overflow-wrap: anywhere;
+      padding-left: 17px;
+      font-size: .78rem;
+      font-weight: 650;
+      line-height: 1.25;
+    }
+
+    .summary-date {
+      grid-column: 1;
+      padding-left: 17px;
+      color: var(--muted);
+      font-size: .75rem;
+      line-height: 1.25;
+    }
+
+    .summary-total {
+      grid-column: 2;
+      grid-row: 1 / span 2;
+      align-self: center;
+      font-size: .78rem;
+      font-variant-numeric: tabular-nums;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .details {
+      padding: 0 0 14px 19px;
+    }
+
+    .facts {
+      margin: 0;
+      border-top: 1px solid var(--rule);
+    }
+
+    .fact {
+      display: grid;
+      grid-template-columns: 108px minmax(0, 1fr);
+      gap: 9px;
+      padding: 7px 0;
+      border-bottom: 1px solid var(--rule);
+      font-size: .7rem;
+      line-height: 1.4;
+    }
+
+    .fact dt {
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    .fact dd {
+      margin: 0;
+      overflow-wrap: anywhere;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .participant {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+    }
+
+    .marker {
+      width: 9px;
+      height: 9px;
+      flex: 0 0 auto;
+      border: 1px solid var(--rule);
+      border-radius: 9999px;
+      background: var(--participant-color);
+    }
+
+    .share-list {
+      display: grid;
+      gap: 5px;
+    }
+
+    .share {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .row-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .row-action {
+      display: grid;
+      min-width: 48px;
+      min-height: 48px;
+      place-items: center;
+      border: 1px solid var(--rule);
+      color: var(--text);
+      background: transparent;
+      font-size: .75rem;
+      font-weight: 700;
+      text-decoration: none;
+    }
+
+    .row-action.delete {
+      border-color: var(--warning);
+      color: var(--warning-text);
+    }
+
+    .pagination-context {
+      margin: 17px 0 8px;
+      color: var(--muted);
+      font-size: .75rem;
+      text-align: center;
+    }
+
+    .pagination {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .page-link {
+      display: grid;
+      min-width: 48px;
+      min-height: 48px;
+      place-items: center;
+      border: 1px solid var(--rule);
+      color: var(--text);
+      background: transparent;
+      font-size: .75rem;
+      font-weight: 700;
+      text-decoration: none;
+    }
+
+    .page-link[aria-disabled="true"] {
+      color: var(--muted);
+      background: var(--surface);
+    }
+
+    .bottom-shell {
+      padding: 9px 4px max(9px, env(safe-area-inset-bottom));
+      border-top: 1px solid var(--rule);
+      background: var(--navigation);
+      backdrop-filter: blur(14px);
+    }
+
+    .add-spending {
+      display: grid;
+      width: calc(100% - 24px);
+      min-width: 48px;
+      min-height: 48px;
+      margin: 0 12px 10px;
+      place-items: center;
+      color: var(--on-accent);
+      background: var(--accent);
+      box-shadow: 5px 5px 0 #000000;
+      font-size: .78rem;
+      font-weight: 800;
+      text-decoration: none;
+    }
+
+    .group-nav {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+    }
+
+    .group-nav a {
+      display: grid;
+      min-width: 48px;
+      min-height: 48px;
+      align-content: center;
+      justify-items: center;
+      gap: 6px;
+      padding: 4px 1px;
+      color: var(--muted);
+      font-size: .6rem;
+      font-weight: 700;
+      line-height: 1.05;
+      text-align: center;
+      text-decoration: none;
+    }
+
+    .group-nav a[aria-current="page"] { color: var(--accent); }
+
+    .nav-mark {
+      width: 16px;
+      height: 16px;
+      border: 1.5px solid currentColor;
+      transform: rotate(45deg);
+    }
+
+    .new-row summary {
+      outline: 2px solid var(--focus);
+      outline-offset: 2px;
+    }
+
+    .new-row summary::after {
+      content: "New";
+      grid-column: 1;
+      margin: 1px 0 0 17px;
+      color: var(--accent);
+      font-size: .66rem;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .new-row .summary-total { grid-row: 1 / span 3; }
+
+    @media (max-width: 880px) {
+      .study {
+        flex-direction: column;
+        width: 100%;
+        padding: 20px max(12px, calc((100vw - 390px) / 2));
+      }
+    }
+
+    @media (max-width: 414px) {
+      .frame-block, .phone { width: min(390px, calc(100vw - 24px)); }
+      .phone { border-radius: 28px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; }
+    }
+  </style>
+</head>
+<body>
+  <main class="study" aria-label="Debtor Transactions phone key screens">
+    <section class="frame-block" aria-labelledby="frame-history-label">
+      <p class="frame-label" id="frame-history-label">Phone / Transactions / expanded detail</p>
+      <div class="phone">
+        <div class="app">
+          <header class="page-header">
+            <div class="group-context">
+              <p class="eyebrow">Travel &amp; Dinner</p>
+              <p class="group-title">Group ledger</p>
+            </div>
+            <a class="sign-out" href="#sign-out">Sign out</a>
+          </header>
+
+          <section class="content" aria-labelledby="transactions-history">
+            <div class="section-heading">
+              <h1 id="transactions-history" tabindex="-1">Transactions</h1>
+              <p class="page-count">Page 3 of 25</p>
+            </div>
+            <p class="order-note">Spendings 51–75 · newest first</p>
+
+            <div class="transactions">
+              <details class="transaction">
+                <summary>
+                  <span class="summary-name">Airport train</span>
+                  <span class="summary-date">2026-06-18</span>
+                  <span class="summary-total">₺840.00 TRY</span>
+                </summary>
+              </details>
+
+              <details class="transaction" open>
+                <summary>
+                  <span class="summary-name">Dinner in Kadıköy</span>
+                  <span class="summary-date">2026-06-17</span>
+                  <span class="summary-total">€126.00 EUR</span>
+                </summary>
+                <div class="details">
+                  <dl class="facts">
+                    <div class="fact"><dt>Description</dt><dd>Dinner in Kadıköy</dd></div>
+                    <div class="fact"><dt>Total</dt><dd>€126.00 EUR</dd></div>
+                    <div class="fact"><dt>Source Currency</dt><dd>EUR</dd></div>
+                    <div class="fact"><dt>Date</dt><dd>2026-06-17</dd></div>
+                    <div class="fact"><dt>Category</dt><dd>Food</dd></div>
+                    <div class="fact">
+                      <dt>Payer</dt>
+                      <dd><span class="participant"><i class="marker" style="--participant-color:#E88467"></i>Mina</span> · €126.00 EUR</dd>
+                    </div>
+                    <div class="fact">
+                      <dt>Shares</dt>
+                      <dd class="share-list">
+                        <span class="share"><span class="participant"><i class="marker" style="--participant-color:#F0D36C"></i>Sebr</span><span>€42.00 EUR</span></span>
+                        <span class="share"><span class="participant"><i class="marker" style="--participant-color:#E88467"></i>Mina</span><span>€42.00 EUR</span></span>
+                        <span class="share"><span class="participant"><i class="marker" style="--participant-color:#86AEC7"></i>Alex</span><span>€42.00 EUR</span></span>
+                      </dd>
+                    </div>
+                  </dl>
+                  <div class="row-actions">
+                    <a class="row-action" href="#edit-dinner">Edit</a>
+                    <a class="row-action delete" href="#delete-dinner">Delete</a>
+                  </div>
+                </div>
+              </details>
+
+              <details class="transaction">
+                <summary>
+                  <span class="summary-name">Museum tickets</span>
+                  <span class="summary-date">2026-06-17</span>
+                  <span class="summary-total">₺1,350.00 TRY</span>
+                </summary>
+              </details>
+
+              <details class="transaction">
+                <summary>
+                  <span class="summary-name">Hotel deposit</span>
+                  <span class="summary-date">2026-06-16</span>
+                  <span class="summary-total">€240.00 EUR</span>
+                </summary>
+              </details>
+
+              <details class="transaction">
+                <summary>
+                  <span class="summary-name">Groceries for breakfast</span>
+                  <span class="summary-date">2026-06-16</span>
+                  <span class="summary-total">₺692.50 TRY</span>
+                </summary>
+              </details>
+            </div>
+
+            <p class="pagination-context">Page 3 of 25 · 25 Spendings on this page</p>
+            <nav class="pagination" aria-label="Transactions pages">
+              <a class="page-link" href="#page-2">Previous</a>
+              <a class="page-link" href="#page-4">Next</a>
+            </nav>
+          </section>
+
+          <footer class="bottom-shell">
+            <a class="add-spending" href="#add-spending">+ Add Spending</a>
+            <nav class="group-nav" aria-label="Group destinations">
+              <a href="#groups"><i class="nav-mark"></i><span>Groups</span></a>
+              <a href="#summary"><i class="nav-mark"></i><span>Summary</span></a>
+              <a href="#transactions" aria-current="page"><i class="nav-mark"></i><span>Transactions</span></a>
+              <a href="#debts"><i class="nav-mark"></i><span>Debts</span></a>
+              <a href="#manage"><i class="nav-mark"></i><span>Manage</span></a>
+            </nav>
+          </footer>
+        </div>
+      </div>
+    </section>
+
+    <section class="frame-block" aria-labelledby="frame-created-label">
+      <p class="frame-label" id="frame-created-label">Phone / post-create / committed row focused</p>
+      <div class="phone">
+        <div class="app">
+          <header class="page-header">
+            <div class="group-context">
+              <p class="eyebrow">Travel &amp; Dinner</p>
+              <p class="group-title">Group ledger</p>
+            </div>
+            <a class="sign-out" href="#sign-out-created">Sign out</a>
+          </header>
+
+          <section class="content" aria-labelledby="transactions-created">
+            <div class="section-heading">
+              <h1 id="transactions-created" tabindex="-1">Transactions</h1>
+              <p class="page-count">Page 1 of 25</p>
+            </div>
+            <p class="order-note">Spendings 1–25 · newest first</p>
+
+            <div class="transactions">
+              <details class="transaction new-row">
+                <summary id="spending-625" tabindex="0" autofocus>
+                  <span class="summary-name">Shopping at Dordoy</span>
+                  <span class="summary-date">2026-08-10</span>
+                  <span class="summary-total">$36.00 USD</span>
+                </summary>
+              </details>
+
+              <details class="transaction">
+                <summary>
+                  <span class="summary-name">Dinner in Kadıköy</span>
+                  <span class="summary-date">2026-08-09</span>
+                  <span class="summary-total">€126.00 EUR</span>
+                </summary>
+              </details>
+
+              <details class="transaction">
+                <summary>
+                  <span class="summary-name">Taxi to the apartment</span>
+                  <span class="summary-date">2026-08-09</span>
+                  <span class="summary-total">₺520.00 TRY</span>
+                </summary>
+              </details>
+
+              <details class="transaction">
+                <summary>
+                  <span class="summary-name">Weekly groceries</span>
+                  <span class="summary-date">2026-08-08</span>
+                  <span class="summary-total">$84.26 USD</span>
+                </summary>
+              </details>
+
+              <details class="transaction">
+                <summary>
+                  <span class="summary-name">Ferry cards</span>
+                  <span class="summary-date">2026-08-08</span>
+                  <span class="summary-total">₺300.00 TRY</span>
+                </summary>
+              </details>
+
+              <details class="transaction">
+                <summary>
+                  <span class="summary-name">Apartment balance</span>
+                  <span class="summary-date">2026-08-07</span>
+                  <span class="summary-total">€410.00 EUR</span>
+                </summary>
+              </details>
+
+              <details class="transaction">
+                <summary>
+                  <span class="summary-name">Pharmacy</span>
+                  <span class="summary-date">2026-08-06</span>
+                  <span class="summary-total">₺214.75 TRY</span>
+                </summary>
+              </details>
+            </div>
+
+            <p class="pagination-context">Page 1 of 25 · 25 Spendings on this page</p>
+            <nav class="pagination" aria-label="Transactions pages">
+              <span class="page-link" aria-disabled="true">Previous</span>
+              <a class="page-link" href="#page-2-created">Next</a>
+            </nav>
+          </section>
+
+          <footer class="bottom-shell">
+            <a class="add-spending" href="#add-spending-created">+ Add Spending</a>
+            <nav class="group-nav" aria-label="Group destinations">
+              <a href="#groups-created"><i class="nav-mark"></i><span>Groups</span></a>
+              <a href="#summary-created"><i class="nav-mark"></i><span>Summary</span></a>
+              <a href="#transactions-created" aria-current="page"><i class="nav-mark"></i><span>Transactions</span></a>
+              <a href="#debts-created"><i class="nav-mark"></i><span>Debts</span></a>
+              <a href="#manage-created"><i class="nav-mark"></i><span>Manage</span></a>
+            </nav>
+          </footer>
+        </div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
