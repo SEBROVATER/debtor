@@ -1,7 +1,7 @@
 ---
 project_name: 'debtor'
 user_name: 'sebr'
-date: '2026-08-08'
+date: '2026-08-11'
 sections_completed: ['technology_stack', 'language_rules', 'framework_rules', 'testing_rules', 'quality_rules', 'workflow_rules', 'anti_patterns']
 existing_patterns_found: 18
 status: 'complete'
@@ -91,23 +91,23 @@ _This file contains critical rules and patterns that AI agents must follow when 
 
 - Debtor is permanently single-administrator. Participants are accounting identities, never users; do not add registration, usernames, tenants, participant authentication, or multi-user authorization.
 - All totals and persisted payer/share amounts are positive, precision-valid, and at most `999_999_999_999`; payer totals and share totals must each equal the spending total exactly in source-currency minor units.
-- Exactly one active Group-owned Participant pays the Total. Shares are nonempty and Participant-unique. Proportional positive-decimal weights use largest fractional remainder with Participant-ID ties; Exact Shares default equally and must close the displayed difference; zero Shares are invalid.
+- Exactly one active Group-owned Participant pays the Total. Shares are nonempty and Participant-unique. Proportional weights are positive decimals at most `1,000,000` with at most six fractional digits and use one checked `i128` integer-ratio operation for Preview and commit, descending remainders, and ascending Participant-ID ties. Exact Shares default equally and must close the displayed difference; zero Shares are invalid.
 - Never aggregate money in SQL. Parse, validate, sum, quantize, and format monetary values in Rust with checked arithmetic.
 - Preserve history: every participant belongs to exactly one group; a group with no spendings may be deleted with its unreferenced participants; referenced groups/participants use restrictive deletion; participants are otherwise archived, not independently deleted.
-- Archive a participant only after a complete all-time Historical-mode calculation yields an exact zero Group Currency balance. Missing eligible rates block archive; the check and write are race-safe against concurrent spendings without holding a database transaction over provider I/O. Restore needs no balance check.
+- Archive a participant only after a complete all-time Historical-mode calculation yields an exact zero Group Currency balance. One attempt binds an immutable ledger snapshot, UTC calculation context, and quote bundle, then revalidates ledger/time/quote eligibility before commit. Missing eligible rates block archive; persist no rate evidence, and accept that a later attempt may observe a provider revision. Restore needs no balance check.
 - New allocations require active participants owned by the spending's group. An update may retain an archived participant only in the same existing payer/share role; it may not introduce or change that role.
 - Archived groups are readable but entirely mutation-disabled. Historical details resolve current participant names and remain available for inactive/archived identities.
 - Group creation accepts only a name, defaults Group Currency to USD, and opens Manage; established Groups open Summary. Keep archived Groups and Participants out of active lists and expose them through separate contextual archived views.
 - Spending history uses fixed 25-item keyset pagination ordered by `(spent_date DESC, id DESC)`; detail/edit/delete load one complete aggregate directly rather than all history.
 - Decode exchange-rate JSON numbers lexically into arbitrary-precision `Decimal`. Preserve context keys `(source, target, requested date, effective date)`, bounded deterministic LRU caches, per-key single-flight, and global/request-level concurrency limits.
-- Historical rates default per spending date; current mode uses the UTC calculation date; future historical dates use current rates and are provisional. Stale fallback must match context: fixed past-date quotes have no age limit, while current/future quotes expire after seven UTC calendar days. Without an eligible quote, debts returns retryable `503`; monthly source-currency summaries and CRUD remain available while only converted summaries become retryable unavailable.
+- Historical rates default per spending date; current mode uses the UTC calculation date; future historical dates use current rates and are provisional. Stale fallback must match context: fixed past-date quotes have no age limit, while current/future quotes expire after seven UTC calendar days. Without an eligible quote, debts returns retryable `503`; monthly source-currency summaries and CRUD remain available while the entire converted section becomes retryable unavailable. Converted summaries accumulate exact per-payer values, quantize final payer totals together to target minor units by truncation/descending remainder/ascending ID, and derive the group total as their exact sum.
 - Quantize final balances with largest signed remainder and participant-ID tie-breaking to preserve exact zero sum. Settlement is deterministic greedy, positive, pair-unique, complete, and at most `n - 1`, not globally minimal.
 - Validate the bounded Argon2id v19 admin hash before database connection/migration. Non-debug builds require secure cookies.
 - Every unsafe request, including login, requires exactly one valid session-backed CSRF token. Rotate session ID and CSRF on login; save before redirect; flush on logout; never evict authenticated sessions to satisfy capacity.
-- Every rendered unsafe form also carries one bounded, expiring, session-bound single-use submission token distinct from CSRF. Atomically reserve it immediately before dispatch; duplicate or invalid token use returns `409` and invokes no use case. Validation before dispatch does not consume it.
+- Every rendered unsafe form also carries one bounded, expiring, session-bound single-use submission token distinct from CSRF. One web-owned store separates 4,096 anonymous tokens (one per session, ten-minute inactivity expiry) from 1,024 authenticated tokens (32 per session, 30-minute absolute expiry), fails closed at capacity, and uses indexed cleanup. Session-expiry and token cleanup are mandatory supervisors whose failure fails readiness, stops admission, and initiates shutdown. Atomically reserve immediately before dispatch; reservation is terminal after one dispatch regardless of outcome, duplicate or invalid use returns `409`, and validation before dispatch does not consume the token.
 - Trust forwarding headers only from configured proxy CIDRs in the selected format. Never log credentials, hashes, cookies, session/CSRF IDs, limiter keys, SQL/database messages, values, identifiers, query strings, or provider URLs.
 - Preserve the supported topology: one process and one local WAL SQLite volume, `synchronous=FULL`, five-second busy/write-gate bounds, and no external writers or multiple app instances.
-- Keep probe admission separate from user traffic; readiness checks SQLite and mandatory supervisors, never Frankfurter or ledger contents. After mutation dispatch, return a definitive commit/rollback result rather than canceling on a generic timeout.
+- Keep probe admission separate from user traffic; readiness checks SQLite and mandatory supervisors, never Frankfurter or ledger contents. After mutation dispatch, do not cancel on a generic timeout. The root executor synchronously publishes authoritative Committed/RolledBack before response work; task failure is RolledBack only when established, otherwise Unknown triggers fatal shutdown and no automatic retry. Shutdown caps HTTP drain at ten seconds, then waits without a fixed total deadline until no mutation remains running before checkpoint and pool close.
 
 ---
 
@@ -124,4 +124,4 @@ _This file contains critical rules and patterns that AI agents must follow when 
 - Keep this file lean and agent-focused; update it when the stack or normative patterns change.
 - Periodically remove obsolete or now-obvious guidance.
 
-Last Updated: 2026-08-08
+Last Updated: 2026-08-11

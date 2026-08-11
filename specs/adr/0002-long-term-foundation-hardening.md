@@ -13,7 +13,7 @@ The foundation is intentionally single-process, single-administrator, local SQLi
 1. Preserve the one-process, one-admin, local-SQLite topology. Horizontal scaling, shared sessions, external writers, and persistent migration compatibility remain out of scope before first release.
 2. Pin the tested Rust toolchain to `1.97.1`. CI uses the pinned toolchain rather than moving stable.
 3. Keep `thiserror` for typed domain/application failures and `anyhow` only at the root process boundary. No error-framework replacement is justified.
-4. Move raw spending parsing, payer/share policy, allocation construction, and eligibility orchestration into application commands. Web decodes transport fields only.
+4. Move raw spending parsing, payer/share policy, allocation construction, and eligibility orchestration into application commands. Web decodes transport fields only. Proportional weights use the bounded integer-ratio procedure fixed by `specs/design.md`, and Preview and commit share that operation.
 5. Cap authenticated sessions at 32 without eviction. A full-cap correct-password login flushes the anonymous session and returns retryable `503`; existing authenticated sessions are never evicted.
 6. Cap stable historical rate contexts at 4,096 with deterministic standard-library LRU indexing. Cache eviction can refetch only.
 7. Use 25-item keyset pagination for ordinary spending history and direct complete aggregate reads for detail/edit/delete. Full snapshots remain reserved for debt calculation.

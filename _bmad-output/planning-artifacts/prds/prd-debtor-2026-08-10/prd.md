@@ -2,7 +2,7 @@
 title: Debtor Product Requirements Document
 status: final
 created: 2026-08-10
-updated: 2026-08-10
+updated: 2026-08-11
 ---
 
 # Debtor Product Requirements Document
@@ -121,7 +121,7 @@ The Administrator can sign in with one configured password, remain authenticated
 - Anonymous visitors cannot view Groups or ledger data.
 - Restarting Debtor ends existing authenticated sessions.
 - Login and all state-changing actions reject requests that lack valid request protection.
-- Every unsafe form has one bounded, expiring, session-bound single-use submission token in addition to CSRF. Exactly one request can reserve it for dispatch; duplicate or invalid token use returns a clear conflict state without a second mutation.
+- Every unsafe form has one bounded, expiring, session-bound single-use submission token in addition to CSRF. Anonymous tokens use a separate 4,096-token pool with one per session and ten-minute inactivity expiry; authenticated tokens use a 1,024-token pool with 32 per session and 30-minute absolute expiry. Exactly one request can reserve a token for dispatch; reservation is terminal regardless of outcome, and duplicate or invalid use returns a clear conflict state without a second mutation.
 
 ### Group And Participant Management
 
@@ -146,7 +146,7 @@ The Administrator can add, edit, archive, and restore Participants inside a Grou
 - There is no separate global Participant-management surface.
 - New Payers and Shares can use only active Participants owned by the selected Group.
 - Archived Participants remain visible in referenced history, Balances, and Settlement Transfers.
-- Archive is available and allowed only when a complete all-time Historical-mode calculation gives the Participant an exact zero Group Currency Balance. If required rates are unavailable without an eligible stale quote, archive remains blocked with retryable feedback and no state change.
+- Archive is available and allowed only when one immutable all-time Historical-mode ledger/time/quote context gives the Participant an exact zero Group Currency Balance and remains eligible at commit. If the ledger epoch, UTC date, quote eligibility, or required rates invalidate the attempt, archive remains blocked with retryable feedback and no state change. Rate evidence is not persisted, so a later attempt may observe a provider revision.
 - Restore remains available without a Balance check when a Participant returns to the Group.
 - Participant names are trimmed, non-empty, and no longer than 100 Unicode characters.
 - Participant colors use normalized `#RRGGBB` form. New Participant forms suggest a varied valid color that the Administrator can change.
@@ -175,8 +175,8 @@ Every accepted Spending preserves the Total exactly in Source Currency minor uni
 
 **Consequences:**
 - Totals and Payer/Share amounts must be positive, cannot exceed `999_999_999_999`, and must satisfy Source Currency precision; zero values, excess precision, duplicate Participants, or mismatched totals are rejected.
-- Proportional mode initially selects every active Participant with weight `1`, permits deselection, accepts positive decimal weights, displays resulting exact-currency amounts, and assigns residual minor units by largest fractional remainder with Participant ID as the tie-breaker.
-- Exact mode initially selects every active Participant with equal minor-unit Shares, permits deselection and amount editing, and displays the remaining or excess difference until the selected Shares equal the Total.
+- Proportional mode initially selects every active Participant with weight `1`, permits deselection, and accepts positive weights no greater than `1,000,000` with at most six fractional digits. Preview and commit use one checked integer-ratio operation and assign residual units by descending remainder with ascending Participant ID ties.
+- Exact mode initially selects every active Participant, divides total minor units by Participant count, assigns residual units in ascending Participant ID order, permits deselection and amount editing, and displays the remaining or excess difference until the selected Shares equal the Total.
 - A Spending update may retain an archived Participant only in the same existing Payer or Share role; it cannot introduce or change that archived Participant's role.
 
 #### FR-6: Review and maintain history
@@ -208,8 +208,8 @@ The Administrator can see the same current-month Group and per-Payer totals conv
 
 **Consequences:**
 - Future-dated Spendings use the latest current rate and are marked provisional.
-- A context-matching fixed past-date historical quote may be used without an age limit; a stale current or future-date quote may be used only through seven UTC calendar days after its effective fetch date. Every stale result carries a warning.
-- If a required quote is unavailable, only the converted summary reports a retryable failure; Source Currency totals, history, and ledger mutations remain usable.
+- A context-matching fixed past-date historical quote may be used without an age limit; current fallback selects the latest prior current-class quote for the pair, and future fallback also matches the original requested date. A stale current or future quote may be used inclusively through seven UTC calendar days after its prior fetch date. Every stale result carries a warning.
+- Converted values accumulate exactly per Payer and are quantized together to Group Currency minor units by truncation and descending remainder with ascending Participant ID ties; the Group total is their exact sum. If a required quote or checked conversion/aggregation/quantization is unavailable, the entire converted summary reports one retryable failure with no partial totals; Source Currency totals, history, and ledger mutations remain usable.
 
 ### All-Time Balances And Advisory Settlements
 
