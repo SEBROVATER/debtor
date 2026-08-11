@@ -3,6 +3,8 @@ id: SPEC-debtor
 companions:
   - glossary.md
   - ../../planning-artifacts/prds/prd-debtor-2026-08-10/addendum.md
+  - ../../planning-artifacts/ux-designs/ux-debtor-2026-08-10/DESIGN.md
+  - ../../planning-artifacts/ux-designs/ux-debtor-2026-08-10/EXPERIENCE.md
   - ../../../specs/design.md
   - ../../project-context.md
 sources:

@@ -25,6 +25,23 @@ The experience is mobile-first and supports one-handed use from 320 CSS pixels t
 
 Debtor stays deliberately small: every destination or control serves a confirmed Administrator job. Trust comes from committed history, preserved identity, complete-or-no-result calculations, and visible calculation context.
 
+## Stable UX Contract Registry
+
+These identifiers are stable implementation and acceptance-test references. They bundle authoritative clauses from this document and `DESIGN.md`; the identifiers do not replace those clauses and must not be recycled for incompatible behavior.
+
+| ID | Contract bundle | Authoritative sections |
+|---|---|---|
+| `UX-SHELL-01` | Group/page shell, five-destination order, native routing, active/archived behavior, and Add Spending placement | Information Architecture; Global Shell and Navigation; `DESIGN.md` Layout & Spacing and Components |
+| `UX-TARGET-01` | Every interactive target is at least 48 by 48 CSS pixels at 320px and 400% zoom, without inline-link exceptions | Global Shell and Navigation; Accessibility Floor; `DESIGN.md` Components |
+| `UX-ALLOC-01` | Allocation-table semantics, labeled internal scrolling, exact 520/116/76/76/92/160 geometry, sticky Participant identity, and no page-level horizontal scroll | Spending and History; Accessibility Floor; `DESIGN.md` Layout & Spacing and Components |
+| `UX-FOCUS-01` | Stable server-owned focus IDs, forward-focus matrix, retained enhanced focus, and allow-listed return targets | Interaction Focus Matrix |
+| `UX-STATUS-01` | Stable scoped status nodes, polite atomic announcements, `aria-busy`, transition ownership, and alert exceptions | Financial Presentation; Requests and Calculation Modes; Accessibility Floor |
+| `UX-PREVIEW-NATIVE-01` | Native reviewed non-editable Preview, Edit allocation, and Approve limited to currently reviewed input | Spending and History; Financial Allocation |
+| `UX-PREVIEW-LATEST-01` | Enhanced latest-input-wins revisions, ignored superseded responses, derived-only swaps, and preserved interaction state | Spending and History; Financial Allocation; Interaction Primitives |
+| `UX-CONFIRM-01` | Full server-rendered confirmations for Spending delete, Participant archive, Group archive, and history-free Group delete | Lifecycle and Access; Interaction Primitives |
+| `UX-RESPONSIVE-01` | Narrow `100dvh` shell, intrinsic safe-area lower shell, wide normal-flow adaptation, and keyboard-aware focused form | Responsive & Platform; `DESIGN.md` Layout & Spacing |
+| `UX-VISUAL-01` | Dark Editorial Contrast tokens, typography, rules, square geometry, component states, and prohibited decorative motion/depth | `DESIGN.md` Brand & Style through Do's and Don'ts |
+
 ## Information Architecture
 
 | Surface | Reached from | Purpose |

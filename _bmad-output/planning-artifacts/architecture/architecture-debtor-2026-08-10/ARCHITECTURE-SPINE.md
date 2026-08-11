@@ -17,6 +17,8 @@ companions:
   - _bmad-output/project-context.md
   - _bmad-output/planning-artifacts/prds/prd-debtor-2026-08-10/prd.md
   - _bmad-output/planning-artifacts/prds/prd-debtor-2026-08-10/addendum.md
+  - _bmad-output/planning-artifacts/ux-designs/ux-debtor-2026-08-10/DESIGN.md
+  - _bmad-output/planning-artifacts/ux-designs/ux-debtor-2026-08-10/EXPERIENCE.md
 ---
 
 # Architecture Spine - Debtor
@@ -143,7 +145,7 @@ sequenceDiagram
 
 - **Binds:** web routes, forms, templates, static assets, and browser behavior
 - **Prevents:** client-only behavior and security drift between enhanced and native paths
-- **Rule:** Semantic server-rendered Askama HTML and native links/forms are authoritative. Self-hosted HTMX `2.0.10` and official `response-targets` `2.0.4` are the only client-side enhancement; expected enhanced `4xx`/`5xx` fragments target a stable announced status region. Exact official asset bytes and digests must be recorded and CI-verified before use; fixed asset routes serve the immutable mapped bytes with a fixed JavaScript media type and `X-Content-Type-Options: nosniff`. Custom JavaScript, custom HTMX extensions, inline scripts, and inline script attributes are forbidden. Core behavior remains functional without HTMX. Login and authenticated HTML send `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and `Content-Security-Policy: default-src 'none'; script-src 'self'; script-src-attr 'none'; connect-src 'self'; style-src 'self' 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`. Every web epic meets the browser, 320 CSS-pixel, keyboard, labeling, focus, contrast, and error-association acceptance criteria in `specs/design.md`.
+- **Rule:** Semantic server-rendered Askama HTML and native links/forms are authoritative. Self-hosted HTMX `2.0.10` and official `response-targets` `2.0.4` are the only client-side enhancement; expected enhanced `4xx`/`5xx` fragments target a stable announced status region. Exact official asset bytes and digests must be recorded and CI-verified before use; fixed asset routes serve the immutable mapped bytes with a fixed JavaScript media type and `X-Content-Type-Options: nosniff`. Custom JavaScript, custom HTMX extensions, inline scripts, and inline script attributes are forbidden. Core behavior remains functional without HTMX. Login and authenticated HTML send `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and `Content-Security-Policy: default-src 'none'; script-src 'self'; script-src-attr 'none'; connect-src 'self'; style-src 'self' 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`. Every web story meets the applicable AD-18 UX contracts in addition to the browser, security, semantic-HTML, native-fallback, and accessibility requirements in `specs/design.md`; generic claims of accessible or responsive behavior do not replace cited geometry, focus, announcement, state, zoom, and parity criteria.
 
 ### AD-12 - Single-process edge topology [ADOPTED]
 
@@ -195,6 +197,12 @@ flowchart LR
 - **Prevents:** independently built features introducing incompatible user or tenant identities
 - **Rule:** Debtor has exactly one administrator authenticated by a password gate. There is no username, registration, user table, tenant model, participant authentication, or multi-user authorization. Participants are accounting identities only.
 
+### AD-18 - Governed UX contracts and traceability [ADOPTED]
+
+- **Binds:** every web route, Askama template, rendering projection, CSS rule, native interaction, HTMX enhancement, and web acceptance test
+- **Prevents:** final UX contracts remaining advisory, story implementations omitting interaction requirements, and native/enhanced paths diverging
+- **Rule:** `specs/design.md` and accepted ADRs remain authoritative for product, security, accounting, and architecture invariants. Within that envelope, final `DESIGN.md` owns visual identity, tokens, component geometry, and responsive composition; final `EXPERIENCE.md` owns information architecture, interaction behavior, states, focus, announcements, and native/enhanced parity. Neither UX contract may silently override an upstream invariant; conflicts stop implementation until synchronized. Mockups, wireframes, imports, and `.working` artifacts are illustrative only. Every affected web story and acceptance test cites applicable stable `UX-*` IDs. A story is incomplete if it implements only one required path, viewport, state, or verification dimension.
+
 ## Consistency Conventions
 
 | Concern | Convention |
@@ -207,7 +215,7 @@ flowchart LR
 | Errors | `thiserror` for typed domain, application, and adapter errors; `anyhow` only at the root process boundary. |
 | Persistence | Checked SQLx queries, committed offline metadata, Rust-owned canonical decimal validation, no SQL monetary aggregation. |
 | HTTP mutations | Strict shared extraction, `422` with retained input for validation, `303` after success, `409` for lifecycle/epoch/submission-token conflicts, and `429` for login limiting. |
-| Source precedence | `specs/design.md` is normative, accepted ADRs record its decisions, this spine constrains epic architecture, and superseded scaffold code has no authority over any of them. |
+| Source precedence | `specs/design.md` is normative and accepted ADRs record its decisions. This spine constrains epic architecture; final `DESIGN.md` and `EXPERIENCE.md` govern visual and interaction details within that envelope. Superseded scaffold code, mockups, and working artifacts have no authority over them. |
 | Change authority | Update `specs/design.md` before behavior changes; synchronize ADRs, configuration examples, migrations, tests, and SQLx metadata. |
 | Compatibility | Before first deployment, remove superseded APIs, routes, configuration, and schema paths rather than add compatibility shims. |
 
@@ -267,7 +275,7 @@ First release uses Frankfurter v2 behind the application-owned `ExchangeRateProv
 | Debts and advisory settlements | Domain calculation, application orchestration, infra snapshot/rate adapters | AD-3, AD-7, AD-9 |
 | Authentication and unsafe forms | Application admission orchestration, infra password adapter, web session/CSRF/token boundary | AD-10, AD-13, AD-14 |
 | Administrator identity boundary | Password-gate use case, web session boundary, root configuration | AD-10, AD-17 |
-| Native and enhanced HTML | Web routes, Askama templates, static assets | AD-11 |
+| Native and enhanced HTML | Web routes, Askama templates, rendering projections, CSS, static assets, and web acceptance tests | AD-11, AD-18 |
 | Persistence and concurrency | Infra `SqliteLedgerRuntime`; root singleton composition | AD-6, AD-13 |
 | Deployment and edge security | Root runtime and external sanitizing proxy | AD-12, AD-14 |
 | Failures, logs, probes, lifecycle | All adapters; root supervision and lifecycle | AD-14, AD-15, AD-16 |
