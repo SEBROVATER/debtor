@@ -10,6 +10,10 @@ pub struct LoginTemplate<'a> {
     pub error: Option<&'a str>,
     /// CSRF token.
     pub csrf: &'a str,
+    /// Single-use anonymous Login submission token.
+    pub submission_token: &'a str,
+    /// Whether forward/recovery focus should land on the heading.
+    pub focus_heading: bool,
 }
 
 /// Generic escaped error page.
@@ -18,6 +22,8 @@ pub struct LoginTemplate<'a> {
 pub struct ErrorTemplate<'a> {
     /// Status-safe message.
     pub message: &'a str,
+    /// Whether the error can be retried from the anonymous Login route.
+    pub login_recovery: bool,
 }
 
 /// Group list page.

@@ -19,9 +19,9 @@
       <p class="error" role="alert">{{ message }}</p>
       {% when None %}{% endmatch %}
       {% if archived %}
-      <h1>Archived groups</h1>
+       <h1 id="groups-heading" tabindex="-1" autofocus>Archived groups</h1>
       {% else %}
-      <h1>Groups</h1>
+       <h1 id="groups-heading" tabindex="-1" autofocus>Groups</h1>
       <form method="post" action="/groups" class="inline-form">
         <input type="hidden" name="csrf" value="{{ csrf }}" /><label
           >Name <input name="name" value="{{ create_name }}" required /></label

@@ -40,6 +40,16 @@ impl Config {
             lookup("APP_SESSION_COOKIE_NAME").unwrap_or_else(|| "debtor_session".to_owned());
         validate_cookie_name(&session_cookie_name)?;
 
+        let trusted_proxy_cidrs = lookup("APP_TRUSTED_PROXY_CIDRS").unwrap_or_default();
+        let trusted_proxy_header = lookup("APP_TRUSTED_PROXY_HEADER").unwrap_or_default();
+        if !debug_assertions
+            && trusted_proxy_cidrs
+                .split(',')
+                .all(|value| value.trim().is_empty())
+        {
+            bail!("trusted proxy configuration is required outside debug builds");
+        }
+
         Ok(Self {
             database_url: lookup("APP_DATABASE_URL")
                 .unwrap_or_else(|| "sqlite://debtor.db?mode=rwc".to_owned()),
@@ -52,8 +62,8 @@ impl Config {
             session_cookie_name,
             exchange_base_url: lookup("APP_EXCHANGE_BASE_URL")
                 .unwrap_or_else(|| "https://api.frankfurter.dev/v2".to_owned()),
-            trusted_proxy_cidrs: lookup("APP_TRUSTED_PROXY_CIDRS").unwrap_or_default(),
-            trusted_proxy_header: lookup("APP_TRUSTED_PROXY_HEADER").unwrap_or_default(),
+            trusted_proxy_cidrs,
+            trusted_proxy_header,
         })
     }
 }
@@ -120,6 +130,32 @@ mod tests {
     }
 
     #[test]
+    fn production_requires_a_trusted_proxy_policy() {
+        assert!(config(&[("APP_ADMIN_PASSWORD_HASH", VALID_HASH)], false).is_err());
+        assert!(
+            config(
+                &[
+                    ("APP_ADMIN_PASSWORD_HASH", VALID_HASH),
+                    ("APP_TRUSTED_PROXY_CIDRS", "10.0.0.0/8"),
+                ],
+                false,
+            )
+            .is_ok()
+        );
+        assert!(
+            config(
+                &[
+                    ("APP_ADMIN_PASSWORD_HASH", VALID_HASH),
+                    ("APP_TRUSTED_PROXY_CIDRS", "10.0.0.0/8"),
+                    ("APP_TRUSTED_PROXY_HEADER", "forwarded"),
+                ],
+                false,
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
     fn requires_a_nonempty_password_hash() {
         assert!(config(&[], true).is_err());
         assert!(config(&[("APP_ADMIN_PASSWORD_HASH", " \t")], true).is_err());
@@ -165,16 +201,19 @@ mod tests {
 
     #[test]
     fn rejects_insecure_cookies_outside_debug_builds() {
-        assert!(
-            config(&[("APP_ADMIN_PASSWORD_HASH", VALID_HASH)], false)
-                .unwrap()
-                .cookie_secure
-        );
+        let production_proxy = [
+            ("APP_ADMIN_PASSWORD_HASH", VALID_HASH),
+            ("APP_TRUSTED_PROXY_CIDRS", "10.0.0.0/8"),
+            ("APP_TRUSTED_PROXY_HEADER", "forwarded"),
+        ];
+        assert!(config(&production_proxy, false).unwrap().cookie_secure);
         assert!(
             config(
                 &[
                     ("APP_ADMIN_PASSWORD_HASH", VALID_HASH),
                     ("APP_SESSION_COOKIE_SECURE", "false"),
+                    ("APP_TRUSTED_PROXY_CIDRS", "10.0.0.0/8"),
+                    ("APP_TRUSTED_PROXY_HEADER", "forwarded"),
                 ],
                 false,
             )

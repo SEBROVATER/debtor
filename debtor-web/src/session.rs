@@ -58,7 +58,8 @@ pub(crate) async fn matches_csrf(session: &Session, supplied: &str) -> Result<bo
 
 /// Rotates and durably establishes an authenticated session.
 pub(crate) async fn establish(session: &Session) -> Result<(), SessionError> {
-    // Preserve this order so no successful login redirects before its new state is durable.
+    // Cycle before saving so the authenticated record can never reuse the
+    // anonymous session identifier.
     session.cycle_id().await.map_err(|_| SessionError)?;
     session.set_expiry(Some(authenticated_expiry()));
     session

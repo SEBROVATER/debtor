@@ -27,24 +27,26 @@ const MUTATION_DEADLINE: Duration = Duration::from_secs(30);
 pub(crate) struct MutationPreflight {
     deadline: tokio::time::Instant,
     dispatched: Arc<AtomicBool>,
+    login_route: bool,
 }
 
 impl MutationPreflight {
-    fn new() -> Self {
+    fn new(login_route: bool) -> Self {
         Self {
             deadline: tokio::time::Instant::now() + MUTATION_DEADLINE,
             dispatched: Arc::new(AtomicBool::new(false)),
+            login_route,
         }
     }
 
     /// Runs one pre-dispatch operation within the request's remaining budget.
     pub(crate) async fn wait<T>(&self, future: impl Future<Output = T>) -> Result<T, Response> {
         if self.dispatched.load(Ordering::Acquire) {
-            return Err(timeout_response());
+            return Err(self.timeout_response());
         }
         tokio::time::timeout_at(self.deadline, future)
             .await
-            .map_err(|_| timeout_response())
+            .map_err(|_| self.timeout_response())
     }
 
     /// Irreversibly marks the request as dispatched to its state-changing operation.
@@ -53,16 +55,27 @@ impl MutationPreflight {
         if tokio::time::Instant::now() >= self.deadline
             || self.dispatched.swap(true, Ordering::AcqRel)
         {
-            return Err(timeout_response());
+            return Err(self.timeout_response());
         }
         Ok(())
+    }
+
+    fn timeout_response(&self) -> Response {
+        if self.login_route {
+            crate::handlers::response::login_timeout()
+        } else {
+            timeout_response()
+        }
     }
 }
 
 /// Adds one preflight object to protected unsafe requests only.
 pub async fn mutation_preflight(mut request: Request<Body>, next: Next) -> Response {
     if !matches!(*request.method(), Method::GET | Method::HEAD) {
-        request.extensions_mut().insert(MutationPreflight::new());
+        let login_route = request.uri().path() == "/login";
+        request
+            .extensions_mut()
+            .insert(MutationPreflight::new(login_route));
     }
     next.run(request).await
 }
@@ -104,7 +117,7 @@ pub async fn security_headers(request: Request<Body>, next: Next) -> Response {
     headers.insert(
         "content-security-policy",
         HeaderValue::from_static(
-            "default-src 'none'; script-src 'none'; style-src 'self' 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+            "default-src 'none'; script-src 'self'; script-src-attr 'none'; connect-src 'self'; style-src 'self' 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
         ),
     );
     response
@@ -201,9 +214,12 @@ async fn safe_read_timeout_with_limits(
 
 /// Applies the fixed login request deadline.
 pub async fn login_timeout(request: Request<Body>, next: Next) -> Response {
+    if request.method() == Method::POST {
+        return next.run(request).await;
+    }
     match tokio::time::timeout(Duration::from_secs(30), next.run(request)).await {
         Ok(response) => response,
-        Err(_) => timeout_response(),
+        Err(_) => login_timeout_response(),
     }
 }
 
@@ -217,6 +233,13 @@ pub async fn probe_timeout(request: Request<Body>, next: Next) -> Response {
 
 fn timeout_response() -> Response {
     (StatusCode::GATEWAY_TIMEOUT, "Request timed out.").into_response()
+}
+
+fn login_timeout_response() -> Response {
+    crate::handlers::response::login_error_response(
+        StatusCode::GATEWAY_TIMEOUT,
+        "Sign-in request timed out. Try again.",
+    )
 }
 
 #[cfg(test)]

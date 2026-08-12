@@ -50,6 +50,7 @@ pub fn router_with_sessions<S: SessionStore + Clone>(
         .route("/login", get(handlers::login_form).post(handlers::login))
         .layer(middleware::from_fn(app_middleware::security_headers))
         .layer(sessions.clone())
+        .layer(middleware::from_fn(app_middleware::mutation_preflight))
         .layer(middleware::from_fn(app_middleware::login_timeout))
         .layer(RequestBodyLimitLayer::new(8 * 1024))
         .layer(
@@ -149,6 +150,7 @@ mod tests {
         },
         response::Response,
     };
+    use debtor_application::LoginAdmission;
     use debtor_domain::currency::Currency;
     use tower::ServiceExt;
     use tower_sessions::{
@@ -158,7 +160,8 @@ mod tests {
 
     use super::{router, router_with_sessions};
     use crate::handlers::test_support::{
-        TestState, state, state_with_errors, state_with_readiness_failure,
+        TestState, state, state_with_errors, state_with_login_admission, state_with_password,
+        state_with_readiness_failure,
     };
     use crate::{
         session,
@@ -248,6 +251,16 @@ mod tests {
             .to_owned()
     }
 
+    fn submission_token(body: &str) -> String {
+        let marker = "name=\"submission_token\" value=\"";
+        let start = body.find(marker).expect("submission token field") + marker.len();
+        body[start..]
+            .split('"')
+            .next()
+            .expect("submission token value")
+            .to_owned()
+    }
+
     async fn login(app: &axum::Router) -> String {
         let response = app
             .clone()
@@ -255,13 +268,15 @@ mod tests {
             .await
             .expect("login form response");
         let cookie = session_cookie(&response);
-        let token = csrf(&response_body(response).await);
+        let body = response_body(response).await;
+        let token = csrf(&body);
+        let submission = submission_token(&body);
         let response = app
             .clone()
             .oneshot(request(
                 Method::POST,
                 "/login",
-                &format!("csrf={token}&password=correct"),
+                &format!("csrf={token}&submission_token={submission}&password=correct"),
                 Some(&cookie),
             ))
             .await
@@ -325,21 +340,25 @@ mod tests {
                 .await
                 .expect("login form response");
             let cookie = session_cookie(&response);
-            let token = csrf(&response_body(response).await);
-            submissions.push((cookie, token));
+            let body = response_body(response).await;
+            let token = csrf(&body);
+            let submission = submission_token(&body);
+            submissions.push((cookie, token, submission));
         }
-        let [(first_cookie, first_token), (second_cookie, second_token)]: [(String, String); 2] =
-            submissions.try_into().expect("two login submissions");
+        let [
+            (first_cookie, first_token, first_submission),
+            (second_cookie, second_token, second_submission),
+        ]: [(String, String, String); 2] = submissions.try_into().expect("two login submissions");
         let first = app.clone().oneshot(request(
             Method::POST,
             "/login",
-            &format!("csrf={first_token}&password=correct"),
+            &format!("csrf={first_token}&submission_token={first_submission}&password=correct"),
             Some(&first_cookie),
         ));
         let second = app.clone().oneshot(request(
             Method::POST,
             "/login",
-            &format!("csrf={second_token}&password=correct"),
+            &format!("csrf={second_token}&submission_token={second_submission}&password=correct"),
             Some(&second_cookie),
         ));
         let (first, second) = tokio::join!(first, second);
@@ -364,7 +383,7 @@ mod tests {
         );
         assert_eq!(
             store.counts().await,
-            (AUTHENTICATED_CAPACITY, 0, AUTHENTICATED_CAPACITY)
+            (AUTHENTICATED_CAPACITY + 1, 1, AUTHENTICATED_CAPACITY)
         );
         assert_eq!(
             test_state
@@ -799,13 +818,37 @@ mod tests {
             .expect("login response");
         assert_security_headers(&response);
         let login_cookie = session_cookie(&response);
+        let set_cookie = response
+            .headers()
+            .get(SET_COOKIE)
+            .expect("set-cookie")
+            .to_str()
+            .expect("cookie header");
+        assert!(set_cookie.contains("HttpOnly"));
+        assert!(set_cookie.contains("SameSite=Strict"));
+        assert!(!set_cookie.contains("Secure"));
         let login_body = response_body(response).await;
+        assert_eq!(login_body.matches("name=\"csrf\"").count(), 1);
+        assert_eq!(login_body.matches("name=\"submission_token\"").count(), 1);
+        assert!(login_body.contains("id=\"sign-in-heading\""));
+        assert!(login_body.contains("role=\"status\""));
+        assert!(login_body.contains("aria-live=\"polite\""));
+        assert!(login_body.contains("aria-busy=\"false\""));
+        assert!(login_body.contains("for=\"password\""));
+        assert!(login_body.contains("action=\"/login\""));
+        assert!(!login_body.contains("name=\"username\""));
+        assert!(login_body.contains("autofocus"));
+        assert_ne!(csrf(&login_body), submission_token(&login_body));
         let response = app
             .clone()
             .oneshot(request(
                 Method::POST,
                 "/login",
-                &format!("csrf={}&password=correct", csrf(&login_body)),
+                &format!(
+                    "csrf={}&submission_token={}&password=correct",
+                    csrf(&login_body),
+                    submission_token(&login_body)
+                ),
                 Some(&login_cookie),
             ))
             .await
@@ -821,6 +864,220 @@ mod tests {
             .await
             .expect("authenticated response");
         assert_security_headers(&response);
+    }
+
+    #[tokio::test]
+    async fn login_rejects_unknown_submission_without_authentication() {
+        let test_state = state(false);
+        let app = app(&test_state);
+        let response = app
+            .clone()
+            .oneshot(request(Method::GET, "/login", "", None))
+            .await
+            .expect("login response");
+        let cookie = session_cookie(&response);
+        let body = response_body(response).await;
+        let response = app
+            .oneshot(request(
+                Method::POST,
+                "/login",
+                &format!(
+                    "csrf={}&submission_token=unknown&password=correct",
+                    csrf(&body)
+                ),
+                Some(&cookie),
+            ))
+            .await
+            .expect("conflict response");
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            test_state
+                .auth_attempts
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert_eq!(
+            test_state
+                .password_verifications
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_password_consumes_token_and_renders_fresh_recovery() {
+        let test_state = state_with_password(false);
+        let app = app(&test_state);
+        let response = app
+            .clone()
+            .oneshot(request(Method::GET, "/login", "", None))
+            .await
+            .expect("login response");
+        let cookie = session_cookie(&response);
+        let body = response_body(response).await;
+        let csrf_token = csrf(&body);
+        let token = submission_token(&body);
+        let response = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                "/login",
+                &format!("csrf={csrf_token}&submission_token={token}&password=wrong"),
+                Some(&cookie),
+            ))
+            .await
+            .expect("invalid password response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        assert!(body.contains("Invalid password."));
+        assert_ne!(submission_token(&body), token);
+        assert_eq!(
+            test_state
+                .auth_attempts
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        assert_eq!(
+            test_state
+                .password_verifications
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_login_fields_do_not_consume_a_valid_token() {
+        let test_state = state(false);
+        let app = app(&test_state);
+        let response = app
+            .clone()
+            .oneshot(request(Method::GET, "/login", "", None))
+            .await
+            .expect("login response");
+        let cookie = session_cookie(&response);
+        let body = response_body(response).await;
+        let csrf_token = csrf(&body);
+        let token = submission_token(&body);
+        let response = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                "/login",
+                &format!("csrf={csrf_token}&submission_token={token}"),
+                Some(&cookie),
+            ))
+            .await
+            .expect("malformed response");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            test_state
+                .auth_attempts
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+
+        let response = app
+            .oneshot(request(
+                Method::POST,
+                "/login",
+                &format!("csrf={csrf_token}&submission_token={token}&password=correct"),
+                Some(&cookie),
+            ))
+            .await
+            .expect("reused token response");
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    }
+
+    #[tokio::test]
+    async fn login_markup_contains_native_and_pending_enhancement_contract() {
+        let test_state = state(false);
+        let app = app(&test_state);
+        let response = app
+            .oneshot(request(Method::GET, "/login", "", None))
+            .await
+            .expect("login response");
+        let body = response_body(response).await;
+        assert!(body.contains("/static/htmx.min.js"));
+        assert!(body.contains("hx-post=\"/login\""));
+        assert!(body.contains("hx-disabled-elt=\"button\""));
+        assert!(body.contains("id=\"login-form-region\""));
+        assert!(body.contains("aria-busy=\"false\""));
+    }
+
+    #[tokio::test]
+    async fn rate_limited_login_returns_retry_after_and_fresh_recovery() {
+        let test_state = state_with_login_admission(LoginAdmission::RetryAfter(17));
+        let app = app(&test_state);
+        let response = app
+            .clone()
+            .oneshot(request(Method::GET, "/login", "", None))
+            .await
+            .expect("login response");
+        let cookie = session_cookie(&response);
+        let body = response_body(response).await;
+        let response = app
+            .oneshot(request(
+                Method::POST,
+                "/login",
+                &format!(
+                    "csrf={}&submission_token={}&password=correct",
+                    csrf(&body),
+                    submission_token(&body)
+                ),
+                Some(&cookie),
+            ))
+            .await
+            .expect("rate-limit response");
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            response.headers().get("retry-after"),
+            Some(&HeaderValue::from_static("17"))
+        );
+        let body = response_body(response).await;
+        assert!(body.contains("Too many login attempts."));
+        assert_eq!(
+            test_state
+                .password_verifications
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert_eq!(body.matches("name=\"submission_token\"").count(), 1);
+    }
+
+    #[tokio::test]
+    async fn authenticated_login_requests_redirect_without_downgrading_session() {
+        let test_state = state(false);
+        let store = ReapingMemoryStore::default();
+        let session = tower_sessions::Session::new(
+            None,
+            Arc::new(store.clone()),
+            Some(session::anonymous_expiry()),
+        );
+        session
+            .insert("authenticated", true)
+            .await
+            .expect("authenticated marker");
+        session.set_expiry(Some(session::authenticated_expiry()));
+        session.save().await.expect("save session");
+        let id = session.id().expect("session id");
+        let cookie = format!("{}={}", "id", id);
+
+        let response = router_with_sessions(
+            test_state.app,
+            SessionManagerLayer::new(store)
+                .with_secure(false)
+                .with_expiry(session::anonymous_expiry())
+                .with_always_save(true),
+            Arc::new(tokio::sync::Semaphore::new(64)),
+        )
+        .oneshot(request(Method::GET, "/login", "", Some(&cookie)))
+        .await
+        .expect("authenticated login response");
+
+        assert!(matches!(
+            response.status(),
+            StatusCode::OK | StatusCode::SEE_OTHER
+        ));
     }
 
     #[tokio::test]
@@ -884,7 +1141,7 @@ mod tests {
                 .headers()
                 .get("content-security-policy")
                 .expect("CSP header"),
-            "default-src 'none'; script-src 'none'; style-src 'self' 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+            "default-src 'none'; script-src 'self'; script-src-attr 'none'; connect-src 'self'; style-src 'self' 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
         );
     }
 }

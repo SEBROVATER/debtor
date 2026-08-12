@@ -56,6 +56,7 @@ Ordinary group expense history is rendered as 25-item keyset pages ordered by da
 The Rust process remains behind a private-interface reverse proxy. TLS, certificates, HTTP/3, `Alt-Svc`, and HTTP/2 or HTTP/1.1 fallback terminate at the edge; Caddy is not a runtime dependency. See the non-normative [Caddy example](deploy/Caddyfile.example).
 
 - Set `APP_TRUSTED_PROXY_CIDRS` to the edge's backend source CIDR and `APP_TRUSTED_PROXY_HEADER=x-forwarded-for` only when the edge replaces untrusted forwarding input.
+- Non-debug startup requires both a nonempty `APP_TRUSTED_PROXY_CIDRS` and exactly one supported `APP_TRUSTED_PROXY_HEADER`; direct-peer fallback is debug/local only.
 - Reject unsafe marked early-data requests with `425 Too Early`, or disable early data. `GET` and `HEAD` are the only safe exception.
 - Keep backend HTTP/1.1 connection reuse enabled. A bounded dial or response-header timeout is acceptable, but do not set a post-dispatch mutation timeout shorter than Debtor's definitive commit/rollback path.
 - Enforce edge limits no larger than 8 KiB for `/login` and 256 KiB for other forms.

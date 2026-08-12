@@ -16,12 +16,15 @@ use debtor_domain::{
 };
 
 use crate::state::{AppState, TrustedProxyConfig};
+use crate::submission_tokens::AnonymousSubmissionTokenStore;
 
 pub(crate) struct TestState {
     pub(crate) app: AppState,
     pub(crate) groups: Arc<FakeGroups>,
     pub(crate) participants: Arc<FakeParticipants>,
     pub(crate) auth_resets: Arc<AtomicUsize>,
+    pub(crate) auth_attempts: Arc<AtomicUsize>,
+    pub(crate) password_verifications: Arc<AtomicUsize>,
 }
 
 pub(crate) struct FakeGroups {
@@ -43,7 +46,16 @@ pub(crate) struct FakeParticipants {
 }
 
 pub(crate) fn state(archived: bool) -> TestState {
-    state_with_errors(archived, false, false, false, false, false)
+    state_with_errors_and_password(
+        archived,
+        false,
+        false,
+        false,
+        false,
+        false,
+        LoginAdmission::Allowed,
+        true,
+    )
 }
 
 pub(crate) fn state_with_errors(
@@ -53,6 +65,46 @@ pub(crate) fn state_with_errors(
     participant_create_validation_error: bool,
     participant_update_validation_error: bool,
     group_create_participant_validation_error: bool,
+) -> TestState {
+    state_with_errors_and_password(
+        archived,
+        group_create_validation_error,
+        group_update_validation_error,
+        participant_create_validation_error,
+        participant_update_validation_error,
+        group_create_participant_validation_error,
+        LoginAdmission::Allowed,
+        true,
+    )
+}
+
+pub(crate) fn state_with_password(valid: bool) -> TestState {
+    state_with_errors_and_password(
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        LoginAdmission::Allowed,
+        valid,
+    )
+}
+
+pub(crate) fn state_with_login_admission(admission: LoginAdmission) -> TestState {
+    state_with_errors_and_password(false, false, false, false, false, false, admission, true)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn state_with_errors_and_password(
+    archived: bool,
+    group_create_validation_error: bool,
+    group_update_validation_error: bool,
+    participant_create_validation_error: bool,
+    participant_update_validation_error: bool,
+    group_create_participant_validation_error: bool,
+    login_admission: LoginAdmission,
+    password_valid: bool,
 ) -> TestState {
     let groups = Arc::new(FakeGroups {
         group: Group {
@@ -82,10 +134,17 @@ pub(crate) fn state_with_errors(
     });
     let spendings: Arc<dyn SpendingUseCases> = Arc::new(FakeSpendings);
     let debts: Arc<dyn DebtUseCases> = Arc::new(FakeDebts);
-    let password: Arc<dyn PasswordVerifier> = Arc::new(FakePassword { valid: true });
+    let auth_attempts = Arc::new(AtomicUsize::new(0));
+    let password_verifications = Arc::new(AtomicUsize::new(0));
+    let password: Arc<dyn PasswordVerifier> = Arc::new(FakePassword {
+        valid: password_valid,
+        verifications: password_verifications.clone(),
+    });
     let auth_resets = Arc::new(AtomicUsize::new(0));
     let limiter: Arc<dyn LoginAttemptLimiter> = Arc::new(FakeLimiter {
         resets: auth_resets.clone(),
+        attempts: auth_attempts.clone(),
+        admission: login_admission,
     });
     let authentication: Arc<dyn AuthenticationUseCases> =
         Arc::new(AuthenticationService::new(limiter, password));
@@ -102,10 +161,13 @@ pub(crate) fn state_with_errors(
             clock,
             readiness: Arc::new(FakeReadiness { healthy: true }),
             proxy: TrustedProxyConfig::default(),
+            submission_tokens: AnonymousSubmissionTokenStore::default(),
         },
         groups,
         participants,
         auth_resets,
+        auth_attempts,
+        password_verifications,
     }
 }
 
@@ -306,23 +368,28 @@ impl DebtUseCases for FakeDebts {
 
 struct FakePassword {
     valid: bool,
+    verifications: Arc<AtomicUsize>,
 }
 
 #[async_trait]
 impl PasswordVerifier for FakePassword {
     async fn verify(&self, _: &str) -> Result<bool, ApplicationError> {
+        self.verifications.fetch_add(1, Ordering::SeqCst);
         Ok(self.valid)
     }
 }
 
 struct FakeLimiter {
     resets: Arc<AtomicUsize>,
+    attempts: Arc<AtomicUsize>,
+    admission: LoginAdmission,
 }
 
 #[async_trait]
 impl LoginAttemptLimiter for FakeLimiter {
     async fn reserve(&self, _: std::net::IpAddr) -> LoginAdmission {
-        LoginAdmission::Allowed
+        self.attempts.fetch_add(1, Ordering::SeqCst);
+        self.admission
     }
 
     async fn reset(&self, _: std::net::IpAddr) {

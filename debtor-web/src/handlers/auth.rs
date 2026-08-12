@@ -7,7 +7,10 @@ use debtor_application::AuthenticationAttempt;
 use tower_sessions::Session;
 
 use super::response::error_response;
-use crate::{forms::CsrfValidatedForm, session, state::AppState, templates::LoginTemplate};
+use crate::{
+    forms::CsrfValidatedForm, session, state::AppState, submission_tokens::ReserveError,
+    templates::LoginTemplate,
+};
 
 pub(crate) async fn root(session: Session) -> Response {
     match require_auth(&session).await {
@@ -16,10 +19,15 @@ pub(crate) async fn root(session: Session) -> Response {
     }
 }
 
-pub(crate) async fn login_form(session: Session) -> Response {
-    login_page(&session, None).await
+pub(crate) async fn login_form(State(state): State<AppState>, session: Session) -> Response {
+    match session::authenticated(&session).await {
+        Ok(true) => Redirect::to("/groups").into_response(),
+        Ok(false) => login_page(&state, &session, None, true).await,
+        Err(_) => super::response::session_error(),
+    }
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn login(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
@@ -27,19 +35,65 @@ pub(crate) async fn login(
     session: Session,
     form: CsrfValidatedForm,
 ) -> Response {
+    match session::authenticated(&session).await {
+        Ok(true) => return Redirect::to("/groups").into_response(),
+        Ok(false) => {}
+        Err(_) => return super::response::login_session_error(),
+    }
     let ordered = form.ordered();
-    let fields = match ordered.required_fields(&["csrf", "password"]) {
-        Ok(fields) => fields,
-        Err(message) => return error_response(StatusCode::BAD_REQUEST, message),
+    let mut csrf_seen = false;
+    let mut password = None;
+    let mut submission_token = None;
+    for (key, value) in &ordered.0 {
+        match key.as_str() {
+            "csrf" if !csrf_seen => csrf_seen = true,
+            "password" if password.is_none() => password = Some(value.as_str()),
+            "submission_token" if submission_token.is_none() => {
+                submission_token = Some(value.as_str());
+            }
+            _ => {
+                return super::response::login_error_response(
+                    StatusCode::BAD_REQUEST,
+                    "Malformed form submission.",
+                );
+            }
+        }
+    }
+    let Some(password) = password else {
+        return super::response::login_error_response(
+            StatusCode::BAD_REQUEST,
+            "Malformed form submission.",
+        );
     };
-    let password = fields
-        .iter()
-        .find(|(key, _)| *key == "password")
-        .map_or("", |(_, value)| *value);
+    let Some(submission_token) = submission_token else {
+        return super::response::login_token_conflict();
+    };
+    if !csrf_seen {
+        return super::response::login_error_response(
+            StatusCode::BAD_REQUEST,
+            "Malformed form submission.",
+        );
+    }
     let client = match state.proxy.resolve(peer, &headers) {
         Ok(ip) => ip,
-        Err(message) => return error_response(StatusCode::BAD_REQUEST, &message),
+        Err(message) => {
+            return super::response::login_error_response(StatusCode::BAD_REQUEST, &message);
+        }
     };
+    let Some(session_id) = session.id() else {
+        return super::response::login_session_error();
+    };
+    match state
+        .submission_tokens
+        .reserve_and_dispatch(session_id, submission_token, || {
+            form.dispatch().map_err(|_| ())
+        })
+        .await
+    {
+        Ok(()) => {}
+        Err(ReserveError::Conflict) => return super::response::login_token_conflict(),
+        Err(ReserveError::Deadline) => return super::response::login_timeout(),
+    }
     match state.authentication.attempt(client, password).await {
         Ok(AuthenticationAttempt::RetryAfter(seconds)) => {
             tracing::warn!(
@@ -48,10 +102,18 @@ pub(crate) async fn login(
                 category = "attempt_window",
                 count = 1_u64,
             );
-            let mut response = error_response(
-                StatusCode::TOO_MANY_REQUESTS,
-                "Too many login attempts. Try again later.",
-            );
+            let response = login_page(
+                &state,
+                &session,
+                Some("Too many login attempts. Try again later."),
+                true,
+            )
+            .await;
+            if response.status().is_server_error() {
+                return response;
+            }
+            let mut response =
+                super::response::with_status(response, StatusCode::TOO_MANY_REQUESTS);
             response.headers_mut().insert(
                 "retry-after",
                 HeaderValue::from_str(&seconds.to_string())
@@ -61,18 +123,33 @@ pub(crate) async fn login(
         }
         Ok(AuthenticationAttempt::Authenticated) => {
             if session::establish(&session).await.is_err() {
-                let _ = session::flush(&session).await;
-                return super::response::session_unavailable();
+                if session::flush(&session).await.is_err() {
+                    return super::response::login_session_error();
+                }
+                let response = login_page(
+                    &state,
+                    &session,
+                    Some("Sign-in is temporarily unavailable. Try again."),
+                    true,
+                )
+                .await;
+                return super::response::with_status(response, StatusCode::SERVICE_UNAVAILABLE);
             }
             state.authentication.complete_login(client).await;
             Redirect::to("/groups").into_response()
         }
         Ok(AuthenticationAttempt::InvalidPassword) => {
-            login_page(&session, Some("Invalid password.")).await
+            login_page(&state, &session, Some("Invalid password."), true).await
         }
-        Err(_) => error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Authentication service unavailable.",
+        Err(_) => super::response::with_status(
+            login_page(
+                &state,
+                &session,
+                Some("Authentication service unavailable."),
+                true,
+            )
+            .await,
+            StatusCode::SERVICE_UNAVAILABLE,
         ),
     }
 }
@@ -91,18 +168,33 @@ pub(crate) async fn logout(session: Session, form: CsrfValidatedForm) -> Respons
     }
 }
 
-async fn login_page(session: &Session, error: Option<&str>) -> Response {
-    let new_session = session.id().is_none();
-    let token = match csrf(session).await {
-        Ok(token) => token,
-        Err(response) => return response,
+async fn login_page(
+    state: &AppState,
+    session: &Session,
+    error: Option<&str>,
+    focus_heading: bool,
+) -> Response {
+    let Ok(token) = csrf(session).await else {
+        return super::response::login_session_error();
     };
-    if new_session && session.save().await.is_err() {
-        return super::response::session_unavailable();
+    session.set_expiry(Some(session::anonymous_expiry()));
+    if session.save().await.is_err() {
+        return super::response::login_session_unavailable();
     }
+    let Some(session_id) = session.id() else {
+        return super::response::login_session_unavailable();
+    };
+    let Ok(submission_token) = state.submission_tokens.issue(session_id).await else {
+        if session::flush(session).await.is_err() {
+            return super::response::login_session_error();
+        }
+        return super::response::login_session_unavailable();
+    };
     super::response::render(&LoginTemplate {
         error,
         csrf: &token,
+        submission_token: &submission_token,
+        focus_heading,
     })
 }
 
@@ -125,6 +217,7 @@ pub(super) async fn csrf(session: &Session) -> Result<String, Response> {
 mod tests {
     use std::{collections::HashMap, sync::Arc};
 
+    use axum::extract::State;
     use time::{Duration, OffsetDateTime};
     use tower_sessions::{
         Session, SessionStore,
@@ -150,7 +243,17 @@ mod tests {
         }
         let session = Session::new(None, Arc::new(store), Some(session::anonymous_expiry()));
 
-        let response = login_form(session).await;
+        let test_state = crate::handlers::test_support::state(false);
+        for session_id in 0..crate::submission_tokens::ANONYMOUS_CAPACITY {
+            test_state
+                .app
+                .submission_tokens
+                .issue(Id(session_id as i128))
+                .await
+                .expect("fill token capacity");
+        }
+        let state = test_state.app;
+        let response = login_form(State(state), session).await;
         assert_eq!(
             response.status(),
             axum::http::StatusCode::SERVICE_UNAVAILABLE

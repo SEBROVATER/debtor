@@ -6,7 +6,7 @@ mod groups;
 mod health;
 mod memberships;
 mod participants;
-mod response;
+pub(crate) mod response;
 mod spending_views;
 mod spendings;
 

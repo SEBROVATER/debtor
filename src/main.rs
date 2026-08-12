@@ -12,11 +12,16 @@ use config::Config;
 use runtime::{SignalReceivers, run_runtime};
 use startup_error::StartupError;
 
+fn listening_url(address: std::net::SocketAddr) -> String {
+    format!("http://{address}")
+}
+
 #[cfg(test)]
 use runtime::{
     CleanupHealth, ShutdownCoordinator, ShutdownTrigger, await_server_or_shutdown, checkpoint_pool,
     checkpoint_pool_with_timeout, cleanup_worker, close_pool, close_pool_with_timeout,
     drain_result, run_runtime_with_options, run_runtime_with_timeouts,
+    submission_token_cleanup_worker,
 };
 
 #[tokio::main]
@@ -50,10 +55,13 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .context("unable to bind APP_BIND")?;
+    let address = listener
+        .local_addr()
+        .context("unable to determine bound listener address")?;
     tracing::info!(
         target: "debtor.startup",
         event = "listening",
-        url = %format!("http://{}", bind),
+        url = %listening_url(address),
     );
     run_runtime(runtime, listener, signals).await
 }
@@ -97,7 +105,18 @@ mod composition_tests {
 
     fn database_path() -> PathBuf {
         let id = DATABASE_COUNTER.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!("debtor-slice13-{}-{id}.db", std::process::id()))
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "debtor-slice13-{}-{timestamp}-{id}.db",
+            std::process::id()
+        ))
+    }
+
+    fn database_url(path: &Path) -> String {
+        format!("sqlite://{}?mode=rwc", path.display())
     }
 
     fn config(path: &Path, password_hash: &str) -> Config {
@@ -119,12 +138,22 @@ mod composition_tests {
         let _ = std::fs::remove_file(format!("{}-shm", path.display()));
     }
 
+    #[test]
+    fn listening_url_uses_the_assigned_listener_address() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("test listener");
+        let address = listener.local_addr().expect("listener address");
+        assert_ne!(address.port(), 0);
+        assert_eq!(listening_url(address), format!("http://{address}"));
+    }
+
     fn runtime_with(app: Router, pool: sqlx::SqlitePool) -> crate::composition::BuiltApp {
         crate::composition::BuiltApp {
             app,
             pool,
             session_store: debtor_web::session_store::ReapingMemoryStore::default(),
             cleanup_health: CleanupHealth::new(),
+            submission_token_store:
+                debtor_web::submission_tokens::AnonymousSubmissionTokenStore::default(),
         }
     }
 
@@ -148,6 +177,16 @@ mod composition_tests {
             .split('"')
             .next()
             .expect("CSRF value")
+            .to_owned()
+    }
+
+    fn submission_token(body: &str) -> String {
+        let marker = "name=\"submission_token\" value=\"";
+        let start = body.find(marker).expect("submission token field") + marker.len();
+        body[start..]
+            .split('"')
+            .next()
+            .expect("submission token value")
             .to_owned()
     }
 
@@ -195,6 +234,19 @@ mod composition_tests {
             .await
             .expect("health response");
         assert_eq!(response.status(), StatusCode::OK);
+        let static_response = runtime
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/static/css/app.css")
+                    .body(Body::empty())
+                    .expect("static request"),
+            )
+            .await
+            .expect("static response");
+        assert_eq!(static_response.status(), StatusCode::OK);
+        assert!(static_response.headers().get("set-cookie").is_none());
         let readiness = runtime
             .app
             .oneshot(
@@ -207,6 +259,99 @@ mod composition_tests {
             .expect("readiness response");
         assert_eq!(readiness.status(), StatusCode::OK);
         assert!(path.exists());
+        remove_database(&path);
+    }
+
+    #[tokio::test]
+    async fn restarting_composed_application_reuses_migrations_and_database_state() {
+        let path = database_path();
+        let first = build_app(config(&path, VALID_HASH))
+            .await
+            .expect("first application");
+        sqlx::query("INSERT INTO groups (name, currency) VALUES ('Restarted', 'USD')")
+            .execute(&first.pool)
+            .await
+            .expect("persist restart state");
+        let first_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("first listener");
+        let first_address = first_listener.local_addr().expect("first address");
+        let first_coordinator = ShutdownCoordinator::default();
+        let first_server = tokio::spawn(run_runtime_with_options(
+            first,
+            first_listener,
+            SignalReceivers::install().expect("first signal handlers"),
+            first_coordinator.clone(),
+            Duration::from_mins(1),
+        ));
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .expect("HTTP client");
+        let response = client
+            .get(format!("http://{first_address}/healthz"))
+            .send()
+            .await
+            .expect("first health request");
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        first_coordinator.request(ShutdownTrigger::Signal).await;
+        assert!(first_server.await.expect("first server task").is_ok());
+
+        let verification_pool = debtor_infra::db::connect(&database_url(&path))
+            .await
+            .expect("verification database");
+        let first_migrations: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations")
+            .fetch_one(&verification_pool)
+            .await
+            .expect("first migration count");
+        let group_name: String =
+            sqlx::query_scalar("SELECT name FROM groups WHERE name = 'Restarted'")
+                .fetch_one(&verification_pool)
+                .await
+                .expect("restarted group");
+        assert!(first_migrations > 0);
+        assert_eq!(group_name, "Restarted");
+        assert!(close_pool(&verification_pool).await);
+
+        let second = build_app(config(&path, VALID_HASH))
+            .await
+            .expect("second application");
+        let second_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("second listener");
+        let second_address = second_listener.local_addr().expect("second address");
+        let second_coordinator = ShutdownCoordinator::default();
+        let second_server = tokio::spawn(run_runtime_with_options(
+            second,
+            second_listener,
+            SignalReceivers::install().expect("second signal handlers"),
+            second_coordinator.clone(),
+            Duration::from_mins(1),
+        ));
+        let response = client
+            .get(format!("http://{second_address}/healthz"))
+            .send()
+            .await
+            .expect("second health request");
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        second_coordinator.request(ShutdownTrigger::Signal).await;
+        assert!(second_server.await.expect("second server task").is_ok());
+
+        let reopened = debtor_infra::db::connect(&database_url(&path))
+            .await
+            .expect("reopened database");
+        let second_migrations: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations")
+            .fetch_one(&reopened)
+            .await
+            .expect("second migration count");
+        let group_name: String =
+            sqlx::query_scalar("SELECT name FROM groups WHERE name = 'Restarted'")
+                .fetch_one(&reopened)
+                .await
+                .expect("persisted restarted group");
+        assert_eq!(second_migrations, first_migrations);
+        assert_eq!(group_name, "Restarted");
+        assert!(close_pool(&reopened).await);
         remove_database(&path);
     }
 
@@ -251,12 +396,14 @@ mod composition_tests {
         let login_cookie = cookie_pair(&response);
         let login_body = response.text().await.expect("login form body");
         let token = csrf_token(&login_body);
+        let submission = submission_token(&login_body);
 
         let response = client
             .post(format!("{base_url}/login"))
             .header("cookie", &login_cookie)
             .form(&[
                 ("csrf", token.as_str()),
+                ("submission_token", submission.as_str()),
                 ("password", "correct horse battery staple"),
             ])
             .send()
@@ -347,6 +494,34 @@ mod composition_tests {
         assert_eq!(
             outcome.fatal_triggers,
             vec![ShutdownTrigger::CleanupFailure]
+        );
+    }
+
+    #[tokio::test]
+    async fn submission_token_cleanup_failure_uses_the_same_supervisor_boundary() {
+        #[derive(Clone)]
+        struct FailingTokens;
+
+        #[async_trait]
+        impl debtor_web::submission_tokens::SubmissionTokenCleanup for FailingTokens {
+            async fn cleanup_expired(&self) -> Result<(), ()> {
+                Err(())
+            }
+        }
+
+        let coordinator = ShutdownCoordinator::default();
+        let health = CleanupHealth::new();
+        submission_token_cleanup_worker(
+            FailingTokens,
+            coordinator.clone(),
+            health.clone(),
+            Duration::from_millis(1),
+        )
+        .await;
+        assert!(!health.is_healthy());
+        assert_eq!(
+            coordinator.outcome().await.first,
+            Some(ShutdownTrigger::CleanupFailure)
         );
     }
 
@@ -529,6 +704,44 @@ mod composition_tests {
             .expect("release snapshot");
         drop(reader);
         assert!(close_pool(&pool).await);
+
+        let runtime = build_app(config(&path, VALID_HASH))
+            .await
+            .expect("rebuild application after recovery");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("recovery listener");
+        let address = listener.local_addr().expect("recovery address");
+        let coordinator = ShutdownCoordinator::default();
+        let server = tokio::spawn(run_runtime_with_options(
+            runtime,
+            listener,
+            SignalReceivers::install().expect("recovery signal handlers"),
+            coordinator.clone(),
+            Duration::from_mins(1),
+        ));
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .expect("recovery HTTP client");
+        let response = client
+            .get(format!("http://{address}/healthz"))
+            .send()
+            .await
+            .expect("recovery health request");
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        coordinator.request(ShutdownTrigger::Signal).await;
+        assert!(server.await.expect("recovery server task").is_ok());
+
+        let reopened = debtor_infra::db::connect(&database_url(&path))
+            .await
+            .expect("verify recovered database");
+        let value: i64 = sqlx::query_scalar("SELECT value FROM checkpoint_test")
+            .fetch_one(&reopened)
+            .await
+            .expect("recovered WAL value");
+        assert_eq!(value, 1);
+        assert!(close_pool(&reopened).await);
         remove_database(&path);
     }
 

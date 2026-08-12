@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use debtor_application::SupervisorReadiness;
+use debtor_web::submission_tokens::SubmissionTokenCleanup;
 use sqlx::SqlitePool;
 use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
@@ -228,6 +229,28 @@ pub(crate) async fn cleanup_worker<S>(
     }
 }
 
+pub(crate) async fn submission_token_cleanup_worker<S>(
+    store: S,
+    coordinator: ShutdownCoordinator,
+    health: CleanupHealth,
+    interval: Duration,
+) where
+    S: SubmissionTokenCleanup + Clone,
+{
+    loop {
+        tokio::select! {
+            () = coordinator.wait() => return,
+            () = tokio::time::sleep(interval) => {
+                if store.cleanup_expired().await.is_err() {
+                    health.mark_unhealthy();
+                    coordinator.request(ShutdownTrigger::CleanupFailure).await;
+                    return;
+                }
+            }
+        }
+    }
+}
+
 struct WalCheckpoint {
     busy: i64,
     log: i64,
@@ -309,6 +332,13 @@ pub(crate) async fn run_runtime_with_timeouts(
         runtime.cleanup_health.clone(),
         cleanup_interval,
     ));
+    let mut submission_token_cleanup_handle: JoinHandle<()> =
+        tokio::spawn(submission_token_cleanup_worker(
+            runtime.submission_token_store.clone(),
+            coordinator.clone(),
+            runtime.cleanup_health.clone(),
+            cleanup_interval,
+        ));
     let mut signal_handle: JoinHandle<()> =
         tokio::spawn(signal_worker(signals, coordinator.clone()));
     let server_shutdown = coordinator.clone();
@@ -339,6 +369,15 @@ pub(crate) async fn run_runtime_with_timeouts(
         Err(_) => {
             cleanup_handle.abort();
             let _ = cleanup_handle.await;
+            coordinator.request(ShutdownTrigger::CleanupFailure).await;
+        }
+    }
+    match tokio::time::timeout(CLEANUP_STOP_TIMEOUT, &mut submission_token_cleanup_handle).await {
+        Ok(Ok(())) => {}
+        Ok(Err(_)) => coordinator.request(ShutdownTrigger::CleanupFailure).await,
+        Err(_) => {
+            submission_token_cleanup_handle.abort();
+            let _ = submission_token_cleanup_handle.await;
             coordinator.request(ShutdownTrigger::CleanupFailure).await;
         }
     }

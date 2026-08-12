@@ -4,8 +4,7 @@ body { background: var(--paper); color: var(--ink); margin: 0; }
 header, main { max-width: 64rem; margin-inline: auto; padding: 1rem; }
 header { display: flex; justify-content: space-between; gap: 1rem; align-items: center; }
 nav { display: flex; gap: 1rem; flex-wrap: wrap; }
-a { color: var(--accent); }
-.gate { max-width: 26rem; margin-block: 15vh; }
+a { color: var(--accent); display: inline-block; min-block-size: 48px; min-inline-size: 48px; }
 .page-heading { display: flex; justify-content: space-between; gap: 1rem; align-items: start; }
 .card { background: var(--card); border: 1px solid var(--line); border-radius: .5rem; padding: 1rem; margin-block: 1rem; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; }
@@ -22,7 +21,7 @@ button, .button { background: var(--accent); border: 0; border-radius: .25rem; c
 .danger-button { background: var(--danger); color: white; }
 .error { color: var(--danger); }
 .warning { color: var(--warn); }
-.helper, .empty { color: #56616b; }
+.helper, .empty { color: #3d4a52; }
 .choice-row { display: flex; flex-wrap: wrap; gap: 1rem; margin-block: .75rem; }
 .choice-row label, .check-row { display: flex; align-items: center; gap: .4rem; }
 .mode-panel { margin-block: .75rem; padding: .75rem; border: 1px solid var(--line); border-radius: .25rem; }
@@ -44,7 +43,23 @@ fieldset { border: 1px solid var(--line); border-radius: .25rem; margin-block: 1
 .inline-form label { flex: 1 1 12rem; }
 table { border-collapse: collapse; width: 100%; background: white; }
 th, td { border-bottom: 1px solid var(--line); padding: .65rem; text-align: left; }
-button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid #e6a700; outline-offset: 2px; }
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.login-page { background: #101113; color: #F5F0E7; color-scheme: dark; min-block-size: 100dvh; }
+.login-page .access-page { display: grid; min-block-size: 100dvh; place-items: center; padding: 20px; }
+.login-page .access-form { border-block-start: 5px solid #F0D36C; inline-size: min(100%, 28rem); padding: 2rem 0; }
+.login-page .eyebrow { color: #AAA59C; font-size: .68rem; font-weight: 750; letter-spacing: .12em; margin: 0 0 .75rem; }
+.login-page .access-form h1 { color: #F5F0E7; font-family: Georgia, "Times New Roman", serif; font-size: 1.8rem; font-weight: 500; letter-spacing: -.035em; margin: 0; }
+.login-page .access-form h1:focus { outline: 2px solid #FFFFFF; outline-offset: 2px; }
+.login-page .muted { color: #AAA59C; }
+.login-page .status { border-block: 1px solid transparent; color: #F4BAA7; min-block-size: 1.5rem; padding-block: .5rem; }
+.login-page .status:not(:empty) { border-color: #E88467; }
+.login-page label { color: #F5F0E7; font-size: .72rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.login-page input { background: #121315; border-color: #6D6C69; border-radius: 0; color: #F5F0E7; min-block-size: 48px; min-inline-size: 48px; padding: .75rem; }
+.login-page .access-submit { background: #F0D36C; border: 0; border-radius: 0; color: #211C08; display: block; inline-size: 100%; min-block-size: 48px; min-inline-size: 48px; padding: .75rem 1rem; }
+.login-page .access-submit[aria-disabled="true"] { cursor: wait; opacity: .7; }
+.login-page button:focus-visible, .login-page a:focus-visible, .login-page input:focus-visible { outline: 2px solid #FFFFFF; outline-offset: 2px; }
+.error-page section { max-inline-size: 40rem; }
+.error-page h1:focus { outline: 2px solid #16697a; outline-offset: 2px; }
 @media (max-width: 40rem) {
   header { align-items: start; flex-direction: column; }
   .page-heading, .member-actions { display: block; }

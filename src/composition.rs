@@ -14,6 +14,7 @@ use debtor_infra::exchange_rates::FrankfurterClient;
 use debtor_web::session;
 use debtor_web::session_store::ReapingMemoryStore;
 use debtor_web::state::{AppState, TrustedProxyConfig};
+use debtor_web::submission_tokens::AnonymousSubmissionTokenStore;
 use sqlx::SqlitePool;
 use tokio::sync::Semaphore;
 use tower::limit::concurrency::GlobalConcurrencyLimitLayer;
@@ -31,13 +32,17 @@ pub(crate) struct BuiltApp {
     pub(crate) pool: SqlitePool,
     pub(crate) session_store: ReapingMemoryStore,
     pub(crate) cleanup_health: CleanupHealth,
+    pub(crate) submission_token_store: AnonymousSubmissionTokenStore,
 }
 
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn build_app(config: Config) -> Result<BuiltApp, StartupError> {
-    let proxy =
-        TrustedProxyConfig::parse(&config.trusted_proxy_cidrs, &config.trusted_proxy_header)
-            .map_err(|_| StartupError::Configuration)?;
+    let proxy = TrustedProxyConfig::parse_for_environment(
+        &config.trusted_proxy_cidrs,
+        &config.trusted_proxy_header,
+        cfg!(debug_assertions),
+    )
+    .map_err(|_| StartupError::Configuration)?;
     let password = Arc::new(
         ArgonPasswordGate::new(config.password_hash).map_err(|_| StartupError::Configuration)?,
     );
@@ -105,8 +110,10 @@ pub(crate) async fn build_app(config: Config) -> Result<BuiltApp, StartupError> 
         clock,
         readiness,
         proxy,
+        submission_tokens: AnonymousSubmissionTokenStore::default(),
     };
     let session_store = ReapingMemoryStore::default();
+    let submission_token_store = state.submission_tokens.clone();
     let sessions = SessionManagerLayer::new(session_store.clone())
         .with_name(config.session_cookie_name)
         .with_secure(config.cookie_secure)
@@ -144,5 +151,6 @@ pub(crate) async fn build_app(config: Config) -> Result<BuiltApp, StartupError> 
         pool,
         session_store,
         cleanup_health,
+        submission_token_store,
     })
 }

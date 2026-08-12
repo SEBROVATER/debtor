@@ -608,10 +608,13 @@ mod tests {
             "https://provider.example/v2?token=sentinel",
             "https://provider.example/v2#fragment",
         ] {
-            assert!(matches!(
-                FrankfurterClient::try_with_base_url(url),
-                Err(FrankfurterConfigurationError::InvalidBaseUrl)
-            ), "{url}");
+            assert!(
+                matches!(
+                    FrankfurterClient::try_with_base_url(url),
+                    Err(FrankfurterConfigurationError::InvalidBaseUrl)
+                ),
+                "{url}"
+            );
         }
         assert!(FrankfurterClient::try_with_base_url("http://127.0.0.1:3000/v2").is_ok());
     }

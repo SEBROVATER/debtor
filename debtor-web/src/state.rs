@@ -13,6 +13,8 @@ use debtor_application::{
     ReadinessUseCases, SpendingUseCases,
 };
 
+use crate::submission_tokens::AnonymousSubmissionTokenStore;
+
 /// Dependencies exposed to the HTTP layer as application interfaces.
 #[derive(Clone)]
 pub struct AppState {
@@ -32,6 +34,8 @@ pub struct AppState {
     pub readiness: Arc<dyn ReadinessUseCases>,
     /// Trusted reverse-proxy client-IP policy.
     pub proxy: TrustedProxyConfig,
+    /// Anonymous Login submission-token owner.
+    pub submission_tokens: AnonymousSubmissionTokenStore,
 }
 
 /// Selected forwarding-header policy.
@@ -85,6 +89,23 @@ impl TrustedProxyConfig {
             cidrs: Arc::new(networks),
             header,
         })
+    }
+
+    /// Parses startup configuration with the environment's direct-peer policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when production has no trusted proxy policy or when
+    /// the CIDR/header configuration is malformed.
+    pub fn parse_for_environment(
+        cidrs: &str,
+        header: &str,
+        debug_assertions: bool,
+    ) -> Result<Self, String> {
+        if !debug_assertions && cidrs.split(',').all(|value| value.trim().is_empty()) {
+            return Err("trusted proxy policy is required outside debug builds".into());
+        }
+        Self::parse(cidrs, header)
     }
 
     /// Resolves the client address using only configured trusted hops.
@@ -280,6 +301,16 @@ mod tests {
         assert!(TrustedProxyConfig::parse("10.0.0.0/8", "").is_err());
         assert!(TrustedProxyConfig::parse("10.0.0.0/8", "Forwarded").is_err());
         assert!(TrustedProxyConfig::parse("not-a-cidr", "forwarded").is_err());
+    }
+
+    #[test]
+    fn production_proxy_policy_rejects_direct_peer_fallback() {
+        assert!(TrustedProxyConfig::parse_for_environment("", "", false).is_err());
+        assert!(TrustedProxyConfig::parse_for_environment("10.0.0.0/8", "", false).is_err());
+        assert!(
+            TrustedProxyConfig::parse_for_environment("10.0.0.0/8", "forwarded", false).is_ok()
+        );
+        assert!(TrustedProxyConfig::parse_for_environment("", "", true).is_ok());
     }
 
     #[test]

@@ -14,19 +14,53 @@ pub(super) fn render(template: &impl Template) -> Response {
 }
 
 pub(super) fn error_response(status: StatusCode, message: &str) -> Response {
-    let template = ErrorTemplate { message };
+    let template = ErrorTemplate {
+        message,
+        login_recovery: false,
+    };
     (status, render(&template)).into_response()
+}
+
+pub(crate) fn login_error_response(status: StatusCode, message: &str) -> Response {
+    let template = ErrorTemplate {
+        message,
+        login_recovery: true,
+    };
+    (status, render(&template)).into_response()
+}
+
+pub(crate) fn login_token_conflict() -> Response {
+    login_error_response(
+        StatusCode::CONFLICT,
+        "This sign-in form is no longer valid. Open Sign in to try again.",
+    )
+}
+
+pub(crate) fn login_timeout() -> Response {
+    login_error_response(
+        StatusCode::GATEWAY_TIMEOUT,
+        "Sign-in request timed out. Try again.",
+    )
+}
+
+pub(crate) fn with_status(mut response: Response, status: StatusCode) -> Response {
+    *response.status_mut() = status;
+    response
 }
 
 pub(super) fn session_error() -> Response {
     error_response(StatusCode::INTERNAL_SERVER_ERROR, "Session error.")
 }
 
-pub(super) fn session_unavailable() -> Response {
-    error_response(
+pub(super) fn login_session_unavailable() -> Response {
+    login_error_response(
         StatusCode::SERVICE_UNAVAILABLE,
         "Session storage is temporarily unavailable. Try again.",
     )
+}
+
+pub(super) fn login_session_error() -> Response {
+    login_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Session error.")
 }
 
 pub(super) fn map_error(error: debtor_application::ApplicationError) -> Response {
