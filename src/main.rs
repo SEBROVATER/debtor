@@ -152,12 +152,17 @@ mod composition_tests {
     }
 
     #[tokio::test]
-    async fn invalid_password_hash_has_no_database_side_effect() {
-        let path = database_path();
-        let result = build_app(config(&path, "not-a-password-hash")).await;
-        assert!(result.is_err());
-        assert!(!path.exists());
-        remove_database(&path);
+    async fn invalid_password_hashes_have_no_database_side_effect() {
+        for hash in [
+            "not-a-password-hash".to_owned(),
+            "A".repeat(257),
+            "$argon2id$v=19$m=019456,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_owned(),
+        ] {
+            let path = database_path();
+            assert!(build_app(config(&path, &hash)).await.is_err());
+            assert!(!path.exists());
+            remove_database(&path);
+        }
     }
 
     #[tokio::test]

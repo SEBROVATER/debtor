@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
 
 use anyhow::{Context, Result, anyhow, bail};
+use debtor_infra::auth::validate_password_hash;
 
 /// Validated process configuration.
 pub(super) struct Config {
@@ -24,6 +25,8 @@ impl Config {
         if password_hash.trim().is_empty() {
             bail!("APP_ADMIN_PASSWORD_HASH must not be empty");
         }
+        validate_password_hash(&password_hash)
+            .map_err(|_| anyhow!("APP_ADMIN_PASSWORD_HASH is invalid"))?;
 
         let cookie_secure = lookup("APP_SESSION_COOKIE_SECURE")
             .unwrap_or_else(|| (!debug_assertions).to_string())
@@ -92,6 +95,8 @@ mod tests {
 
     use super::Config;
 
+    const VALID_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
     fn config(values: &[(&str, &str)], debug_assertions: bool) -> anyhow::Result<Config> {
         let values = values
             .iter()
@@ -102,11 +107,11 @@ mod tests {
 
     #[test]
     fn applies_defaults_with_insecure_debug_cookies() {
-        let config = config(&[("APP_ADMIN_PASSWORD_HASH", "hash")], true).unwrap();
+        let config = config(&[("APP_ADMIN_PASSWORD_HASH", VALID_HASH)], true).unwrap();
 
         assert_eq!(config.database_url, "sqlite://debtor.db?mode=rwc");
         assert_eq!(config.bind.to_string(), "127.0.0.1:3000");
-        assert_eq!(config.password_hash, "hash");
+        assert_eq!(config.password_hash, VALID_HASH);
         assert!(!config.cookie_secure);
         assert_eq!(config.session_cookie_name, "debtor_session");
         assert_eq!(config.exchange_base_url, "https://api.frankfurter.dev/v2");
@@ -121,11 +126,25 @@ mod tests {
     }
 
     #[test]
+    fn rejects_password_hashes_that_do_not_meet_the_startup_policy() {
+        for hash in [
+            "not-a-password-hash".to_owned(),
+            "A".repeat(257),
+            "$argon2id$v=19$m=019456,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_owned(),
+        ] {
+            let Err(error) = config(&[("APP_ADMIN_PASSWORD_HASH", &hash)], true) else {
+                panic!("invalid hashes must not produce configuration");
+            };
+            assert!(!error.to_string().contains(&hash));
+        }
+    }
+
+    #[test]
     fn rejects_invalid_values() {
         assert!(
             config(
                 &[
-                    ("APP_ADMIN_PASSWORD_HASH", "hash"),
+                    ("APP_ADMIN_PASSWORD_HASH", VALID_HASH),
                     ("APP_BIND", "not-an-address")
                 ],
                 true,
@@ -135,7 +154,7 @@ mod tests {
         assert!(
             config(
                 &[
-                    ("APP_ADMIN_PASSWORD_HASH", "hash"),
+                    ("APP_ADMIN_PASSWORD_HASH", VALID_HASH),
                     ("APP_SESSION_COOKIE_SECURE", "sometimes"),
                 ],
                 true,
@@ -147,14 +166,14 @@ mod tests {
     #[test]
     fn rejects_insecure_cookies_outside_debug_builds() {
         assert!(
-            config(&[("APP_ADMIN_PASSWORD_HASH", "hash")], false)
+            config(&[("APP_ADMIN_PASSWORD_HASH", VALID_HASH)], false)
                 .unwrap()
                 .cookie_secure
         );
         assert!(
             config(
                 &[
-                    ("APP_ADMIN_PASSWORD_HASH", "hash"),
+                    ("APP_ADMIN_PASSWORD_HASH", VALID_HASH),
                     ("APP_SESSION_COOKIE_SECURE", "false"),
                 ],
                 false,
@@ -169,7 +188,7 @@ mod tests {
             assert!(
                 config(
                     &[
-                        ("APP_ADMIN_PASSWORD_HASH", "hash"),
+                        ("APP_ADMIN_PASSWORD_HASH", VALID_HASH),
                         ("APP_SESSION_COOKIE_NAME", name),
                     ],
                     true,
@@ -188,7 +207,7 @@ mod tests {
             assert!(
                 config(
                     &[
-                        ("APP_ADMIN_PASSWORD_HASH", "hash"),
+                        ("APP_ADMIN_PASSWORD_HASH", VALID_HASH),
                         ("APP_SESSION_COOKIE_NAME", name),
                     ],
                     true,

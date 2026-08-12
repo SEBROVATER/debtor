@@ -7,6 +7,8 @@ use std::collections::HashSet;
 use std::sync::OnceLock;
 use tokio::sync::Semaphore;
 
+const MAX_ENCODED_HASH_BYTES: usize = 256;
+
 /// Password verifier backed by one configured Argon2id hash.
 pub struct ArgonPasswordGate {
     hash: String,
@@ -19,42 +21,109 @@ impl ArgonPasswordGate {
     ///
     /// Returns an error when the configured PHC string is malformed.
     pub fn new(hash: String) -> Result<Self, ApplicationError> {
-        let parsed = PasswordHash::new(&hash).map_err(|_| {
-            ApplicationError::Configuration(ConfigurationError::InvalidPasswordHash)
-        })?;
-        let mut parameter_names = HashSet::new();
-        for (name, _) in parsed.params.iter() {
-            let name = name.to_string();
-            if !matches!(name.as_str(), "m" | "t" | "p") || !parameter_names.insert(name) {
-                return Err(ApplicationError::Configuration(
-                    ConfigurationError::InvalidPasswordHash,
-                ));
-            }
-        }
-        if parameter_names.len() != 3 {
-            return Err(ApplicationError::Configuration(
-                ConfigurationError::InvalidPasswordHash,
-            ));
-        }
-        let salt_length = parsed.salt.and_then(decoded_salt_length);
-        let hash_length = parsed.hash.map(|output| output.as_bytes().len());
-        let memory_cost = parsed.params.get("m").and_then(parse_parameter);
-        let time_cost = parsed.params.get("t").and_then(parse_parameter);
-        let parallelism = parsed.params.get("p").and_then(parse_parameter);
-        if parsed.algorithm.to_string() != "argon2id"
-            || parsed.version.map(|version| version.to_string()) != Some("19".into())
-            || !matches!(salt_length, Some(16..=64))
-            || !matches!(hash_length, Some(32..=64))
-            || !matches!(memory_cost, Some(19_456..=65_536))
-            || !matches!(time_cost, Some(2..=5))
-            || !matches!(parallelism, Some(1..=4))
-        {
-            return Err(ApplicationError::Configuration(
-                ConfigurationError::InvalidPasswordHash,
-            ));
-        }
+        validate_password_hash(&hash)?;
         Ok(Self { hash })
     }
+}
+
+/// Validates the configured administrator password hash before startup side effects.
+///
+/// # Errors
+///
+/// Returns a sanitized configuration error when the hash is not the accepted canonical policy.
+pub fn validate_password_hash(hash: &str) -> Result<(), ApplicationError> {
+    if hash.len() > MAX_ENCODED_HASH_BYTES || !has_expected_phc_shape(hash) {
+        return Err(invalid_hash());
+    }
+
+    let parsed = PasswordHash::new(hash).map_err(|_| invalid_hash())?;
+    if parsed.to_string() != hash {
+        return Err(invalid_hash());
+    }
+
+    validate_parsed_hash(&parsed)
+}
+
+fn has_expected_phc_shape(hash: &str) -> bool {
+    let mut segments = hash.split('$');
+    matches!(
+        (
+            segments.next(),
+            segments.next(),
+            segments.next(),
+            segments.next(),
+            segments.next(),
+            segments.next(),
+            segments.next(),
+        ),
+        (
+            Some(""),
+            Some("argon2id"),
+            Some("v=19"),
+            Some(parameters),
+            Some(salt),
+            Some(output),
+            None,
+        ) if canonical_parameters(parameters) && !salt.is_empty() && !output.is_empty()
+    )
+}
+
+fn canonical_parameters(parameters: &str) -> bool {
+    let mut parameters = parameters.split(',');
+    matches!(
+        (
+            parameters.next(),
+            parameters.next(),
+            parameters.next(),
+            parameters.next(),
+        ),
+        (Some(memory), Some(time), Some(parallelism), None)
+            if canonical_parameter(memory, "m")
+                && canonical_parameter(time, "t")
+                && canonical_parameter(parallelism, "p")
+    )
+}
+
+fn canonical_parameter(parameter: &str, name: &str) -> bool {
+    let Some(value) = parameter.strip_prefix(&format!("{name}=")) else {
+        return false;
+    };
+    !value.is_empty()
+        && value.bytes().all(|byte| byte.is_ascii_digit())
+        && (value.len() == 1 || !value.starts_with('0'))
+}
+
+fn validate_parsed_hash(parsed: &PasswordHash<'_>) -> Result<(), ApplicationError> {
+    let mut parameter_names = HashSet::new();
+    for (name, _) in parsed.params.iter() {
+        let name = name.to_string();
+        if !matches!(name.as_str(), "m" | "t" | "p") || !parameter_names.insert(name) {
+            return Err(invalid_hash());
+        }
+    }
+    if parameter_names.len() != 3 {
+        return Err(invalid_hash());
+    }
+    let salt_length = parsed.salt.and_then(decoded_salt_length);
+    let hash_length = parsed.hash.map(|output| output.as_bytes().len());
+    let memory_cost = parsed.params.get("m").and_then(parse_parameter);
+    let time_cost = parsed.params.get("t").and_then(parse_parameter);
+    let parallelism = parsed.params.get("p").and_then(parse_parameter);
+    if parsed.algorithm.to_string() != "argon2id"
+        || parsed.version.map(|version| version.to_string()) != Some("19".into())
+        || !matches!(salt_length, Some(16..=64))
+        || !matches!(hash_length, Some(32..=64))
+        || !matches!(memory_cost, Some(19_456..=65_536))
+        || !matches!(time_cost, Some(2..=5))
+        || !matches!(parallelism, Some(1..=4))
+    {
+        return Err(invalid_hash());
+    }
+    Ok(())
+}
+
+fn invalid_hash() -> ApplicationError {
+    ApplicationError::Configuration(ConfigurationError::InvalidPasswordHash)
 }
 
 fn decoded_salt_length(salt: argon2::password_hash::Salt<'_>) -> Option<usize> {
@@ -161,6 +230,18 @@ mod tests {
                 ))
                 .is_err()
             );
+        }
+    }
+
+    #[test]
+    fn rejects_oversized_and_noncanonical_hashes() {
+        assert!(ArgonPasswordGate::new("A".repeat(257)).is_err());
+
+        for invalid in [
+            "$argon2id$v=19$m=019456,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "$argon2id$v=19$m=19456,t=02,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        ] {
+            assert!(ArgonPasswordGate::new(invalid.into()).is_err());
         }
     }
 

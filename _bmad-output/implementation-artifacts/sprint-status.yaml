@@ -1,0 +1,88 @@
+# generated: 2026-08-12T12:16:16+06:00
+# last_updated: 2026-08-12T18:03:14+06:00
+# project: debtor
+# project_key: NOKEY
+# tracking_system: file-system
+# story_location: /home/sebr/projects/pet/debtor/_bmad-output/implementation-artifacts
+
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+#
+# Epic Status Transitions:
+#   - backlog -> in-progress: Automatically when first story is created (via create-story)
+#   - in-progress -> done: Manually when all stories reach 'done' status
+#
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created in stories folder
+#   - in-progress: Developer actively working on implementation
+#   - review: Ready for code review (via Dev's code-review workflow)
+#   - done: Story completed
+#
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+#
+# Action Item Status:
+#   - open: Committed during a retrospective, not yet addressed
+#   - in-progress: Actively being worked on
+#   - done: Completed
+#
+# WORKFLOW NOTES:
+# ===============
+# - Epic transitions to 'in-progress' automatically when first story is created
+# - Stories can be worked in parallel if team capacity allows
+# - Developer typically creates next story after previous one is 'done' to incorporate learnings
+# - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+# - Retrospective appends its action items to action_items; sprint-status surfaces open ones
+
+generated: 2026-08-12T12:16:16+06:00
+last_updated: 2026-08-12T18:03:14+06:00
+project: debtor
+project_key: NOKEY
+tracking_system: file-system
+story_location: /home/sebr/projects/pet/debtor/_bmad-output/implementation-artifacts
+
+development_status:
+  epic-1: in-progress
+  1-1-prepare-and-validate-the-administrator-password: done
+  1-2-start-a-persistent-local-application: backlog
+  1-3-restart-and-validate-the-composed-local-application: backlog
+  1-4-open-a-protected-and-accessible-login-page: backlog
+  1-5-sign-in-with-bounded-password-verification: backlog
+  1-6-maintain-an-authenticated-session-and-sign-out: backlog
+  1-7-extend-replay-protection-beyond-login-and-sign-out: backlog
+  1-8-expose-health-readiness-and-bounded-admission: backlog
+  1-9-shut-down-the-authenticated-runtime-safely: backlog
+  1-10-define-the-pre-production-https-edge-gate: backlog
+  epic-1-retrospective: optional
+  epic-2: backlog
+  2-1-create-and-select-a-group: backlog
+  2-2-configure-group-settings: backlog
+  2-3-add-group-owned-participants: backlog
+  2-4-edit-active-participants-without-deleting-identity: backlog
+  2-5-archive-restore-or-delete-a-history-free-group: backlog
+  epic-2-retrospective: optional
+  epic-3: backlog
+  3-1-record-a-proportional-spending: backlog
+  3-2-record-a-spending-with-exact-shares: backlog
+  3-3-browse-and-inspect-spending-history: backlog
+  3-4-correct-an-existing-spending: backlog
+  3-5-delete-a-spending-atomically: backlog
+  epic-3-retrospective: optional
+  epic-4: backlog
+  4-1-review-exact-source-currency-monthly-totals: backlog
+  4-2-review-conserved-group-currency-monthly-totals: backlog
+  4-3-preserve-source-totals-when-conversion-is-unavailable: backlog
+  epic-4-retrospective: optional
+  epic-5: backlog
+  5-1-calculate-exact-historical-balances: backlog
+  5-2-recalculate-balances-at-current-rates: backlog
+  5-3-derive-complete-advisory-settlement-transfers: backlog
+  5-4-archive-a-zero-balance-participant-safely: backlog
+  5-5-browse-and-restore-archived-participants: backlog
+  epic-5-retrospective: optional

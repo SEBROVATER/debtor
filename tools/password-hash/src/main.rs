@@ -115,6 +115,15 @@ mod tests {
                 .len(),
             OUTPUT_LENGTH
         );
+        assert_eq!(
+            parsed_hash
+                .salt
+                .expect("salt exists")
+                .decode_b64(&mut [0_u8; SALT_LENGTH])
+                .expect("salt decodes")
+                .len(),
+            SALT_LENGTH
+        );
         assert!(
             configured_argon2()
                 .expect("parameters are valid")
