@@ -75,6 +75,9 @@ pub(crate) async fn establish(session: &Session) -> Result<(), SessionError> {
 
 /// Removes all session state.
 pub(crate) async fn flush(session: &Session) -> Result<(), SessionError> {
+    // Delete before clearing local state so a failed store operation cannot
+    // make the response look like a successful browser logout.
+    session.delete().await.map_err(|_| SessionError)?;
     session.flush().await.map_err(|_| SessionError)
 }
 

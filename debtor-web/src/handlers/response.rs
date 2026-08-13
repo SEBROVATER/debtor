@@ -1,6 +1,6 @@
 use askama::Template;
 use axum::{
-    http::StatusCode,
+    http::{HeaderMap, HeaderValue, StatusCode, header::CONTENT_TYPE},
     response::{Html, IntoResponse, Response},
 };
 
@@ -19,6 +19,25 @@ pub(super) fn error_response(status: StatusCode, message: &str) -> Response {
         login_recovery: false,
     };
     (status, render(&template)).into_response()
+}
+
+pub(super) fn logout_error_response(
+    headers: &HeaderMap,
+    status: StatusCode,
+    message: &'static str,
+) -> Response {
+    if headers.contains_key("hx-request") {
+        return (
+            status,
+            [(
+                CONTENT_TYPE,
+                HeaderValue::from_static("text/plain; charset=utf-8"),
+            )],
+            message,
+        )
+            .into_response();
+    }
+    error_response(status, message)
 }
 
 pub(crate) fn login_error_response(status: StatusCode, message: &str) -> Response {
@@ -50,6 +69,13 @@ pub(crate) fn with_status(mut response: Response, status: StatusCode) -> Respons
 
 pub(super) fn session_error() -> Response {
     error_response(StatusCode::INTERNAL_SERVER_ERROR, "Session error.")
+}
+
+pub(super) fn session_unavailable() -> Response {
+    error_response(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Session storage is temporarily unavailable. Try again.",
+    )
 }
 
 pub(super) fn login_session_unavailable() -> Response {

@@ -2,6 +2,15 @@
 
 use askama::Template;
 
+/// Shared protection values for an authenticated page shell.
+#[derive(Clone)]
+pub struct AuthenticatedShell {
+    /// Current synchronizer token.
+    pub csrf: String,
+    /// Single-use Sign out token.
+    pub submission_token: String,
+}
+
 /// Password gate page.
 #[derive(Template)]
 #[template(path = "login.html")]
@@ -34,6 +43,8 @@ pub struct GroupsTemplate {
     pub groups: Vec<GroupRow>,
     /// Token.
     pub csrf: String,
+    /// Shared authenticated shell protection values.
+    pub shell: AuthenticatedShell,
     /// Archive state.
     pub archived: bool,
     /// Group name draft for the create form.
@@ -60,6 +71,8 @@ pub struct GroupEditTemplate {
     pub currencies: Vec<SelectOption>,
     /// CSRF token.
     pub csrf: String,
+    /// Shared authenticated shell protection values.
+    pub shell: AuthenticatedShell,
     /// Error.
     pub error: Option<String>,
 }
@@ -90,6 +103,8 @@ pub struct DebtsTemplate {
     pub calculated_at: String,
     /// Unique rates used by the calculation.
     pub rates: Vec<RateRow>,
+    /// Shared authenticated shell protection values.
+    pub shell: AuthenticatedShell,
 }
 
 /// Renderable transfer row.
@@ -128,6 +143,8 @@ pub struct ParticipantsTemplate {
     pub participants: Vec<ParticipantRow>,
     /// CSRF token.
     pub csrf: String,
+    /// Shared authenticated shell protection values.
+    pub shell: AuthenticatedShell,
     /// Whether this is the archive view.
     pub archived: bool,
     /// Participant name draft for the create form.
@@ -150,6 +167,8 @@ pub struct ParticipantEditTemplate {
     pub color: String,
     /// CSRF token.
     pub csrf: String,
+    /// Shared authenticated shell protection values.
+    pub shell: AuthenticatedShell,
     /// Error message.
     pub error: Option<String>,
 }
@@ -176,6 +195,8 @@ pub struct GroupTemplate {
     pub currency: String,
     /// CSRF token.
     pub csrf: String,
+    /// Shared authenticated shell protection values.
+    pub shell: AuthenticatedShell,
     /// Active member rows.
     pub members: Vec<MemberRow>,
     /// Inactive memberships available for reactivation.
@@ -309,6 +330,8 @@ pub struct SpendingDetailTemplate {
     pub shares: Vec<AllocationRow>,
     /// CSRF.
     pub csrf: String,
+    /// Shared authenticated shell protection values.
+    pub shell: AuthenticatedShell,
 }
 
 /// Named allocation row.
@@ -333,4 +356,6 @@ pub struct ConfirmTemplate {
     pub cancel: String,
     /// CSRF.
     pub csrf: String,
+    /// Shared authenticated shell protection values.
+    pub shell: AuthenticatedShell,
 }

@@ -7,7 +7,7 @@ use tower_sessions::Session;
 
 use super::{
     GroupsQuery,
-    auth::{csrf, require_auth},
+    auth::{authenticated_shell, require_auth},
     response::{error_response, map_error, render},
 };
 use crate::{
@@ -167,6 +167,7 @@ async fn participants_template(
         .list_participants(archived)
         .await
         .map_err(map_error)?;
+    let shell = authenticated_shell(state, session).await?;
     Ok(ParticipantsTemplate {
         participants: items
             .into_iter()
@@ -176,7 +177,8 @@ async fn participants_template(
                 color: p.color.as_str().to_owned(),
             })
             .collect(),
-        csrf: csrf(session).await?,
+        csrf: shell.csrf.clone(),
+        shell,
         archived,
         create_name: create_name.to_owned(),
         create_color: create_color.to_owned(),
@@ -221,11 +223,13 @@ async fn participant_edit_template(
             participant.color.as_str().to_owned(),
         )
     });
+    let shell = authenticated_shell(state, session).await?;
     Ok(ParticipantEditTemplate {
         id,
         name,
         color,
-        csrf: csrf(session).await?,
+        csrf: shell.csrf.clone(),
+        shell,
         error,
     })
 }

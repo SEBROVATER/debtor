@@ -6,10 +6,12 @@ use axum::{
 use debtor_application::AuthenticationAttempt;
 use tower_sessions::Session;
 
-use super::response::error_response;
 use crate::{
-    forms::CsrfValidatedForm, session, state::AppState, submission_tokens::ReserveError,
-    templates::LoginTemplate,
+    forms::CsrfValidatedForm,
+    session,
+    state::AppState,
+    submission_tokens::ReserveError,
+    templates::{AuthenticatedShell, LoginTemplate},
 };
 
 pub(crate) async fn root(session: Session) -> Response {
@@ -154,13 +156,58 @@ pub(crate) async fn login(
     }
 }
 
-pub(crate) async fn logout(session: Session, form: CsrfValidatedForm) -> Response {
-    let _fields = match form.ordered().required_fields(&["csrf"]) {
-        Ok(fields) => fields,
-        Err(message) => return error_response(StatusCode::BAD_REQUEST, message),
-    };
-    if let Err(response) = form.dispatch() {
+pub(crate) async fn logout(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    session: Session,
+    form: CsrfValidatedForm,
+) -> Response {
+    if let Err(response) = require_auth(&session).await {
         return response;
+    }
+    let ordered = form.ordered();
+    let mut submission_token = None;
+    for (key, value) in &ordered.0 {
+        match key.as_str() {
+            "csrf" => {}
+            "submission_token" if submission_token.is_none() => submission_token = Some(value),
+            _ => {
+                return super::response::logout_error_response(
+                    &headers,
+                    StatusCode::BAD_REQUEST,
+                    "Malformed form submission.",
+                );
+            }
+        }
+    }
+    let Some(submission_token) = submission_token else {
+        return super::response::logout_error_response(
+            &headers,
+            StatusCode::CONFLICT,
+            "Invalid sign-out request.",
+        );
+    };
+    let Some(session_id) = session.id() else {
+        return super::response::session_error();
+    };
+    match state
+        .submission_tokens
+        .reserve_sign_out_and_dispatch(session_id, submission_token, || {
+            form.dispatch().map_err(|_| ())
+        })
+        .await
+    {
+        Ok(()) => {}
+        Err(ReserveError::Conflict) => {
+            return super::response::logout_error_response(
+                &headers,
+                StatusCode::CONFLICT,
+                "Invalid sign-out request.",
+            );
+        }
+        Err(ReserveError::Deadline) => {
+            return (StatusCode::GATEWAY_TIMEOUT, "Request timed out.").into_response();
+        }
     }
     match session::flush(&session).await {
         Ok(()) => Redirect::to("/login").into_response(),
@@ -210,6 +257,25 @@ pub(super) async fn csrf(session: &Session) -> Result<String, Response> {
     session::csrf_token(session)
         .await
         .map_err(|_| super::response::session_error())
+}
+
+pub(crate) async fn authenticated_shell(
+    state: &AppState,
+    session: &Session,
+) -> Result<AuthenticatedShell, Response> {
+    let csrf = csrf(session).await?;
+    let Some(session_id) = session.id() else {
+        return Err(super::response::session_error());
+    };
+    let submission_token = state
+        .submission_tokens
+        .issue_sign_out(session_id)
+        .await
+        .map_err(|_| super::response::session_unavailable())?;
+    Ok(AuthenticatedShell {
+        csrf,
+        submission_token,
+    })
 }
 
 #[cfg(test)]

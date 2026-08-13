@@ -355,6 +355,7 @@ mod composition_tests {
         remove_database(&path);
     }
 
+    #[allow(clippy::too_many_lines)]
     #[tokio::test]
     async fn real_socket_smoke_covers_login_authenticated_read_and_bounded_shutdown() {
         let salt = SaltString::encode_b64(b"slice18-real-socket").expect("test salt");
@@ -414,11 +415,38 @@ mod composition_tests {
 
         let response = client
             .get(format!("{base_url}/groups"))
-            .header("cookie", authenticated_cookie)
+            .header("cookie", &authenticated_cookie)
             .send()
             .await
             .expect("authenticated request");
         assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let groups_body = response.text().await.expect("groups body");
+        let anonymous_response = client
+            .get(format!("{base_url}/login"))
+            .send()
+            .await
+            .expect("anonymous session request");
+        assert_eq!(anonymous_response.status(), reqwest::StatusCode::OK);
+        let anonymous_cookie = cookie_pair(&anonymous_response);
+        let logout_response = client
+            .post(format!("{base_url}/logout"))
+            .header("cookie", &authenticated_cookie)
+            .form(&[
+                ("csrf", csrf_token(&groups_body)),
+                ("submission_token", submission_token(&groups_body)),
+            ])
+            .send()
+            .await
+            .expect("logout request");
+        assert_eq!(logout_response.status(), reqwest::StatusCode::SEE_OTHER);
+        let post_logout = client
+            .get(format!("{base_url}/groups"))
+            .header("cookie", &authenticated_cookie)
+            .send()
+            .await
+            .expect("post-logout request");
+        assert_eq!(post_logout.status(), reqwest::StatusCode::SEE_OTHER);
+        assert_eq!(post_logout.headers()["location"], "/login");
 
         tokio::time::sleep(Duration::from_millis(20)).await;
         coordinator.request(ShutdownTrigger::Signal).await;
@@ -427,6 +455,48 @@ mod composition_tests {
             .expect("bounded shutdown")
             .expect("server task");
         assert!(result.is_ok(), "runtime shutdown result: {result:?}");
+
+        let restarted = build_app(config(&path, &password_hash))
+            .await
+            .expect("restart application");
+        let restarted_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("restart listener");
+        let restarted_address = restarted_listener.local_addr().expect("restart address");
+        let restarted_coordinator = ShutdownCoordinator::default();
+        let restarted_server = tokio::spawn(run_runtime_with_options(
+            restarted,
+            restarted_listener,
+            SignalReceivers::install().expect("restart signal handlers"),
+            restarted_coordinator.clone(),
+            Duration::from_millis(5),
+        ));
+        let restarted_base = format!("http://{restarted_address}");
+        let stale_authenticated = client
+            .get(format!("{restarted_base}/groups"))
+            .header("cookie", &authenticated_cookie)
+            .send()
+            .await
+            .expect("stale authenticated cookie request");
+        assert_eq!(stale_authenticated.status(), reqwest::StatusCode::SEE_OTHER);
+        assert_eq!(stale_authenticated.headers()["location"], "/login");
+        let stale_anonymous = client
+            .get(format!("{restarted_base}/groups"))
+            .header("cookie", &anonymous_cookie)
+            .send()
+            .await
+            .expect("stale anonymous cookie request");
+        assert_eq!(stale_anonymous.status(), reqwest::StatusCode::SEE_OTHER);
+        assert_eq!(stale_anonymous.headers()["location"], "/login");
+        restarted_coordinator.request(ShutdownTrigger::Signal).await;
+        assert!(
+            tokio::time::timeout(Duration::from_secs(15), restarted_server)
+                .await
+                .expect("bounded restart shutdown")
+                .expect("restart server task")
+                .is_ok()
+        );
+        remove_database(&path);
         remove_database(&path);
     }
 

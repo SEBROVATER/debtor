@@ -9,7 +9,7 @@ use debtor_domain::{
 };
 use tower_sessions::Session;
 
-use super::{ExpenseForm, auth::csrf, response::map_error};
+use super::{ExpenseForm, auth::authenticated_shell, response::map_error};
 use crate::{
     participant_color::suggested_participant_color,
     state::AppState,
@@ -111,13 +111,15 @@ pub(super) async fn build_group_template(
         || (String::new(), suggested_participant_color().to_owned()),
         |draft| (draft.name, draft.color),
     );
+    let shell = authenticated_shell(state, session)
+        .await
+        .map_err(|_| GroupTemplateError::Session)?;
     Ok(GroupTemplate {
         name: group.name.to_string(),
         group_id: id,
         currency: group.currency.to_string(),
-        csrf: csrf(session)
-            .await
-            .map_err(|_| GroupTemplateError::Session)?,
+        csrf: shell.csrf.clone(),
+        shell,
         members: active_members,
         inactive_members,
         available_participants: available,

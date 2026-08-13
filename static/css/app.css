@@ -1,8 +1,18 @@
-:root { color-scheme: light; font-family: system-ui, sans-serif; --ink: #17212b; --paper: #f7f7f5; --card: #fff; --accent: #16697a; --line: #d8d8d2; --warn: #8a4b00; --danger: #a71930; }
+:root { color-scheme: dark; font-family: system-ui, sans-serif; --ink: #F5F0E7; --paper: #101113; --card: #121315; --accent: #F0D36C; --line: #6D6C69; --warn: #F4BAA7; --danger: #F4BAA7; --focus: #FFFFFF; }
 * { box-sizing: border-box; }
 body { background: var(--paper); color: var(--ink); margin: 0; }
 header, main { max-width: 64rem; margin-inline: auto; padding: 1rem; }
 header { display: flex; justify-content: space-between; gap: 1rem; align-items: center; }
+.site-header { border-block-end: 2px solid var(--line); }
+.sign-out-form { align-items: center; display: flex; gap: .5rem; margin: 0; }
+.sign-out-button { background: transparent; border: 2px solid var(--accent); color: var(--accent); min-block-size: 48px; min-inline-size: 48px; }
+.status { color: var(--danger); min-block-size: 1.5rem; }
+.sign-out-form .status { margin: 0; }
+.sign-out-form .status { color: transparent; }
+.sign-out-form .status.htmx-indicator { color: var(--warn); }
+.sign-out-form .status.htmx-indicator::before { content: "Signing out..."; }
+.sign-out-form.htmx-request .status { color: var(--warn); }
+.sign-out-form.htmx-request .status::before { content: "Signing out..."; }
 nav { display: flex; gap: 1rem; flex-wrap: wrap; }
 a { color: var(--accent); display: inline-block; min-block-size: 48px; min-inline-size: 48px; }
 .page-heading { display: flex; justify-content: space-between; gap: 1rem; align-items: start; }
@@ -11,11 +21,11 @@ a { color: var(--accent); display: inline-block; min-block-size: 48px; min-inlin
 form { margin-block: 1rem; }
 label { display: grid; gap: .25rem; }
 input, select, button { font: inherit; padding: .45rem; max-width: 100%; }
-input, select { border: 1px solid #a9aca7; border-radius: .25rem; background: white; }
+input, select { border: 2px solid var(--line); border-radius: 0; background: #121315; color: var(--ink); min-block-size: 48px; min-inline-size: 48px; }
 input[type="color"] { block-size: 2.75rem; cursor: pointer; inline-size: 4.5rem; padding: .2rem; }
 input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
 input[type="color"]::-webkit-color-swatch, input[type="color"]::-moz-color-swatch { border: 0; border-radius: .15rem; }
-button, .button { background: var(--accent); border: 0; border-radius: .25rem; color: white; cursor: pointer; display: inline-block; padding: .5rem .75rem; text-decoration: none; }
+button, .button { background: var(--accent); border: 0; border-radius: 0; color: #211C08; cursor: pointer; display: inline-block; min-block-size: 48px; min-inline-size: 48px; padding: .75rem 1rem; text-decoration: none; }
 .secondary { background: #52616b; }
 .danger, .danger-button { color: var(--danger); }
 .danger-button { background: var(--danger); color: white; }
@@ -71,4 +81,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   td { border: 0; padding: .3rem 0 .3rem 8rem; position: relative; min-height: 2rem; }
   td::before { content: attr(data-label); font-weight: 600; left: 0; position: absolute; width: 7rem; }
   .compact-form { margin-block: 1rem; }
+  .sign-out-form { align-items: start; width: 100%; }
+  .sign-out-button { width: 100%; }
 }

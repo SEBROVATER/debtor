@@ -14,7 +14,7 @@ use tower_sessions::Session;
 
 use super::{
     ExpenseForm,
-    auth::{csrf, require_auth},
+    auth::{authenticated_shell, csrf, require_auth},
     groups::require_writable_group,
     response::{error_response, map_error, render},
     spending_views::{build_group_template, map_group_template_error, named_allocations},
@@ -99,6 +99,10 @@ pub(crate) async fn spending_detail(
         .into_iter()
         .map(|(participant, _)| (participant.id, participant.name.to_string()))
         .collect();
+    let shell = match authenticated_shell(&state, &session).await {
+        Ok(shell) => shell,
+        Err(response) => return response,
+    };
     render(&SpendingDetailTemplate {
         group_id,
         spending_id,
@@ -114,6 +118,7 @@ pub(crate) async fn spending_detail(
             Ok(token) => token,
             Err(response) => return response,
         },
+        shell,
     })
 }
 
@@ -132,6 +137,10 @@ pub(crate) async fn delete_spending_form(
         Ok(value) => value,
         Err(error) => return map_error(error),
     };
+    let shell = match authenticated_shell(&state, &session).await {
+        Ok(shell) => shell,
+        Err(response) => return response,
+    };
     render(&ConfirmTemplate {
         heading: "Delete expense".into(),
         message: format!(
@@ -146,6 +155,7 @@ pub(crate) async fn delete_spending_form(
             Ok(token) => token,
             Err(response) => return response,
         },
+        shell,
     })
 }
 

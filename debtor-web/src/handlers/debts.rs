@@ -10,7 +10,7 @@ use tower_sessions::Session;
 
 use super::{
     DebtQuery,
-    auth::require_auth,
+    auth::{authenticated_shell, require_auth},
     response::{error_response, map_error, render},
 };
 use crate::{
@@ -49,6 +49,10 @@ pub(crate) async fn debts(
         .iter()
         .any(|r| r.is_stale || r.is_provisional)
         .then(|| "Some conversions use stale or provisional rates.".to_string());
+    let shell = match authenticated_shell(&state, &session).await {
+        Ok(shell) => shell,
+        Err(response) => return response,
+    };
     render(&DebtsTemplate {
         currency: result.currency.to_string(),
         transfers: result
@@ -86,5 +90,6 @@ pub(crate) async fn debts(
                 provisional: r.is_provisional,
             })
             .collect(),
+        shell,
     })
 }

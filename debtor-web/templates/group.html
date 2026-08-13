@@ -5,14 +5,22 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{{ name }} | debtor</title>
     <link rel="stylesheet" href="/static/css/app.css" />
+    <script src="/static/htmx.min.js" integrity="sha384-H5SrcfygHmAuTDZphMHqBJLc3FhssKjG7w/CeCpFReSfwBWDTKpkzPP8c+cLsK+V" crossorigin="anonymous" defer></script>
+    <script src="/static/response-targets.js" integrity="sha384-NtTh9TBZ2X/pFpfsVvQOjSsYWmjmqG6h5ioQWVAe2/j3AuTHRmfqvoqp+iOed+I0" crossorigin="anonymous" defer></script>
   </head>
   <body>
-    <header>
+    <header id="authenticated-header" class="site-header" aria-busy="false">
       <a href="/groups">debtor</a>
       <nav>
         <a href="/groups/{{ group_id }}/debts">Debts</a>{% if !archived %}
         <a href="/groups/{{ group_id }}/edit">Settings</a>{% endif %}
       </nav>
+      <form method="post" action="/logout" class="sign-out-form" hx-ext="response-targets" hx-target="#sign-out-status" hx-target-4xx="#sign-out-status" hx-target-5xx="#sign-out-status">
+        <input type="hidden" name="csrf" value="{{ shell.csrf }}" />
+        <input type="hidden" name="submission_token" value="{{ shell.submission_token }}" />
+        <button type="submit" class="sign-out-button" hx-post="/logout" hx-disabled-elt="button" hx-indicator="#sign-out-status">Sign out</button>
+        <p id="sign-out-status" class="status" role="status" aria-live="polite" aria-atomic="true"> </p>
+      </form>
     </header>
     <main>
       <div class="page-heading">

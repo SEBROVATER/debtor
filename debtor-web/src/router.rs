@@ -140,6 +140,7 @@ pub fn router_with_sessions<S: SessionStore + Clone>(
 #[allow(clippy::expect_used)]
 mod tests {
     use std::sync::Arc;
+    use tokio::sync::Barrier;
 
     use axum::{
         body::{Body, to_bytes},
@@ -307,6 +308,285 @@ mod tests {
                 .await
                 .contains("href=\"/groups/1\">Newest</a>")
         );
+    }
+
+    #[tokio::test]
+    async fn sign_out_flushes_the_session_and_expires_the_cookie() {
+        let test_state = state(false);
+        let app = app(&test_state);
+        let authenticated_cookie = login(&app).await;
+        let page = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                "/groups",
+                "",
+                Some(&authenticated_cookie),
+            ))
+            .await
+            .expect("groups page");
+        assert_eq!(page.status(), StatusCode::OK);
+        let body = response_body(page).await;
+        assert_eq!(body.matches("name=\"submission_token\"").count(), 1);
+        assert_eq!(body.matches("action=\"/logout\"").count(), 1);
+        let csrf_token = csrf(&body);
+        let sign_out_token = submission_token(&body);
+
+        let response = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                "/logout",
+                &format!("csrf={csrf_token}&submission_token={sign_out_token}"),
+                Some(&authenticated_cookie),
+            ))
+            .await
+            .expect("logout response");
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(response.headers()["location"], "/login");
+        assert!(
+            response
+                .headers()
+                .get(SET_COOKIE)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value.contains("Max-Age=0"))
+        );
+
+        let response = app
+            .oneshot(request(
+                Method::GET,
+                "/groups",
+                "",
+                Some(&authenticated_cookie),
+            ))
+            .await
+            .expect("post-logout protected response");
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(response.headers()["location"], "/login");
+    }
+
+    #[tokio::test]
+    async fn invalid_sign_out_preserves_session_and_token_for_retry() {
+        let test_state = state(false);
+        let app = app(&test_state);
+        let authenticated_cookie = login(&app).await;
+        let page = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                "/groups",
+                "",
+                Some(&authenticated_cookie),
+            ))
+            .await
+            .expect("groups page");
+        let body = response_body(page).await;
+        let csrf_token = csrf(&body);
+        let sign_out_token = submission_token(&body);
+
+        let response = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                "/logout",
+                &format!("csrf=wrong&submission_token={sign_out_token}"),
+                Some(&authenticated_cookie),
+            ))
+            .await
+            .expect("invalid logout response");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        let response = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                "/groups",
+                "",
+                Some(&authenticated_cookie),
+            ))
+            .await
+            .expect("authenticated retry");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        let response = app
+            .oneshot(request(
+                Method::POST,
+                "/logout",
+                &format!("csrf={csrf_token}&submission_token={sign_out_token}"),
+                Some(&authenticated_cookie),
+            ))
+            .await
+            .expect("retry logout response");
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert!(body.contains("Sign out"));
+    }
+
+    #[tokio::test]
+    async fn sign_out_replay_returns_conflict_without_second_flush() {
+        let test_state = state(false);
+        let app = app(&test_state);
+        let authenticated_cookie = login(&app).await;
+        let page = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                "/groups",
+                "",
+                Some(&authenticated_cookie),
+            ))
+            .await
+            .expect("groups page");
+        let body = response_body(page).await;
+        let form = format!(
+            "csrf={}&submission_token={}",
+            csrf(&body),
+            submission_token(&body)
+        );
+        let response = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                "/logout",
+                &form,
+                Some(&authenticated_cookie),
+            ))
+            .await
+            .expect("first logout");
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+
+        let response = app
+            .oneshot(request(
+                Method::POST,
+                "/logout",
+                &form,
+                Some(&authenticated_cookie),
+            ))
+            .await
+            .expect("replayed logout");
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(response.headers().get("location").is_none());
+    }
+
+    #[tokio::test]
+    async fn concurrent_sign_out_requests_have_one_winner() {
+        let test_state = state(false);
+        let app = app(&test_state);
+        let cookie = login(&app).await;
+        let page = app
+            .clone()
+            .oneshot(request(Method::GET, "/groups", "", Some(&cookie)))
+            .await
+            .expect("groups page");
+        let body = response_body(page).await;
+        let form = format!(
+            "csrf={}&submission_token={}",
+            csrf(&body),
+            submission_token(&body)
+        );
+        let barrier = Arc::new(Barrier::new(3));
+        let first = app.clone();
+        let second = app;
+        let first_form = form.clone();
+        let second_form = form;
+        let first_cookie = cookie.clone();
+        let second_cookie = cookie;
+        let first_barrier = barrier.clone();
+        let second_barrier = barrier.clone();
+        let first_task = tokio::spawn(async move {
+            first_barrier.wait().await;
+            first
+                .oneshot(request(
+                    Method::POST,
+                    "/logout",
+                    &first_form,
+                    Some(&first_cookie),
+                ))
+                .await
+                .expect("first concurrent logout")
+                .status()
+        });
+        let second_task = tokio::spawn(async move {
+            second_barrier.wait().await;
+            second
+                .oneshot(request(
+                    Method::POST,
+                    "/logout",
+                    &second_form,
+                    Some(&second_cookie),
+                ))
+                .await
+                .expect("second concurrent logout")
+                .status()
+        });
+        barrier.wait().await;
+        let statuses = [
+            first_task.await.expect("first task"),
+            second_task.await.expect("second task"),
+        ];
+        assert!(statuses.contains(&StatusCode::SEE_OTHER));
+        assert!(statuses.contains(&StatusCode::CONFLICT));
+    }
+
+    #[tokio::test]
+    async fn authenticated_shell_exposes_pending_and_failure_targets() {
+        let test_state = state(false);
+        let app = app(&test_state);
+        let cookie = login(&app).await;
+        let response = app
+            .oneshot(request(Method::GET, "/groups", "", Some(&cookie)))
+            .await
+            .expect("groups page");
+        let body = response_body(response).await;
+        assert!(body.contains("aria-busy=\"false\""));
+        assert!(body.contains("hx-target-4xx=\"#sign-out-status\""));
+        assert!(body.contains("hx-target-5xx=\"#sign-out-status\""));
+        assert!(body.contains("response-targets.js"));
+        assert!(body.contains("integrity=\"sha384-NtTh9TBZ2X/"));
+        assert!(body.contains("id=\"sign-out-status\""));
+    }
+
+    #[tokio::test]
+    async fn sign_out_rejects_duplicate_fields_before_flush() {
+        let test_state = state(false);
+        let app = app(&test_state);
+        let authenticated_cookie = login(&app).await;
+        let page = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                "/groups",
+                "",
+                Some(&authenticated_cookie),
+            ))
+            .await
+            .expect("groups page");
+        let body = response_body(page).await;
+        let token = submission_token(&body);
+        let response = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                "/logout",
+                &format!(
+                    "csrf={}&csrf=duplicate&submission_token={token}",
+                    csrf(&body)
+                ),
+                Some(&authenticated_cookie),
+            ))
+            .await
+            .expect("duplicate logout response");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        let response = app
+            .oneshot(request(
+                Method::GET,
+                "/groups",
+                "",
+                Some(&authenticated_cookie),
+            ))
+            .await
+            .expect("authenticated session after rejection");
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[tokio::test]

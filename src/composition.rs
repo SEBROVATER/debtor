@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use axum::error_handling::HandleErrorLayer;
+use axum::{error_handling::HandleErrorLayer, middleware};
+use axum::{extract::Request, response::Response};
 use debtor_application::{
     AuthenticationService, AuthenticationUseCases, Clock, DebtService, DebtUseCases, GroupReader,
     GroupRepository, GroupService, GroupUseCases, LedgerSnapshotReader, ParticipantReader,
@@ -33,6 +34,15 @@ pub(crate) struct BuiltApp {
     pub(crate) session_store: ReapingMemoryStore,
     pub(crate) cleanup_health: CleanupHealth,
     pub(crate) submission_token_store: AnonymousSubmissionTokenStore,
+}
+
+async fn static_headers(request: Request, next: axum::middleware::Next) -> Response {
+    let mut response = next.run(request).await;
+    response.headers_mut().insert(
+        axum::http::header::X_CONTENT_TYPE_OPTIONS,
+        axum::http::HeaderValue::from_static("nosniff"),
+    );
+    response
 }
 
 #[allow(clippy::too_many_lines)]
@@ -140,6 +150,7 @@ pub(crate) async fn build_app(config: Config) -> Result<BuiltApp, StartupError> 
         ))
         .service(ServeDir::new("static"));
     let app = debtor_web::router::router_with_sessions(state, sessions, user_limit)
+        .layer(middleware::from_fn(static_headers))
         .nest_service("/static", static_service);
     tracing::info!(
         target: "debtor.startup",

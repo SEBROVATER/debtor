@@ -97,7 +97,15 @@ pub async fn require_authenticated(
     match authenticated {
         Ok(true) => {
             session.set_expiry(Some(session::authenticated_expiry()));
-            next.run(request).await
+            let logout = request.uri().path() == "/logout";
+            let response = next.run(request).await;
+            if !logout && !session.is_empty().await && session.save().await.is_err() {
+                return (StatusCode::INTERNAL_SERVER_ERROR, "Session error.").into_response();
+            }
+            response
+        }
+        Ok(false) if request.uri().path() == "/logout" => {
+            (StatusCode::CONFLICT, "Invalid sign-out request.").into_response()
         }
         Ok(false) => Redirect::to("/login").into_response(),
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Session error.").into_response(),

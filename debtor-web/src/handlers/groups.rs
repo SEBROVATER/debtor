@@ -8,7 +8,7 @@ use tower_sessions::Session;
 
 use super::{
     GroupsQuery,
-    auth::{csrf, require_auth},
+    auth::{authenticated_shell, require_auth},
     response::{error_response, map_error, render},
     spending_views::{build_group_template, map_group_template_error},
 };
@@ -183,16 +183,20 @@ pub(crate) async fn delete_group_form(
         return response;
     }
     match state.groups.group(id).await {
-        Ok(group) if !group.is_archived => render(&ConfirmTemplate {
-            heading: "Delete empty group".into(),
-            message: "This permanently deletes the group only if it has no expenses.".into(),
-            action: format!("/groups/{id}/delete"),
-            cancel: format!("/groups/{id}"),
-            csrf: match csrf(&session).await {
-                Ok(token) => token,
+        Ok(group) if !group.is_archived => {
+            let shell = match authenticated_shell(&state, &session).await {
+                Ok(shell) => shell,
                 Err(response) => return response,
-            },
-        }),
+            };
+            render(&ConfirmTemplate {
+                heading: "Delete empty group".into(),
+                message: "This permanently deletes the group only if it has no expenses.".into(),
+                action: format!("/groups/{id}/delete"),
+                cancel: format!("/groups/{id}"),
+                csrf: shell.csrf.clone(),
+                shell,
+            })
+        }
         Ok(_) => error_response(StatusCode::CONFLICT, "Archived groups cannot be deleted."),
         Err(error) => map_error(error),
     }
@@ -243,7 +247,7 @@ async fn groups_template(
         .list_groups(archived)
         .await
         .map_err(map_error)?;
-    let csrf = csrf(session).await?;
+    let shell = authenticated_shell(state, session).await?;
     Ok(GroupsTemplate {
         groups: items
             .into_iter()
@@ -253,7 +257,8 @@ async fn groups_template(
                 currency: g.currency.to_string(),
             })
             .collect(),
-        csrf,
+        csrf: shell.csrf.clone(),
+        shell,
         archived,
         create_name: create_name.to_owned(),
         create_currency: create_currency.to_owned(),
@@ -291,12 +296,14 @@ async fn group_edit_template(
     }
     let (name, currency) =
         draft.unwrap_or_else(|| (group.name.to_string(), group.currency.to_string()));
+    let shell = authenticated_shell(state, session).await?;
     Ok(GroupEditTemplate {
         id,
         name,
         currency: currency.clone(),
         currencies: currency_options(&currency),
-        csrf: csrf(session).await?,
+        csrf: shell.csrf.clone(),
+        shell,
         error,
     })
 }

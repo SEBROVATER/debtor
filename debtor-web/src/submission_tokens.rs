@@ -1,4 +1,4 @@
-//! Bounded anonymous submission-token storage.
+//! Bounded process-local submission-token storage.
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -29,10 +29,13 @@ struct TokenRecord {
 struct StoreState {
     records: HashMap<String, TokenRecord>,
     session_tokens: HashMap<i128, String>,
+    sign_out_records: HashMap<String, TokenRecord>,
+    sign_out_session_tokens: HashMap<i128, String>,
     expiry_index: BTreeMap<OffsetDateTime, BTreeSet<String>>,
+    sign_out_expiry_index: BTreeMap<OffsetDateTime, BTreeSet<String>>,
 }
 
-/// A bounded, process-local store for anonymous Login submission tokens.
+/// A bounded, process-local store for Login and Sign out submission tokens.
 pub struct AnonymousSubmissionTokenStore {
     state: Arc<Mutex<StoreState>>,
     now: Arc<dyn Fn() -> OffsetDateTime + Send + Sync>,
@@ -79,12 +82,20 @@ impl AnonymousSubmissionTokenStore {
     }
 
     fn remove_from_index(state: &mut StoreState, token: &str, expiry: OffsetDateTime) {
-        let remove_bucket = state.expiry_index.get_mut(&expiry).is_some_and(|tokens| {
+        Self::remove_from_expiry_index(&mut state.expiry_index, token, expiry);
+    }
+
+    fn remove_from_expiry_index(
+        index: &mut BTreeMap<OffsetDateTime, BTreeSet<String>>,
+        token: &str,
+        expiry: OffsetDateTime,
+    ) {
+        let remove_bucket = index.get_mut(&expiry).is_some_and(|tokens| {
             tokens.remove(token);
             tokens.is_empty()
         });
         if remove_bucket {
-            state.expiry_index.remove(&expiry);
+            index.remove(&expiry);
         }
     }
 
@@ -115,6 +126,28 @@ impl AnonymousSubmissionTokenStore {
                         .is_some_and(|value| value == &token)
                 {
                     state.session_tokens.remove(&record.session_id);
+                }
+            }
+        }
+    }
+
+    fn remove_expired_sign_out(state: &mut StoreState, now: OffsetDateTime) {
+        while let Some((&expiry, _)) = state.sign_out_expiry_index.first_key_value() {
+            if expiry > now {
+                break;
+            }
+            let tokens = state
+                .sign_out_expiry_index
+                .remove(&expiry)
+                .unwrap_or_default();
+            for token in tokens {
+                if let Some(record) = state.sign_out_records.remove(&token)
+                    && state
+                        .sign_out_session_tokens
+                        .get(&record.session_id)
+                        .is_some_and(|value| value == &token)
+                {
+                    state.sign_out_session_tokens.remove(&record.session_id);
                 }
             }
         }
@@ -176,6 +209,75 @@ impl AnonymousSubmissionTokenStore {
         Ok(token)
     }
 
+    /// Issues or refreshes the one Sign out token for an authenticated session.
+    ///
+    /// This first authenticated consumer intentionally has its own namespace;
+    /// the general authenticated token pool is introduced by Story 1.7.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Capacity` when the Sign out pool cannot admit a new token.
+    pub async fn issue_sign_out(
+        &self,
+        session_id: tower_sessions::session::Id,
+    ) -> Result<String, IssueError> {
+        let session_id = session_id.0;
+        let now = self.current_time();
+        let expiry = now + TOKEN_LIFETIME;
+        let mut state = self.state.lock().await;
+        Self::remove_expired_sign_out(&mut state, now);
+
+        if let Some(token) = state.sign_out_session_tokens.get(&session_id).cloned() {
+            if let Some(record) = state.sign_out_records.get(&token)
+                && !record.reserved
+            {
+                let previous_expiry = record.expiry;
+                Self::remove_from_expiry_index(
+                    &mut state.sign_out_expiry_index,
+                    &token,
+                    previous_expiry,
+                );
+                if let Some(record) = state.sign_out_records.get_mut(&token) {
+                    record.expiry = expiry;
+                }
+                state
+                    .sign_out_expiry_index
+                    .entry(expiry)
+                    .or_default()
+                    .insert(token.clone());
+                return Ok(token);
+            }
+            // A reserved token is terminal. Keep returning its opaque value
+            // rather than replacing it during a concurrent render.
+            if state.sign_out_records.contains_key(&token) {
+                return Err(IssueError::Reserved);
+            }
+        }
+
+        if state.sign_out_records.len() >= ANONYMOUS_CAPACITY {
+            return Err(IssueError::Capacity);
+        }
+
+        let token = Uuid::new_v4().to_string();
+        state.sign_out_records.insert(
+            token.clone(),
+            TokenRecord {
+                session_id,
+                expiry,
+                reserved: false,
+            },
+        );
+        state
+            .sign_out_session_tokens
+            .insert(session_id, token.clone());
+        state
+            .sign_out_expiry_index
+            .entry(expiry)
+            .or_default()
+            .insert(token.clone());
+        Ok(token)
+    }
+
     /// Reserves a token for the Login dispatch boundary.
     ///
     /// This is intentionally not called by Story 1.4. Story 1.5 uses it
@@ -193,11 +295,17 @@ impl AnonymousSubmissionTokenStore {
         let mut state = self.state.lock().await;
         let now = self.current_time();
         Self::remove_expired(&mut state, now);
-        let record = state.records.get_mut(token).ok_or(ReserveError::Conflict)?;
-        if record.session_id != session_id.0 || record.reserved || record.expiry <= now {
+        let valid_record = state.records.get(token).is_some_and(|record| {
+            record.session_id == session_id.0 && !record.reserved && record.expiry > now
+        });
+        if !valid_record {
             return Err(ReserveError::Conflict);
         }
-        record.reserved = true;
+        state
+            .records
+            .get_mut(token)
+            .ok_or(ReserveError::Conflict)?
+            .reserved = true;
         Ok(())
     }
 
@@ -215,12 +323,50 @@ impl AnonymousSubmissionTokenStore {
         let mut state = self.state.lock().await;
         let now = self.current_time();
         Self::remove_expired(&mut state, now);
-        let record = state.records.get_mut(token).ok_or(ReserveError::Conflict)?;
-        if record.session_id != session_id.0 || record.reserved || record.expiry <= now {
+        let valid_record = state.records.get(token).is_some_and(|record| {
+            record.session_id == session_id.0 && !record.reserved && record.expiry > now
+        });
+        if !valid_record {
             return Err(ReserveError::Conflict);
         }
         dispatch().map_err(|()| ReserveError::Deadline)?;
-        record.reserved = true;
+        state
+            .records
+            .get_mut(token)
+            .ok_or(ReserveError::Conflict)?
+            .reserved = true;
+        Ok(())
+    }
+
+    /// Validates and terminally reserves a Sign out token at dispatch.
+    pub(crate) async fn reserve_sign_out_and_dispatch(
+        &self,
+        session_id: tower_sessions::session::Id,
+        token: &str,
+        dispatch: impl FnOnce() -> Result<(), ()>,
+    ) -> Result<(), ReserveError> {
+        let mut state = self.state.lock().await;
+        let now = self.current_time();
+        Self::remove_expired_sign_out(&mut state, now);
+        let valid_record = state.sign_out_records.get(token).is_some_and(|record| {
+            record.session_id == session_id.0 && !record.reserved && record.expiry > now
+        });
+        if !valid_record {
+            return Err(ReserveError::Conflict);
+        }
+        if state
+            .sign_out_session_tokens
+            .get(&session_id.0)
+            .is_none_or(|value| value != token)
+        {
+            return Err(ReserveError::Conflict);
+        }
+        dispatch().map_err(|()| ReserveError::Deadline)?;
+        state
+            .sign_out_records
+            .get_mut(token)
+            .ok_or(ReserveError::Conflict)?
+            .reserved = true;
         Ok(())
     }
 
@@ -236,6 +382,8 @@ impl AnonymousSubmissionTokenStore {
 pub enum IssueError {
     /// No new token can be admitted without evicting a live token.
     Capacity,
+    /// The session's existing Sign out token has already crossed dispatch.
+    Reserved,
 }
 
 /// A token could not cross the future dispatch boundary.
@@ -249,7 +397,10 @@ pub enum ReserveError {
 
 impl fmt::Display for IssueError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(CAPACITY_ERROR)
+        formatter.write_str(match self {
+            Self::Capacity => CAPACITY_ERROR,
+            Self::Reserved => CONFLICT_ERROR,
+        })
     }
 }
 
@@ -268,6 +419,7 @@ impl AnonymousSubmissionTokenStore {
         let mut state = self.state.lock().await;
         let now = self.current_time();
         Self::remove_expired(&mut state, now);
+        Self::remove_expired_sign_out(&mut state, now);
     }
 }
 
@@ -401,5 +553,83 @@ mod tests {
         store.delete_expired().await;
         assert_eq!(store.len().await, 0);
         assert_eq!(store.issue(id(3)).await.expect("reused capacity").len(), 36);
+    }
+
+    #[tokio::test]
+    async fn issues_and_reserves_one_sign_out_token_per_authenticated_session() {
+        let (_, store) = store();
+        let first = store.issue_sign_out(id(7)).await.expect("sign-out token");
+        let second = store
+            .issue_sign_out(id(7))
+            .await
+            .expect("same sign-out token");
+        assert_eq!(first, second);
+        assert_ne!(first, store.issue(id(7)).await.expect("anonymous token"));
+
+        store
+            .reserve_sign_out_and_dispatch(id(7), &first, || Ok(()))
+            .await
+            .expect("reserve sign-out token");
+        assert_eq!(store.issue_sign_out(id(7)).await, Err(IssueError::Reserved));
+        assert_eq!(
+            store
+                .reserve_sign_out_and_dispatch(id(7), &first, || Ok(()))
+                .await,
+            Err(ReserveError::Conflict)
+        );
+    }
+
+    #[tokio::test]
+    async fn sign_out_tokens_are_session_bound_and_expire() {
+        let (now, store) = store();
+        let token = store.issue_sign_out(id(7)).await.expect("token");
+        assert_eq!(
+            store
+                .reserve_sign_out_and_dispatch(id(8), &token, || Ok(()))
+                .await,
+            Err(ReserveError::Conflict)
+        );
+        *now.lock().unwrap() += TOKEN_LIFETIME + time::Duration::seconds(1);
+        assert_eq!(
+            store
+                .reserve_sign_out_and_dispatch(id(7), &token, || Ok(()))
+                .await,
+            Err(ReserveError::Conflict)
+        );
+    }
+
+    #[tokio::test]
+    async fn login_and_sign_out_pools_have_independent_capacity() {
+        let (_, store) = store();
+        for session in 0..ANONYMOUS_CAPACITY {
+            store
+                .issue(id(session as i128))
+                .await
+                .expect("login token capacity");
+            store
+                .issue_sign_out(id(session as i128))
+                .await
+                .expect("sign-out token capacity");
+        }
+        assert_eq!(store.len().await, ANONYMOUS_CAPACITY);
+        assert_eq!(
+            store.issue(id(ANONYMOUS_CAPACITY as i128)).await,
+            Err(IssueError::Capacity)
+        );
+        assert!(
+            store
+                .issue_sign_out(id(ANONYMOUS_CAPACITY as i128))
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn cleanup_physically_removes_expired_sign_out_tokens() {
+        let (now, store) = store();
+        store.issue_sign_out(id(7)).await.expect("sign-out token");
+        *now.lock().unwrap() += TOKEN_LIFETIME + time::Duration::seconds(1);
+        store.delete_expired().await;
+        assert!(store.issue_sign_out(id(7)).await.is_ok());
     }
 }

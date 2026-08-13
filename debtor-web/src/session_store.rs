@@ -193,6 +193,11 @@ impl SessionStore for ReapingMemoryStore {
 
         let new_anonymous = Self::is_anonymous(record);
         let old = state.records.get(&record.id).cloned();
+        if old.is_none() {
+            return Err(session_store::Error::Backend(
+                "session no longer exists".to_owned(),
+            ));
+        }
         let old_anonymous = old.as_ref().is_some_and(Self::is_anonymous);
         let old_authenticated = old.as_ref().is_some_and(|value| !Self::is_anonymous(value));
         let available_anonymous = state.anonymous_count - usize::from(old_anonymous);
@@ -416,6 +421,20 @@ mod tests {
         assert_eq!(store.counts().await, (1, 1, 0));
         store.delete(&next.id).await.unwrap();
         assert_eq!(store.counts().await, (0, 0, 0));
+    }
+
+    #[tokio::test]
+    async fn stale_save_cannot_resurrect_a_deleted_session() {
+        let (_, store) = clock();
+        let mut record = record(
+            Id::default(),
+            OffsetDateTime::UNIX_EPOCH + Duration::hours(1),
+        );
+        record.data.insert("authenticated".into(), json!(true));
+        store.create(&mut record).await.unwrap();
+        store.delete(&record.id).await.unwrap();
+        assert!(store.save(&record).await.is_err());
+        assert!(store.load(&record.id).await.unwrap().is_none());
     }
 
     #[tokio::test]
