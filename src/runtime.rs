@@ -30,8 +30,10 @@ impl CleanupHealth {
         Self(Arc::new(AtomicBool::new(true)))
     }
 
-    fn mark_unhealthy(&self) {
-        self.0.store(false, Ordering::Release);
+    fn mark_unhealthy(&self) -> bool {
+        self.0
+            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
     }
 }
 
@@ -45,6 +47,7 @@ impl SupervisorReadiness for CleanupHealth {
 pub(crate) enum ShutdownTrigger {
     Signal,
     SignalFailure,
+    ReadinessFailure,
     CleanupFailure,
     HttpFailure,
     CheckpointFailure,
@@ -60,6 +63,7 @@ impl ShutdownTrigger {
         match self {
             Self::Signal => "signal",
             Self::SignalFailure => "signal_failure",
+            Self::ReadinessFailure => "readiness_failure",
             Self::CleanupFailure => "cleanup_failure",
             Self::HttpFailure => "http_failure",
             Self::CheckpointFailure => "checkpoint_failure",
@@ -88,12 +92,24 @@ pub(crate) struct ShutdownOutcome {
 
 impl ShutdownCoordinator {
     pub(crate) async fn request(&self, trigger: ShutdownTrigger) {
+        self.request_inner(trigger, false).await;
+    }
+
+    pub(crate) async fn request_if_unrequested(&self, trigger: ShutdownTrigger) -> bool {
+        self.request_inner(trigger, true).await
+    }
+
+    async fn request_inner(&self, trigger: ShutdownTrigger, only_if_unrequested: bool) -> bool {
         let mut state = self.state.lock().await;
         let first = state.first.is_none();
+        if only_if_unrequested && !first {
+            return false;
+        }
         if first {
             state.first = Some(trigger);
         }
-        if trigger.is_fatal() {
+        let fatal_recorded = trigger.is_fatal() && !state.fatal_triggers.contains(&trigger);
+        if fatal_recorded {
             state.fatal_triggers.push(trigger);
         }
         drop(state);
@@ -110,7 +126,7 @@ impl ShutdownCoordinator {
                     trigger = trigger.name(),
                 );
             }
-        } else if trigger.is_fatal() {
+        } else if fatal_recorded {
             tracing::warn!(
                 target: "debtor.runtime",
                 event = "shutdown_failure",
@@ -118,6 +134,11 @@ impl ShutdownCoordinator {
             );
         }
         self.notify.notify_waiters();
+        true
+    }
+
+    async fn is_requested(&self) -> bool {
+        self.state.lock().await.first.is_some()
     }
 
     async fn wait(&self) {
@@ -211,6 +232,7 @@ pub(crate) async fn cleanup_worker<S>(
     store: S,
     coordinator: ShutdownCoordinator,
     health: CleanupHealth,
+    runtime: debtor_web::state::RuntimeControl,
     interval: Duration,
 ) where
     S: ExpiredDeletion + Clone,
@@ -219,9 +241,7 @@ pub(crate) async fn cleanup_worker<S>(
         tokio::select! {
             () = coordinator.wait() => return,
             () = tokio::time::sleep(interval) => {
-                if store.delete_expired().await.is_err() {
-                    health.mark_unhealthy();
-                    coordinator.request(ShutdownTrigger::CleanupFailure).await;
+                if !run_session_cleanup_iteration(&store, &health, &runtime, &coordinator).await {
                     return;
                 }
             }
@@ -233,6 +253,7 @@ pub(crate) async fn submission_token_cleanup_worker<S>(
     store: S,
     coordinator: ShutdownCoordinator,
     health: CleanupHealth,
+    runtime: debtor_web::state::RuntimeControl,
     interval: Duration,
 ) where
     S: SubmissionTokenCleanup + Clone,
@@ -241,14 +262,98 @@ pub(crate) async fn submission_token_cleanup_worker<S>(
         tokio::select! {
             () = coordinator.wait() => return,
             () = tokio::time::sleep(interval) => {
-                if store.cleanup_expired().await.is_err() {
-                    health.mark_unhealthy();
-                    coordinator.request(ShutdownTrigger::CleanupFailure).await;
+                if !run_submission_token_cleanup_iteration(
+                    &store,
+                    &health,
+                    &runtime,
+                    &coordinator,
+                )
+                .await
+                {
                     return;
                 }
             }
         }
     }
+}
+
+pub(crate) async fn run_session_cleanup_iteration<S>(
+    store: &S,
+    health: &CleanupHealth,
+    runtime: &debtor_web::state::RuntimeControl,
+    coordinator: &ShutdownCoordinator,
+) -> bool
+where
+    S: ExpiredDeletion,
+{
+    if store.delete_expired().await.is_err() {
+        report_cleanup_failure(health, runtime, coordinator).await;
+        false
+    } else {
+        true
+    }
+}
+
+pub(crate) async fn run_submission_token_cleanup_iteration<S>(
+    store: &S,
+    health: &CleanupHealth,
+    runtime: &debtor_web::state::RuntimeControl,
+    coordinator: &ShutdownCoordinator,
+) -> bool
+where
+    S: SubmissionTokenCleanup,
+{
+    if store.cleanup_expired().await.is_err() {
+        report_cleanup_failure(health, runtime, coordinator).await;
+        false
+    } else {
+        true
+    }
+}
+
+async fn supervise_cleanup_worker(
+    worker: JoinHandle<()>,
+    coordinator: ShutdownCoordinator,
+    health: CleanupHealth,
+    runtime: debtor_web::state::RuntimeControl,
+) {
+    let result = worker.await;
+    match result {
+        Ok(()) if coordinator.is_requested().await => {}
+        Ok(()) => {
+            report_cleanup_failure(&health, &runtime, &coordinator).await;
+            tracing::warn!(
+                target: "debtor.runtime",
+                event = "cleanup_supervisor_failed",
+                category = "worker_exit",
+            );
+        }
+        Err(error) => {
+            report_cleanup_failure(&health, &runtime, &coordinator).await;
+            let category = if error.is_panic() {
+                "worker_panic"
+            } else if error.is_cancelled() {
+                "worker_cancelled"
+            } else {
+                "worker_join_failure"
+            };
+            tracing::warn!(
+                target: "debtor.runtime",
+                event = "cleanup_supervisor_failed",
+                category,
+            );
+        }
+    }
+}
+
+async fn report_cleanup_failure(
+    health: &CleanupHealth,
+    runtime: &debtor_web::state::RuntimeControl,
+    coordinator: &ShutdownCoordinator,
+) {
+    health.mark_unhealthy();
+    runtime.close_user_admission();
+    coordinator.request(ShutdownTrigger::CleanupFailure).await;
 }
 
 struct WalCheckpoint {
@@ -285,21 +390,6 @@ pub(crate) async fn close_pool_with_timeout(pool: &SqlitePool, timeout: Duration
     tokio::time::timeout(timeout, pool.close()).await.is_ok()
 }
 
-pub(crate) async fn run_runtime(
-    runtime: BuiltApp,
-    listener: tokio::net::TcpListener,
-    signals: SignalReceivers,
-) -> Result<()> {
-    run_runtime_with_options(
-        runtime,
-        listener,
-        signals,
-        ShutdownCoordinator::default(),
-        CLEANUP_INTERVAL,
-    )
-    .await
-}
-
 pub(crate) async fn run_runtime_with_options(
     runtime: BuiltApp,
     listener: tokio::net::TcpListener,
@@ -318,6 +408,16 @@ pub(crate) async fn run_runtime_with_options(
     .await
 }
 
+pub(crate) async fn run_runtime_with_coordinator(
+    runtime: BuiltApp,
+    listener: tokio::net::TcpListener,
+    signals: SignalReceivers,
+    coordinator: ShutdownCoordinator,
+) -> Result<()> {
+    run_runtime_with_options(runtime, listener, signals, coordinator, CLEANUP_INTERVAL).await
+}
+
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn run_runtime_with_timeouts(
     runtime: BuiltApp,
     listener: tokio::net::TcpListener,
@@ -326,22 +426,39 @@ pub(crate) async fn run_runtime_with_timeouts(
     cleanup_interval: Duration,
     http_drain_timeout: Duration,
 ) -> Result<()> {
-    let mut cleanup_handle: JoinHandle<()> = tokio::spawn(cleanup_worker(
+    let cleanup_handle: JoinHandle<()> = tokio::spawn(cleanup_worker(
         runtime.session_store.clone(),
         coordinator.clone(),
         runtime.cleanup_health.clone(),
+        runtime.runtime.clone(),
         cleanup_interval,
     ));
-    let mut submission_token_cleanup_handle: JoinHandle<()> =
+    let submission_token_cleanup_handle: JoinHandle<()> =
         tokio::spawn(submission_token_cleanup_worker(
             runtime.submission_token_store.clone(),
             coordinator.clone(),
             runtime.cleanup_health.clone(),
+            runtime.runtime.clone(),
             cleanup_interval,
         ));
+    let cleanup_abort = cleanup_handle.abort_handle();
+    let submission_token_cleanup_abort = submission_token_cleanup_handle.abort_handle();
+    let mut cleanup_supervisor = tokio::spawn(supervise_cleanup_worker(
+        cleanup_handle,
+        coordinator.clone(),
+        runtime.cleanup_health.clone(),
+        runtime.runtime.clone(),
+    ));
+    let mut submission_token_cleanup_supervisor = tokio::spawn(supervise_cleanup_worker(
+        submission_token_cleanup_handle,
+        coordinator.clone(),
+        runtime.cleanup_health.clone(),
+        runtime.runtime.clone(),
+    ));
     let mut signal_handle: JoinHandle<()> =
         tokio::spawn(signal_worker(signals, coordinator.clone()));
-    let server_shutdown = coordinator.clone();
+    let server_shutdown = Arc::new(Notify::new());
+    let server_shutdown_signal = server_shutdown.clone();
     let mut server = Box::pin(
         axum::serve(
             listener,
@@ -349,36 +466,60 @@ pub(crate) async fn run_runtime_with_timeouts(
                 .app
                 .into_make_service_with_connect_info::<SocketAddr>(),
         )
-        .with_graceful_shutdown(async move { server_shutdown.wait().await })
+        .with_graceful_shutdown(async move { server_shutdown_signal.notified().await })
         .into_future(),
     );
 
     let server_finished = await_server_or_shutdown(&mut server, &coordinator).await;
+    runtime.runtime.close_user_admission();
 
-    if !server_finished
-        && let Some(result) = drain_result(&mut server, http_drain_timeout).await
-        && result.is_err()
-    {
-        coordinator.request(ShutdownTrigger::HttpFailure).await;
+    if !server_finished {
+        let server_shutdown_signal = server_shutdown.clone();
+        let drain_deadline = async move {
+            tokio::time::sleep(http_drain_timeout).await;
+            server_shutdown_signal.notify_one();
+        };
+        tokio::pin!(drain_deadline);
+        tokio::select! {
+            result = &mut server => {
+                if result.is_err() {
+                    coordinator.request(ShutdownTrigger::HttpFailure).await;
+                }
+            }
+            () = &mut drain_deadline => {
+                server_shutdown.notify_one();
+            }
+        }
     }
     drop(server);
 
-    match tokio::time::timeout(CLEANUP_STOP_TIMEOUT, &mut cleanup_handle).await {
+    match tokio::time::timeout(CLEANUP_STOP_TIMEOUT, &mut cleanup_supervisor).await {
         Ok(Ok(())) => {}
-        Ok(Err(_)) => coordinator.request(ShutdownTrigger::CleanupFailure).await,
+        Ok(Err(_)) => {
+            report_cleanup_failure(&runtime.cleanup_health, &runtime.runtime, &coordinator).await;
+        }
         Err(_) => {
-            cleanup_handle.abort();
-            let _ = cleanup_handle.await;
-            coordinator.request(ShutdownTrigger::CleanupFailure).await;
+            cleanup_abort.abort();
+            cleanup_supervisor.abort();
+            let _ = cleanup_supervisor.await;
+            report_cleanup_failure(&runtime.cleanup_health, &runtime.runtime, &coordinator).await;
         }
     }
-    match tokio::time::timeout(CLEANUP_STOP_TIMEOUT, &mut submission_token_cleanup_handle).await {
+    match tokio::time::timeout(
+        CLEANUP_STOP_TIMEOUT,
+        &mut submission_token_cleanup_supervisor,
+    )
+    .await
+    {
         Ok(Ok(())) => {}
-        Ok(Err(_)) => coordinator.request(ShutdownTrigger::CleanupFailure).await,
+        Ok(Err(_)) => {
+            report_cleanup_failure(&runtime.cleanup_health, &runtime.runtime, &coordinator).await;
+        }
         Err(_) => {
-            submission_token_cleanup_handle.abort();
-            let _ = submission_token_cleanup_handle.await;
-            coordinator.request(ShutdownTrigger::CleanupFailure).await;
+            submission_token_cleanup_abort.abort();
+            submission_token_cleanup_supervisor.abort();
+            let _ = submission_token_cleanup_supervisor.await;
+            report_cleanup_failure(&runtime.cleanup_health, &runtime.runtime, &coordinator).await;
         }
     }
     match tokio::time::timeout(CLEANUP_STOP_TIMEOUT, &mut signal_handle).await {
@@ -444,9 +585,71 @@ where
     }
 }
 
+#[cfg(test)]
 pub(crate) async fn drain_result<F>(future: F, timeout: Duration) -> Option<F::Output>
 where
     F: Future,
 {
     tokio::time::timeout(timeout, future).await.ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn unexpected_cleanup_exit_fails_readiness_and_closes_admission_once() {
+        let coordinator = ShutdownCoordinator::default();
+        let health = CleanupHealth::new();
+        let runtime = debtor_web::state::RuntimeControl::default();
+        let first = tokio::spawn(async { panic!("unexpected cleanup exit") });
+        let second = tokio::spawn(async { panic!("unexpected cleanup exit") });
+
+        tokio::join!(
+            supervise_cleanup_worker(first, coordinator.clone(), health.clone(), runtime.clone(),),
+            supervise_cleanup_worker(second, coordinator.clone(), health.clone(), runtime.clone(),),
+        );
+
+        assert!(!health.is_healthy());
+        assert!(!runtime.user_admission_open());
+        let outcome = coordinator.outcome().await;
+        assert_eq!(outcome.first, Some(ShutdownTrigger::CleanupFailure));
+        assert_eq!(
+            outcome.fatal_triggers,
+            vec![ShutdownTrigger::CleanupFailure]
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_cleanup_exit_is_supervisor_failure() {
+        let coordinator = ShutdownCoordinator::default();
+        let health = CleanupHealth::new();
+        let runtime = debtor_web::state::RuntimeControl::default();
+        let worker = tokio::spawn(std::future::pending::<()>());
+        worker.abort();
+
+        supervise_cleanup_worker(worker, coordinator.clone(), health.clone(), runtime.clone())
+            .await;
+
+        assert!(!health.is_healthy());
+        assert!(!runtime.user_admission_open());
+        assert_eq!(
+            coordinator.outcome().await.first,
+            Some(ShutdownTrigger::CleanupFailure)
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_exit_after_coordinated_shutdown_is_not_a_failure() {
+        let coordinator = ShutdownCoordinator::default();
+        let health = CleanupHealth::new();
+        let runtime = debtor_web::state::RuntimeControl::default();
+        coordinator.request(ShutdownTrigger::Signal).await;
+        let worker = tokio::spawn(async {});
+
+        supervise_cleanup_worker(worker, coordinator, health.clone(), runtime.clone()).await;
+
+        assert!(health.is_healthy());
+        assert!(runtime.user_admission_open());
+    }
 }

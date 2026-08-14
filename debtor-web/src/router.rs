@@ -20,17 +20,22 @@ use crate::{
 
 /// Builds the application router from application-facing state.
 pub fn router(state: AppState) -> Router {
-    router_with_sessions(
-        state,
-        SessionManagerLayer::new(ReapingMemoryStore::default())
-            .with_secure(false)
-            .with_expiry(session::anonymous_expiry())
-            .with_always_save(true),
-        Arc::new(Semaphore::new(64)),
+    let runtime_control = state.runtime.clone();
+    user_admission_layer(
+        router_with_sessions(
+            state,
+            SessionManagerLayer::new(ReapingMemoryStore::default())
+                .with_secure(false)
+                .with_expiry(session::anonymous_expiry())
+                .with_always_save(true),
+            Arc::new(Semaphore::new(64)),
+        ),
+        runtime_control,
     )
 }
 
 /// Builds the application router with the production-configured session layer.
+#[allow(clippy::too_many_lines)]
 pub fn router_with_sessions<S: SessionStore + Clone>(
     state: AppState,
     sessions: SessionManagerLayer<S>,
@@ -39,7 +44,10 @@ pub fn router_with_sessions<S: SessionStore + Clone>(
     let public = Router::new()
         .route("/healthz", get(handlers::health))
         .route("/readyz", get(handlers::readiness))
-        .layer(middleware::from_fn(app_middleware::probe_timeout))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            app_middleware::probe_timeout,
+        ))
         .layer(
             ServiceBuilder::new()
                 .layer(HandleErrorLayer::new(app_middleware::overload_error))
@@ -136,11 +144,24 @@ pub fn router_with_sessions<S: SessionStore + Clone>(
         .with_state(state)
 }
 
+fn user_admission_layer<S>(
+    router: Router<S>,
+    runtime_control: crate::state::RuntimeControl,
+) -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    router.layer(middleware::from_fn(move |request, next| {
+        app_middleware::user_admission_or_probe(runtime_control.clone(), request, next)
+    }))
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
+    use async_trait::async_trait;
     use std::sync::Arc;
-    use tokio::sync::Barrier;
+    use tokio::sync::{Barrier, Notify, Semaphore};
 
     use axum::{
         body::{Body, to_bytes},
@@ -151,7 +172,7 @@ mod tests {
         },
         response::Response,
     };
-    use debtor_application::LoginAdmission;
+    use debtor_application::{ApplicationError, LoginAdmission, ReadinessUseCases};
     use debtor_domain::currency::Currency;
     use tower::ServiceExt;
     use tower_sessions::{
@@ -171,6 +192,57 @@ mod tests {
 
     const PEER: std::net::SocketAddr =
         std::net::SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 4000);
+
+    struct BlockingReadiness {
+        entered: Arc<Barrier>,
+        release: Arc<Semaphore>,
+    }
+
+    #[derive(Clone, Debug)]
+    struct BlockingSessionStore {
+        inner: ReapingMemoryStore,
+        entered: Arc<Barrier>,
+        release: Arc<Semaphore>,
+    }
+
+    #[async_trait]
+    impl SessionStore for BlockingSessionStore {
+        async fn create(&self, record: &mut Record) -> tower_sessions::session_store::Result<()> {
+            self.entered.wait().await;
+            self.release
+                .acquire()
+                .await
+                .map(|_| ())
+                .map_err(|_| tower_sessions::session_store::Error::Backend("closed".to_owned()))?;
+            self.inner.create(record).await
+        }
+
+        async fn save(&self, record: &Record) -> tower_sessions::session_store::Result<()> {
+            self.inner.save(record).await
+        }
+
+        async fn load(
+            &self,
+            session_id: &Id,
+        ) -> tower_sessions::session_store::Result<Option<Record>> {
+            self.inner.load(session_id).await
+        }
+
+        async fn delete(&self, session_id: &Id) -> tower_sessions::session_store::Result<()> {
+            self.inner.delete(session_id).await
+        }
+    }
+
+    #[async_trait]
+    impl ReadinessUseCases for BlockingReadiness {
+        async fn check(&self) -> Result<(), ApplicationError> {
+            self.entered.wait().await;
+            self.release.acquire().await.map(|_| ()).map_err(|_| {
+                ApplicationError::Storage(debtor_application::StorageReason::Unexpected)
+            })?;
+            Ok(())
+        }
+    }
 
     fn app(test_state: &TestState) -> axum::Router {
         router(test_state.app.clone())
@@ -200,6 +272,121 @@ mod tests {
             .expect("probe response");
         assert_eq!(response.status(), StatusCode::OK);
         drop(permits);
+    }
+
+    #[tokio::test]
+    async fn probe_capacity_is_four_and_does_not_create_sessions() {
+        let mut test_state = state(false);
+        let entered = Arc::new(Barrier::new(5));
+        let release = Arc::new(Semaphore::new(0));
+        test_state.app.readiness = Arc::new(BlockingReadiness {
+            entered: entered.clone(),
+            release: release.clone(),
+        });
+        let app = app(&test_state);
+
+        let mut requests = Vec::new();
+        for _ in 0..4 {
+            let app = app.clone();
+            requests.push(tokio::spawn(async move {
+                app.oneshot(request(Method::GET, "/readyz", "", None))
+                    .await
+                    .expect("held probe response")
+            }));
+        }
+        entered.wait().await;
+
+        let fifth = app
+            .clone()
+            .oneshot(request(Method::GET, "/readyz", "", None))
+            .await
+            .expect("probe overload response");
+        assert_eq!(fifth.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(fifth.headers().get(SET_COOKIE).is_none());
+
+        release.add_permits(4);
+        for request in requests {
+            assert_eq!(
+                request.await.expect("held probe task").status(),
+                StatusCode::OK
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn login_capacity_is_four_and_probe_capacity_is_independent() {
+        let test_state = state(false);
+        let entered = Arc::new(Barrier::new(5));
+        let release = Arc::new(Semaphore::new(0));
+        let store = BlockingSessionStore {
+            inner: ReapingMemoryStore::default(),
+            entered: entered.clone(),
+            release: release.clone(),
+        };
+        let app = router_with_sessions(
+            test_state.app,
+            SessionManagerLayer::new(store)
+                .with_secure(false)
+                .with_expiry(session::anonymous_expiry())
+                .with_always_save(true),
+            Arc::new(Semaphore::new(64)),
+        );
+
+        let mut logins = Vec::new();
+        for _ in 0..4 {
+            let app = app.clone();
+            logins.push(tokio::spawn(async move {
+                app.oneshot(request(Method::GET, "/login", "", None))
+                    .await
+                    .expect("held login response")
+            }));
+        }
+        entered.wait().await;
+
+        let fifth_login = app
+            .clone()
+            .oneshot(request(Method::GET, "/login", "", None))
+            .await
+            .expect("login overload response");
+        assert_eq!(fifth_login.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(fifth_login.headers().get(SET_COOKIE).is_none());
+
+        let probe = app
+            .oneshot(request(Method::GET, "/healthz", "", None))
+            .await
+            .expect("independent probe response");
+        assert_eq!(probe.status(), StatusCode::OK);
+        assert!(probe.headers().get(SET_COOKIE).is_none());
+
+        release.add_permits(4);
+        for login in logins {
+            assert_eq!(
+                login.await.expect("held login task").status(),
+                StatusCode::OK
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn closed_user_admission_rejects_before_session_loading_but_keeps_probes_live() {
+        let test_state = state(false);
+        test_state.app.runtime.close_user_admission();
+        let app = app(&test_state);
+
+        let login = app
+            .clone()
+            .oneshot(request(Method::GET, "/login", "", None))
+            .await
+            .expect("closed login response");
+        assert_eq!(login.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(login.headers().get(SET_COOKIE).is_none());
+
+        let health = app
+            .oneshot(request(Method::GET, "/healthz", "", None))
+            .await
+            .expect("probe response");
+        assert_eq!(health.status(), StatusCode::OK);
+        assert!(health.headers().get(SET_COOKIE).is_none());
     }
 
     fn request(method: Method, uri: &str, body: &str, cookie: Option<&str>) -> Request<Body> {
@@ -1154,6 +1341,7 @@ mod tests {
         assert_eq!(health.status(), StatusCode::OK);
 
         let readiness = app
+            .clone()
             .oneshot(request(Method::GET, "/readyz", "", None))
             .await
             .expect("readiness response");
@@ -1161,6 +1349,33 @@ mod tests {
         let body = response_body(readiness).await;
         assert!(body.contains("Service temporarily unavailable."));
         assert!(!body.contains("unexpected storage failure"));
+
+        let rejected = app
+            .oneshot(request(Method::GET, "/login", "", None))
+            .await
+            .expect("closed login response");
+        assert_eq!(rejected.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(rejected.headers().get(SET_COOKIE).is_none());
+    }
+
+    #[tokio::test]
+    async fn readiness_failure_invokes_the_injected_shutdown_callback() {
+        let mut test_state = state_with_readiness_failure();
+        let notified = Arc::new(Notify::new());
+        let callback_notification = notified.clone();
+        let control = crate::state::RuntimeControl::with_shutdown_request(move || {
+            callback_notification.notify_one();
+        });
+        test_state.app.runtime = control.clone();
+        let app = app(&test_state);
+
+        let response = app
+            .oneshot(request(Method::GET, "/readyz", "", None))
+            .await
+            .expect("readiness response");
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        notified.notified().await;
+        assert!(!control.user_admission_open());
     }
 
     #[tokio::test]

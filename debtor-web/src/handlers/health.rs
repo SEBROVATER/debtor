@@ -12,9 +12,17 @@ pub(crate) async fn health() -> &'static str {
 }
 
 pub(crate) async fn readiness(State(state): State<AppState>) -> Response {
+    if !state.runtime.user_admission_open() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Service temporarily unavailable.",
+        )
+            .into_response();
+    }
     match state.readiness.check().await {
         Ok(()) => "ok".into_response(),
         Err(error) => {
+            state.runtime.fail_readiness();
             tracing::warn!(
                 target: "debtor.readiness",
                 event = "readiness_failure",

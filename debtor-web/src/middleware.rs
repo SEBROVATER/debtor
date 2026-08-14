@@ -2,7 +2,7 @@
 
 use axum::{
     body::Body,
-    extract::MatchedPath,
+    extract::{MatchedPath, State},
     http::{Method, Request, StatusCode, header::HeaderValue},
     middleware::Next,
     response::{IntoResponse, Redirect, Response},
@@ -19,6 +19,7 @@ use tower::BoxError;
 use tower_sessions::Session;
 
 use crate::session;
+use crate::state::{AppState, RuntimeControl};
 
 const MUTATION_DEADLINE: Duration = Duration::from_secs(30);
 
@@ -78,6 +79,40 @@ pub async fn mutation_preflight(mut request: Request<Body>, next: Next) -> Respo
             .insert(MutationPreflight::new(login_route));
     }
     next.run(request).await
+}
+
+/// Applies the runtime admission boundary to services without application state.
+pub async fn user_admission_with_control(
+    control: RuntimeControl,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    if !control.user_admission_open() {
+        tracing::warn!(
+            target: "debtor.http",
+            event = "request_admission_rejected",
+            category = "runtime",
+            count = 1_u64,
+        );
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Service temporarily unavailable.",
+        )
+            .into_response();
+    }
+    next.run(request).await
+}
+
+/// Applies user admission while leaving the session-free probes available.
+pub async fn user_admission_or_probe(
+    control: RuntimeControl,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    if matches!(request.uri().path(), "/healthz" | "/readyz") {
+        return next.run(request).await;
+    }
+    user_admission_with_control(control, request, next).await
 }
 
 /// Rejects unauthenticated requests before protected handlers are selected.
@@ -222,25 +257,56 @@ async fn safe_read_timeout_with_limits(
 
 /// Applies the fixed login request deadline.
 pub async fn login_timeout(request: Request<Body>, next: Next) -> Response {
-    if request.method() == Method::POST {
-        return next.run(request).await;
-    }
-    match tokio::time::timeout(Duration::from_secs(30), next.run(request)).await {
+    login_timeout_with_limit(request, next, Duration::from_secs(30)).await
+}
+
+async fn login_timeout_with_limit(
+    request: Request<Body>,
+    next: Next,
+    timeout: Duration,
+) -> Response {
+    match tokio::time::timeout(timeout, next.run(request)).await {
         Ok(response) => response,
         Err(_) => login_timeout_response(),
     }
 }
 
 /// Keeps probes responsive under a separate two-second deadline.
-pub async fn probe_timeout(request: Request<Body>, next: Next) -> Response {
-    match tokio::time::timeout(Duration::from_secs(2), next.run(request)).await {
+pub async fn probe_timeout(
+    State(state): State<AppState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    probe_timeout_with_limit(state, request, next, Duration::from_secs(2)).await
+}
+
+async fn probe_timeout_with_limit(
+    state: AppState,
+    request: Request<Body>,
+    next: Next,
+    timeout: Duration,
+) -> Response {
+    let readiness = request.uri().path() == "/readyz";
+    match tokio::time::timeout(timeout, next.run(request)).await {
         Ok(response) => response,
+        Err(_) if readiness => {
+            state.runtime.fail_readiness();
+            readiness_timeout_response()
+        }
         Err(_) => timeout_response(),
     }
 }
 
 fn timeout_response() -> Response {
     (StatusCode::GATEWAY_TIMEOUT, "Request timed out.").into_response()
+}
+
+fn readiness_timeout_response() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Service temporarily unavailable.",
+    )
+        .into_response()
 }
 
 fn login_timeout_response() -> Response {
@@ -258,10 +324,12 @@ mod tests {
         sync::{Arc, Mutex},
         time::Duration,
     };
+    use tokio::sync::Notify;
 
     use axum::{
         Router,
         body::Body,
+        extract::State,
         http::{Method, Request, StatusCode},
         middleware,
         routing::any,
@@ -269,7 +337,10 @@ mod tests {
     use tower::ServiceExt;
     use tracing_subscriber::fmt::MakeWriter;
 
-    use super::{matched_route, record_http_response, safe_read_timeout_with_limits};
+    use super::{
+        login_timeout_with_limit, matched_route, probe_timeout_with_limit, record_http_response,
+        safe_read_timeout_with_limits,
+    };
 
     #[derive(Clone)]
     struct SharedWriter(Arc<Mutex<Vec<u8>>>);
@@ -332,9 +403,12 @@ mod tests {
         let app = Router::new()
             .route(
                 "/{*path}",
-                any(|| async {
-                    tokio::time::sleep(Duration::from_millis(25)).await;
-                    "completed"
+                any(|request: Request<Body>| async move {
+                    if request.method() == Method::GET {
+                        std::future::pending::<&'static str>().await
+                    } else {
+                        "completed"
+                    }
                 }),
             )
             .layer(middleware::from_fn(|request, next| {
@@ -374,12 +448,23 @@ mod tests {
 
     #[tokio::test]
     async fn debt_reads_use_the_longer_budget() {
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
         let app = Router::new()
             .route(
                 "/{*path}",
-                any(|| async {
-                    tokio::time::sleep(Duration::from_millis(25)).await;
-                    "completed"
+                any({
+                    let entered = entered.clone();
+                    let release = release.clone();
+                    move || {
+                        let entered = entered.clone();
+                        let release = release.clone();
+                        async move {
+                            entered.notify_one();
+                            release.notified().await;
+                            "completed"
+                        }
+                    }
                 }),
             )
             .layer(middleware::from_fn(|request, next| {
@@ -390,17 +475,72 @@ mod tests {
                     Duration::from_millis(50),
                 )
             }));
-
-        let response = app
-            .oneshot(
+        let request = tokio::spawn(
+            app.oneshot(
                 Request::builder()
                     .method(Method::GET)
                     .uri("/groups/1/debts")
                     .body(Body::empty())
                     .expect("debt request"),
+            ),
+        );
+        entered.notified().await;
+        release.notify_one();
+        let response = request.await.expect("debt task").expect("debt response");
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn login_requests_use_the_fixed_timeout_class() {
+        let app = Router::new()
+            .route(
+                "/{*path}",
+                any(|| async { std::future::pending::<&'static str>().await }),
+            )
+            .layer(middleware::from_fn(|request, next| {
+                login_timeout_with_limit(request, next, Duration::from_millis(5))
+            }));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/login")
+                    .body(Body::empty())
+                    .expect("login request"),
             )
             .await
-            .expect("debt response");
-        assert_eq!(response.status(), StatusCode::OK);
+            .expect("login timeout response");
+        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+    }
+
+    #[tokio::test]
+    async fn readiness_timeout_closes_admission_and_returns_unavailable() {
+        let test_state = crate::handlers::test_support::state(false);
+        let control = test_state.app.runtime.clone();
+        let app = Router::new()
+            .route(
+                "/readyz",
+                any(|| async { std::future::pending::<&'static str>().await }),
+            )
+            .layer(middleware::from_fn_with_state(
+                test_state.app.clone(),
+                move |State(state), request, next| {
+                    probe_timeout_with_limit(state, request, next, Duration::from_millis(5))
+                },
+            ))
+            .with_state(test_state.app);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/readyz")
+                    .body(Body::empty())
+                    .expect("readiness request"),
+            )
+            .await
+            .expect("readiness timeout response");
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(!control.user_admission_open());
     }
 }

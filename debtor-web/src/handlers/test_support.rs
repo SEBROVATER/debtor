@@ -170,6 +170,7 @@ fn state_with_errors_and_password(
             readiness: Arc::new(FakeReadiness { healthy: true }),
             proxy: TrustedProxyConfig::default(),
             submission_tokens: SubmissionTokenStore::default(),
+            runtime: crate::state::RuntimeControl::default(),
         },
         groups,
         participants,

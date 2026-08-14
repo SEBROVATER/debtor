@@ -7,9 +7,13 @@ mod config;
 mod runtime;
 mod startup_error;
 
+#[cfg(test)]
 use composition::build_app;
+use composition::build_app_with_control;
 use config::Config;
-use runtime::{SignalReceivers, run_runtime};
+use runtime::{
+    ShutdownCoordinator, ShutdownTrigger, SignalReceivers, run_runtime_with_coordinator,
+};
 use startup_error::StartupError;
 
 fn listening_url(address: std::net::SocketAddr) -> String {
@@ -18,10 +22,10 @@ fn listening_url(address: std::net::SocketAddr) -> String {
 
 #[cfg(test)]
 use runtime::{
-    CleanupHealth, ShutdownCoordinator, ShutdownTrigger, await_server_or_shutdown, checkpoint_pool,
-    checkpoint_pool_with_timeout, cleanup_worker, close_pool, close_pool_with_timeout,
-    drain_result, run_runtime_with_options, run_runtime_with_timeouts,
-    submission_token_cleanup_worker,
+    CleanupHealth, await_server_or_shutdown, checkpoint_pool, checkpoint_pool_with_timeout,
+    close_pool, close_pool_with_timeout, drain_result, run_runtime_with_options,
+    run_runtime_with_timeouts, run_session_cleanup_iteration,
+    run_submission_token_cleanup_iteration,
 };
 
 #[tokio::main]
@@ -51,7 +55,17 @@ async fn main() -> Result<()> {
         stage = "signals_registered",
     );
     let bind = config.bind;
-    let runtime = build_app(config).await?;
+    let coordinator = ShutdownCoordinator::default();
+    let shutdown = coordinator.clone();
+    let runtime_control = debtor_web::state::RuntimeControl::with_shutdown_request(move || {
+        let shutdown = shutdown.clone();
+        let _task = tokio::spawn(async move {
+            shutdown
+                .request_if_unrequested(ShutdownTrigger::ReadinessFailure)
+                .await;
+        });
+    });
+    let runtime = build_app_with_control(config, runtime_control).await?;
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .context("unable to bind APP_BIND")?;
@@ -63,7 +77,7 @@ async fn main() -> Result<()> {
         event = "listening",
         url = %listening_url(address),
     );
-    run_runtime(runtime, listener, signals).await
+    run_runtime_with_coordinator(runtime, listener, signals, coordinator).await
 }
 
 #[cfg(test)]
@@ -153,6 +167,7 @@ mod composition_tests {
             session_store: debtor_web::session_store::ReapingMemoryStore::default(),
             cleanup_health: CleanupHealth::new(),
             submission_token_store: debtor_web::submission_tokens::SubmissionTokenStore::default(),
+            runtime: debtor_web::state::RuntimeControl::default(),
         }
     }
 
@@ -258,6 +273,32 @@ mod composition_tests {
             .expect("readiness response");
         assert_eq!(readiness.status(), StatusCode::OK);
         assert!(path.exists());
+        remove_database(&path);
+    }
+
+    #[tokio::test]
+    async fn closed_runtime_admission_rejects_static_assets_before_service_work() {
+        let path = database_path();
+        let control = debtor_web::state::RuntimeControl::default();
+        let runtime = build_app_with_control(config(&path, VALID_HASH), control.clone())
+            .await
+            .expect("build application");
+        assert!(control.close_user_admission());
+
+        let response = runtime
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/static/css/app.css")
+                    .body(Body::empty())
+                    .expect("static request"),
+            )
+            .await
+            .expect("closed static response");
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(response.headers().get("set-cookie").is_none());
+        assert!(close_pool(&runtime.pool).await);
         remove_database(&path);
     }
 
@@ -541,15 +582,11 @@ mod composition_tests {
     async fn cleanup_failure_marks_readiness_unhealthy_before_shutdown() {
         let coordinator = ShutdownCoordinator::default();
         let health = CleanupHealth::new();
-        cleanup_worker(
-            FailingCleanupStore,
-            coordinator.clone(),
-            health.clone(),
-            Duration::from_millis(1),
-        )
-        .await;
+        let runtime = debtor_web::state::RuntimeControl::default();
+        run_session_cleanup_iteration(&FailingCleanupStore, &health, &runtime, &coordinator).await;
 
         assert!(!health.is_healthy());
+        assert!(!runtime.user_admission_open());
         let readiness =
             ReadinessService::with_supervisor(Arc::new(HealthyDatabase), Arc::new(health));
         assert!(matches!(
@@ -580,18 +617,43 @@ mod composition_tests {
 
         let coordinator = ShutdownCoordinator::default();
         let health = CleanupHealth::new();
-        submission_token_cleanup_worker(
-            FailingTokens,
-            coordinator.clone(),
-            health.clone(),
-            Duration::from_millis(1),
-        )
-        .await;
+        let runtime = debtor_web::state::RuntimeControl::default();
+        run_submission_token_cleanup_iteration(&FailingTokens, &health, &runtime, &coordinator)
+            .await;
         assert!(!health.is_healthy());
+        assert!(!runtime.user_admission_open());
         assert_eq!(
             coordinator.outcome().await.first,
             Some(ShutdownTrigger::CleanupFailure)
         );
+    }
+
+    #[tokio::test]
+    async fn readiness_failure_callback_requests_coordinated_shutdown_once() {
+        let coordinator = ShutdownCoordinator::default();
+        let notified = Arc::new(Notify::new());
+        let callback_notification = notified.clone();
+        let shutdown = coordinator.clone();
+        let control = debtor_web::state::RuntimeControl::with_shutdown_request(move || {
+            let shutdown = shutdown.clone();
+            let notification = callback_notification.clone();
+            let _task = tokio::spawn(async move {
+                shutdown
+                    .request_if_unrequested(ShutdownTrigger::ReadinessFailure)
+                    .await;
+                notification.notify_one();
+            });
+        });
+
+        control.fail_readiness();
+        control.fail_readiness();
+        notified.notified().await;
+
+        assert_eq!(
+            coordinator.outcome().await.fatal_triggers,
+            vec![ShutdownTrigger::ReadinessFailure]
+        );
+        assert!(!control.user_admission_open());
     }
 
     #[tokio::test]
@@ -638,22 +700,24 @@ mod composition_tests {
     async fn active_request_drains_before_runtime_shutdown() {
         let entered = Arc::new(Notify::new());
         let release = Arc::new(Notify::new());
-        let app = Router::new().route(
-            "/hold",
-            get({
-                let entered = entered.clone();
-                let release = release.clone();
-                move || {
+        let app = Router::new()
+            .route("/healthz", get(|| async { "ok" }))
+            .route(
+                "/hold",
+                get({
                     let entered = entered.clone();
                     let release = release.clone();
-                    async move {
-                        entered.notify_one();
-                        release.notified().await;
-                        "ok"
+                    move || {
+                        let entered = entered.clone();
+                        let release = release.clone();
+                        async move {
+                            entered.notify_one();
+                            release.notified().await;
+                            "ok"
+                        }
                     }
-                }
-            }),
-        );
+                }),
+            );
         let pool = sqlx::SqlitePool::connect("sqlite::memory:")
             .await
             .expect("test pool");
@@ -685,6 +749,10 @@ mod composition_tests {
                 .await
                 .is_err()
         );
+        let health = reqwest::get(format!("http://{address}/healthz"))
+            .await
+            .expect("draining health response");
+        assert_eq!(health.status(), reqwest::StatusCode::OK);
         release.notify_one();
         assert_eq!(request.await.expect("request task"), "ok");
         assert!(server.await.expect("server task").is_ok());

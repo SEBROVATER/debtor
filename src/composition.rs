@@ -14,7 +14,7 @@ use debtor_infra::db::repos::SqliteLedgerRuntime;
 use debtor_infra::exchange_rates::FrankfurterClient;
 use debtor_web::session;
 use debtor_web::session_store::ReapingMemoryStore;
-use debtor_web::state::{AppState, TrustedProxyConfig};
+use debtor_web::state::{AppState, RuntimeControl, TrustedProxyConfig};
 use debtor_web::submission_tokens::SubmissionTokenStore;
 use sqlx::SqlitePool;
 use tokio::sync::Semaphore;
@@ -34,6 +34,7 @@ pub(crate) struct BuiltApp {
     pub(crate) session_store: ReapingMemoryStore,
     pub(crate) cleanup_health: CleanupHealth,
     pub(crate) submission_token_store: SubmissionTokenStore,
+    pub(crate) runtime: RuntimeControl,
 }
 
 async fn static_headers(request: Request, next: axum::middleware::Next) -> Response {
@@ -46,7 +47,16 @@ async fn static_headers(request: Request, next: axum::middleware::Next) -> Respo
 }
 
 #[allow(clippy::too_many_lines)]
+#[cfg(test)]
 pub(crate) async fn build_app(config: Config) -> Result<BuiltApp, StartupError> {
+    build_app_with_control(config, RuntimeControl::default()).await
+}
+
+#[allow(clippy::too_many_lines)]
+pub(crate) async fn build_app_with_control(
+    config: Config,
+    runtime_control: RuntimeControl,
+) -> Result<BuiltApp, StartupError> {
     let proxy = TrustedProxyConfig::parse_for_environment(
         &config.trusted_proxy_cidrs,
         &config.trusted_proxy_header,
@@ -121,6 +131,7 @@ pub(crate) async fn build_app(config: Config) -> Result<BuiltApp, StartupError> 
         readiness,
         proxy,
         submission_tokens: SubmissionTokenStore::default(),
+        runtime: runtime_control.clone(),
     };
     let session_store = ReapingMemoryStore::default();
     let submission_token_store = state.submission_tokens.clone();
@@ -151,7 +162,17 @@ pub(crate) async fn build_app(config: Config) -> Result<BuiltApp, StartupError> 
         .service(ServeDir::new("static"));
     let app = debtor_web::router::router_with_sessions(state, sessions, user_limit)
         .layer(middleware::from_fn(static_headers))
-        .nest_service("/static", static_service);
+        .nest_service("/static", static_service)
+        .layer(middleware::from_fn({
+            let runtime_control = runtime_control.clone();
+            move |request, next| {
+                debtor_web::middleware::user_admission_or_probe(
+                    runtime_control.clone(),
+                    request,
+                    next,
+                )
+            }
+        }));
     tracing::info!(
         target: "debtor.startup",
         event = "startup_stage",
@@ -163,5 +184,6 @@ pub(crate) async fn build_app(config: Config) -> Result<BuiltApp, StartupError> 
         session_store,
         cleanup_health,
         submission_token_store,
+        runtime: runtime_control,
     })
 }

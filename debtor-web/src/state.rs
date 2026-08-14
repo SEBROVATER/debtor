@@ -2,7 +2,10 @@
 
 use axum::http::HeaderMap;
 use ipnet::IpNet;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::{
     net::{IpAddr, SocketAddr},
     str::FromStr,
@@ -36,6 +39,53 @@ pub struct AppState {
     pub proxy: TrustedProxyConfig,
     /// Shared anonymous and authenticated submission-token owner.
     pub submission_tokens: SubmissionTokenStore,
+    /// Process-local control for user admission and runtime failure signaling.
+    pub runtime: RuntimeControl,
+}
+
+/// Narrow process-local control shared by the HTTP layer and root runtime.
+#[derive(Clone)]
+pub struct RuntimeControl {
+    user_admission: Arc<AtomicBool>,
+    shutdown_request: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl Default for RuntimeControl {
+    fn default() -> Self {
+        Self::with_shutdown_request(|| {})
+    }
+}
+
+impl RuntimeControl {
+    /// Creates a control handle with an injected fatal-shutdown callback.
+    pub fn with_shutdown_request<F>(shutdown_request: F) -> Self
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        Self {
+            user_admission: Arc::new(AtomicBool::new(true)),
+            shutdown_request: Arc::new(shutdown_request),
+        }
+    }
+
+    /// Returns whether new user traffic may enter the application.
+    pub fn user_admission_open(&self) -> bool {
+        self.user_admission.load(Ordering::Acquire)
+    }
+
+    /// Closes new user admission and reports whether this call changed state.
+    pub fn close_user_admission(&self) -> bool {
+        self.user_admission
+            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    /// Closes user admission and requests one coordinated fatal shutdown.
+    pub fn fail_readiness(&self) {
+        if self.close_user_admission() {
+            (self.shutdown_request)();
+        }
+    }
 }
 
 /// Selected forwarding-header policy.
@@ -407,5 +457,45 @@ mod tests {
             config.resolve(peer("10.0.0.9:443"), &headers),
             Ok(ip("2001:db8::25"))
         );
+    }
+}
+
+#[cfg(test)]
+mod runtime_control_tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use super::RuntimeControl;
+
+    #[test]
+    fn runtime_failure_closes_user_admission_and_notifies_once() {
+        let notifications = Arc::new(AtomicUsize::new(0));
+        let counter = notifications.clone();
+        let control = RuntimeControl::with_shutdown_request(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+
+        assert!(control.user_admission_open());
+        control.fail_readiness();
+        control.fail_readiness();
+
+        assert!(!control.user_admission_open());
+        assert_eq!(notifications.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn ordinary_shutdown_closes_admission_without_requesting_failure() {
+        let notifications = Arc::new(AtomicUsize::new(0));
+        let counter = notifications.clone();
+        let control = RuntimeControl::with_shutdown_request(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+
+        assert!(control.close_user_admission());
+        assert!(!control.close_user_admission());
+        assert!(!control.user_admission_open());
+        assert_eq!(notifications.load(Ordering::SeqCst), 0);
     }
 }
