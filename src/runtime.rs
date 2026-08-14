@@ -2,7 +2,7 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 use std::time::Duration;
 
@@ -66,6 +66,7 @@ pub(crate) struct DispatchedMutationRegistry {
     active: Arc<AtomicUsize>,
     empty: Arc<Notify>,
     observed_empty: Arc<AtomicBool>,
+    committed_epoch: Arc<AtomicU64>,
 }
 
 impl Default for DispatchedMutationRegistry {
@@ -75,6 +76,7 @@ impl Default for DispatchedMutationRegistry {
             active: Arc::new(AtomicUsize::new(0)),
             empty: Arc::new(Notify::new()),
             observed_empty: Arc::new(AtomicBool::new(false)),
+            committed_epoch: Arc::new(AtomicU64::new(0)),
         }
     }
 }
@@ -89,6 +91,15 @@ impl DispatchedMutationRegistry {
     pub(crate) fn close(&self) {
         self.accepting.store(false, Ordering::Release);
         self.empty.notify_waiters();
+    }
+
+    pub(crate) fn advance_epoch(&self) {
+        self.committed_epoch.fetch_add(1, Ordering::AcqRel);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn committed_epoch(&self) -> u64 {
+        self.committed_epoch.load(Ordering::Acquire)
     }
 
     #[allow(dead_code)]
@@ -805,6 +816,7 @@ mod tests {
     async fn dispatched_mutation_registry_closes_and_waits_for_active_leases() {
         let registry = DispatchedMutationRegistry::default();
         let lease = registry.try_register().expect("registry accepts dispatch");
+        assert_eq!(registry.committed_epoch(), 0);
 
         registry.close();
         assert!(registry.try_register().is_none());
@@ -823,5 +835,7 @@ mod tests {
 
         drop(lease);
         wait.await.expect("empty registry barrier");
+        registry.advance_epoch();
+        assert_eq!(registry.committed_epoch(), 1);
     }
 }

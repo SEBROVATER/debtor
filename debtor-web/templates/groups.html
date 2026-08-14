@@ -23,25 +23,16 @@
       </form>
     </header>
     <main>
-      {% match error %}{% when Some with (message) %}
-       <p id="groups-error" class="error" role="alert">{{ message }}</p>
+       {% match error %}{% when Some with (message) %}
+       <p id="groups-error" class="error" role="alert" tabindex="-1" autofocus>{{ message }}</p>
       {% when None %}{% endmatch %}
       {% if archived %}
        <h1 id="groups-heading" tabindex="-1" autofocus>Archived groups</h1>
       {% else %}
-       <h1 id="groups-heading" tabindex="-1" autofocus>Groups</h1>
-        <form method="post" action="/groups" class="inline-form mutation-form" aria-describedby="groups-error" hx-post="/groups" hx-disabled-elt="button" hx-indicator="#group-create-status" aria-busy="false">
-        <input type="hidden" name="csrf" value="{{ csrf }}" /><input type="hidden" name="submission_token" value="{{ shell.submission_token }}" /><label
-          >Name <input name="name" value="{{ create_name }}" required /></label
-        ><label
-          >Currency
-          <select name="currency">
-            {% for option in currencies %}
-            <option value="{{ option.value }}" {% if option.selected %} selected{% endif %}>
-              {{ option.label }}
-            </option>
-            {% endfor %}
-          </select></label
+       <h1 id="groups-heading" tabindex="-1"{% if error.is_none() %} autofocus{% endif %}>Groups</h1>
+         <form method="post" action="/groups" class="inline-form mutation-form" hx-post="/groups" hx-disabled-elt="button" hx-indicator="#group-create-status" aria-busy="false">
+          <input type="hidden" name="csrf" value="{{ csrf }}" /><input type="hidden" name="submission_token" value="{{ shell.submission_token }}" /><label
+            >Name <input id="group-name" name="name" value="{{ create_name }}" required{% if error.is_some() %} aria-invalid="true" aria-describedby="groups-error"{% endif %} /></label
         ><button type="submit">Create group</button><p id="group-create-status" class="mutation-status" role="status" aria-live="polite" aria-atomic="true"> </p>
       </form>
       {% endif %}{% if groups.len() == 0 %}
@@ -52,6 +43,7 @@
           <tr>
             <th>Group</th>
             <th>Target currency</th>
+            <th>Participants</th>
             <th>Actions</th>
           </tr>
         </thead>
@@ -60,6 +52,7 @@
           <tr>
             <td><a href="/groups/{{ group.id }}">{{ group.name }}</a></td>
             <td>{{ group.currency }}</td>
+            <td>{{ group.active_participants }}</td>
             <td>
               <a href="/groups/{{ group.id }}/debts">Debts</a>{% if archived %}
               <form method="post" action="/groups/{{ group.id }}/restore" class="mutation-form" hx-post="/groups/{{ group.id }}/restore" hx-disabled-elt="button" hx-indicator="#group-{{ group.id }}-status" aria-busy="false">

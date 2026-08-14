@@ -13,7 +13,7 @@ use super::{
     spending_views::{build_group_template, map_group_template_error},
 };
 use crate::{
-    forms::{CsrfValidatedForm, GroupForm, parse_group_form},
+    forms::{CsrfValidatedForm, GroupForm, parse_group_create_form, parse_group_form},
     state::AppState,
     templates::{ConfirmTemplate, GroupEditTemplate, GroupRow, GroupsTemplate, SelectOption},
 };
@@ -27,7 +27,7 @@ pub(crate) async fn groups(
         return response;
     }
     let archived = query.archived.unwrap_or(false);
-    match groups_template(&state, &session, archived, "", "USD", None).await {
+    match groups_template(&state, &session, archived, "", None).await {
         Ok(template) => render(&template),
         Err(response) => response,
     }
@@ -42,15 +42,18 @@ pub(crate) async fn create_group(
         return response;
     }
     let csrf_form = form;
-    let form = match parse_group_form(csrf_form.ordered()) {
+    let form = match parse_group_create_form(csrf_form.ordered()) {
         Ok(form) => form,
         Err(error) => return error_response(error.status, error.message),
     };
-    let GroupForm {
-        name,
-        currency: currency_value,
-        ..
-    } = form;
+    let name = form.name;
+    if let Err(error) =
+        debtor_application::validate_group_create(&debtor_application::GroupCreateInput {
+            name: name.clone(),
+        })
+    {
+        return render_group_create_error(&state, &session, name, error.to_string()).await;
+    }
     let Some(session_id) = session.id() else {
         return super::response::session_error();
     };
@@ -61,17 +64,13 @@ pub(crate) async fn create_group(
         return response;
     }
     match state
-        .groups
-        .create_group(debtor_application::GroupInput {
-            name: name.clone(),
-            currency: currency_value.clone(),
-        })
+        .group_mutations
+        .create_group(debtor_application::GroupCreateInput { name: name.clone() })
         .await
     {
-        Ok(_) => Redirect::to("/groups").into_response(),
+        Ok(group) => Redirect::to(&format!("/groups/{}/manage", group.id)).into_response(),
         Err(debtor_application::ApplicationError::Validation(error)) => {
-            render_group_create_error(&state, &session, name, currency_value, error.to_string())
-                .await
+            render_group_create_error(&state, &session, name, error.to_string()).await
         }
         Err(error) => map_error(error),
     }
@@ -92,6 +91,45 @@ pub(crate) async fn group_detail(
     };
     match build_group_template(&state, &session, id, cursor, None, None, None, None).await {
         Ok(template) => render(&template),
+        Err(error) => map_group_template_error(error),
+    }
+}
+
+pub(crate) async fn group_manage(
+    State(state): State<AppState>,
+    session: Session,
+    Path(id): Path<i64>,
+) -> Response {
+    if let Err(response) = require_auth(&session).await {
+        return response;
+    }
+    match build_group_template(&state, &session, id, None, None, None, None, None).await {
+        Ok(mut template) => {
+            "manage".clone_into(&mut template.section);
+            render(&template)
+        }
+        Err(error) => map_group_template_error(error),
+    }
+}
+
+pub(crate) async fn group_transactions(
+    State(state): State<AppState>,
+    session: Session,
+    Path(id): Path<i64>,
+    Query(query): Query<super::SpendingQuery>,
+) -> Response {
+    if let Err(response) = require_auth(&session).await {
+        return response;
+    }
+    let cursor = match super::spendings::parse_cursor(query.cursor.as_deref()) {
+        Ok(cursor) => cursor,
+        Err(message) => return error_response(StatusCode::BAD_REQUEST, message),
+    };
+    match build_group_template(&state, &session, id, cursor, None, None, None, None).await {
+        Ok(mut template) => {
+            "transactions".clone_into(&mut template.section);
+            render(&template)
+        }
         Err(error) => map_group_template_error(error),
     }
 }
@@ -257,7 +295,6 @@ async fn groups_template(
     session: &Session,
     archived: bool,
     create_name: &str,
-    create_currency: &str,
     error: Option<String>,
 ) -> Result<GroupsTemplate, Response> {
     let items = state
@@ -266,21 +303,26 @@ async fn groups_template(
         .await
         .map_err(map_error)?;
     let shell = authenticated_shell(state, session).await?;
+    let mut rows = Vec::with_capacity(items.len());
+    for g in items {
+        let members = state.participants.members(g.id).await.map_err(map_error)?;
+        let active_participants = members
+            .iter()
+            .filter(|(participant, membership)| membership.is_active && !participant.is_archived)
+            .count();
+        rows.push(GroupRow {
+            id: g.id,
+            name: g.name.to_string(),
+            currency: g.currency.to_string(),
+            active_participants,
+        });
+    }
     Ok(GroupsTemplate {
-        groups: items
-            .into_iter()
-            .map(|g| GroupRow {
-                id: g.id,
-                name: g.name.to_string(),
-                currency: g.currency.to_string(),
-            })
-            .collect(),
+        groups: rows,
         csrf: shell.csrf.clone(),
         shell,
         archived,
         create_name: create_name.to_owned(),
-        create_currency: create_currency.to_owned(),
-        currencies: currency_options(create_currency),
         error,
     })
 }
@@ -289,10 +331,9 @@ async fn render_group_create_error(
     state: &AppState,
     session: &Session,
     name: String,
-    currency: String,
     error: String,
 ) -> Response {
-    match groups_template(state, session, false, &name, &currency, Some(error)).await {
+    match groups_template(state, session, false, &name, Some(error)).await {
         Ok(template) => (StatusCode::UNPROCESSABLE_ENTITY, render(&template)).into_response(),
         Err(response) => response,
     }

@@ -75,6 +75,11 @@ pub fn router_with_sessions<S: SessionStore + Clone>(
             get(handlers::groups).post(handlers::create_group),
         )
         .route("/groups/{id}", get(handlers::group_detail))
+        .route("/groups/{id}/manage", get(handlers::group_manage))
+        .route(
+            "/groups/{id}/transactions",
+            get(handlers::group_transactions),
+        )
         .route(
             "/groups/{id}/edit",
             get(handlers::group_edit_form).post(handlers::update_group),
@@ -842,10 +847,7 @@ mod tests {
             .oneshot(request(
                 Method::POST,
                 "/groups",
-                &format!(
-                    "csrf={}&submission_token=unknown&name=New&currency=USD",
-                    csrf(&body)
-                ),
+                &format!("csrf={}&submission_token=unknown&name=New", csrf(&body)),
                 Some(&cookie),
             ))
             .await
@@ -899,7 +901,7 @@ mod tests {
             .expect("groups page");
         let body = response_body(page).await;
         let form = format!(
-            "csrf={}&submission_token={}&name=Draft&currency=USD",
+            "csrf={}&submission_token={}&name=Draft",
             csrf(&body),
             submission_token(&body)
         );
@@ -1057,7 +1059,7 @@ mod tests {
                 Method::POST,
                 "/groups",
                 &format!(
-                    "csrf={}&submission_token={}&name=New+group&currency=USD",
+                    "csrf={}&submission_token={}&name=New+group",
                     csrf(&groups_page),
                     submission_token(&groups_page)
                 ),
@@ -1190,6 +1192,83 @@ mod tests {
             *test_state.groups.updated.lock().expect("group calls lock"),
             vec![(1, "Updated group".to_owned(), Currency::Eur)]
         );
+    }
+
+    #[tokio::test]
+    async fn group_creation_is_name_only_and_redirects_to_manage() {
+        let test_state = state(false);
+        let app = app(&test_state);
+        let session_cookie = login(&app).await;
+        let response = app
+            .clone()
+            .oneshot(request(Method::GET, "/groups", "", Some(&session_cookie)))
+            .await
+            .expect("groups response");
+        let body = response_body(response).await;
+        assert!(!body.contains("name=\"currency\""));
+
+        let response = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                "/groups",
+                &format!(
+                    "csrf={}&submission_token={}&name=+",
+                    csrf(&body),
+                    submission_token(&body)
+                ),
+                Some(&session_cookie),
+            ))
+            .await
+            .expect("invalid group response");
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let invalid_body = response_body(response).await;
+        assert!(invalid_body.contains("id=\"groups-error\""));
+        assert!(invalid_body.contains("id=\"group-name\""));
+        assert!(
+            test_state
+                .groups
+                .created
+                .lock()
+                .expect("group calls lock")
+                .is_empty()
+        );
+
+        let response = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                "/groups",
+                &format!(
+                    "csrf={}&submission_token={}&name=New+group",
+                    csrf(&body),
+                    submission_token(&body)
+                ),
+                Some(&session_cookie),
+            ))
+            .await
+            .expect("group creation response");
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(response.headers()["location"], "/groups/1/manage");
+        assert_eq!(
+            *test_state.groups.created.lock().expect("group calls lock"),
+            vec![("New group".to_owned(), Currency::Usd)]
+        );
+
+        let manage = app
+            .oneshot(request(
+                Method::GET,
+                "/groups/1/manage",
+                "",
+                Some(&session_cookie),
+            ))
+            .await
+            .expect("Manage response");
+        let manage_body = response_body(manage).await;
+        assert!(manage_body.contains("aria-current=\"page\">Manage</a>"));
+        assert!(manage_body.contains("id=\"participants\""));
+        assert!(!manage_body.contains("action=\"/groups/1/participants\""));
+        assert!(manage_body.contains("/groups/1/transactions"));
     }
 
     #[tokio::test]

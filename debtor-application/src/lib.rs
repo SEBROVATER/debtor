@@ -9,6 +9,7 @@ mod readiness;
 mod spendings;
 
 pub use authentication::*;
+pub use debtor_domain::model::Group;
 pub use debts::*;
 pub use errors::*;
 pub use groups::*;

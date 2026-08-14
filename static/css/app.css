@@ -35,7 +35,7 @@ button, .button { background: var(--accent); border: 0; border-radius: 0; color:
 .danger-button { background: var(--danger); color: white; }
 .error { color: var(--danger); }
 .warning { color: var(--warn); }
-.helper, .empty { color: #3d4a52; }
+.helper, .empty { color: #AAA59C; }
 .choice-row { display: flex; flex-wrap: wrap; gap: 1rem; margin-block: .75rem; }
 .choice-row label, .check-row { display: flex; align-items: center; gap: .4rem; }
 .mode-panel { margin-block: .75rem; padding: .75rem; border: 1px solid var(--line); border-radius: .25rem; }

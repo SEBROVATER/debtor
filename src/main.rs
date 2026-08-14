@@ -99,7 +99,7 @@ mod composition_tests {
         routing::get,
     };
     use debtor_application::{
-        ApplicationError, DatabaseReadiness, GroupInput, GroupService, GroupUseCases,
+        ApplicationError, DatabaseReadiness, GroupCreateInput, GroupService, GroupUseCases,
         ReadinessService, ReadinessUseCases, SupervisorReadiness, UnavailableReason,
     };
     use tokio::sync::Notify;
@@ -473,7 +473,35 @@ mod composition_tests {
             .await
             .expect("authenticated request");
         assert_eq!(response.status(), reqwest::StatusCode::OK);
-        let _groups_body = response.text().await.expect("groups body");
+        let groups_body = response.text().await.expect("groups body");
+        let response = client
+            .post(format!("{base_url}/groups"))
+            .header("cookie", &authenticated_cookie)
+            .form(&[
+                ("csrf", csrf_token(&groups_body)),
+                ("submission_token", submission_token(&groups_body)),
+                ("name", "Real group".to_owned()),
+            ])
+            .send()
+            .await
+            .expect("Group creation request");
+        assert_eq!(response.status(), reqwest::StatusCode::SEE_OTHER);
+        assert_eq!(response.headers()["location"], "/groups/1/manage");
+        assert_eq!(mutation_registry.committed_epoch(), 1);
+        let response = client
+            .get(format!("{base_url}/groups/1/manage"))
+            .header("cookie", &authenticated_cookie)
+            .send()
+            .await
+            .expect("Manage request");
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert!(
+            response
+                .text()
+                .await
+                .expect("Manage body")
+                .contains("Add Spending is unavailable")
+        );
         let anonymous_response = client
             .get(format!("{base_url}/login"))
             .send()
@@ -907,9 +935,8 @@ mod composition_tests {
         let database = debtor_infra::db::repos::SqliteLedgerRuntime::new(runtime.pool.clone());
         let groups = GroupService::new(Arc::new(database.store()), Arc::new(database.store()));
         groups
-            .create_group(GroupInput {
+            .create_group(GroupCreateInput {
                 name: "ShutdownRecovery".into(),
-                currency: "USD".into(),
             })
             .await
             .expect("create WAL frame");

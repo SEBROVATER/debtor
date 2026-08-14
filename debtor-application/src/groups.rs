@@ -6,7 +6,25 @@ use debtor_domain::model::{EntityId, Group, Name};
 
 use crate::ApplicationError;
 
-/// Transport-neutral raw group input.
+/// Transport-neutral raw input for creating a Group.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupCreateInput {
+    /// Group name before domain normalization.
+    pub name: String,
+}
+
+/// Validates a raw Group creation command without performing a mutation.
+///
+/// # Errors
+///
+/// Returns the domain validation error when the trimmed name is empty or too long.
+pub fn validate_group_create(input: &GroupCreateInput) -> Result<(), ApplicationError> {
+    Name::new(input.name.clone())
+        .map(|_| ())
+        .map_err(Into::into)
+}
+
+/// Transport-neutral raw input for updating Group metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GroupInput {
     /// Group name before domain normalization.
@@ -55,7 +73,7 @@ pub trait GroupUseCases: Send + Sync {
     /// Loads one group.
     async fn group(&self, id: EntityId) -> Result<Group, ApplicationError>;
     /// Creates a group.
-    async fn create_group(&self, input: GroupInput) -> Result<Group, ApplicationError>;
+    async fn create_group(&self, input: GroupCreateInput) -> Result<Group, ApplicationError>;
     /// Updates a group.
     async fn update_group(
         &self,
@@ -66,6 +84,17 @@ pub trait GroupUseCases: Send + Sync {
     async fn set_archived(&self, id: EntityId, archived: bool) -> Result<(), ApplicationError>;
     /// Deletes an empty group.
     async fn delete_empty(&self, id: EntityId) -> Result<(), ApplicationError>;
+}
+
+/// Executes a Group mutation with an outer runtime-owned definitive outcome.
+pub trait GroupMutationExecutor: Send + Sync {
+    /// Creates a Group and returns only after its mutation outcome is definitive.
+    fn create_group(
+        &self,
+        input: GroupCreateInput,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Group, ApplicationError>> + Send + '_>,
+    >;
 }
 
 /// Group workflow implementation.
@@ -91,12 +120,10 @@ impl GroupUseCases for GroupService {
         self.reader.group(id).await
     }
 
-    async fn create_group(&self, input: GroupInput) -> Result<Group, ApplicationError> {
-        let currency = input.currency.parse::<Currency>().map_err(|_| {
-            debtor_domain::model::ValidationError::InvalidField { field: "currency" }
-        })?;
+    async fn create_group(&self, input: GroupCreateInput) -> Result<Group, ApplicationError> {
+        validate_group_create(&input)?;
         self.repository
-            .create_group(Name::new(input.name)?, currency)
+            .create_group(Name::new(input.name)?, Currency::Usd)
             .await
     }
 
@@ -227,13 +254,14 @@ mod tests {
         let service = GroupService::new(fake.clone(), fake.clone());
 
         let groups = service.list_groups(true).await.expect("list groups");
-        service
-            .create_group(GroupInput {
+        let created = service
+            .create_group(GroupCreateInput {
                 name: "  Summer trip  ".into(),
-                currency: "EUR".into(),
             })
             .await
             .expect("create group");
+        assert_eq!(created.id, 1);
+        assert!(!created.is_archived);
         service
             .update_group(
                 7,
@@ -255,9 +283,24 @@ mod tests {
             "Summer trip"
         );
         assert_eq!(
+            fake.created.lock().expect("created lock")[0].1,
+            Currency::Usd
+        );
+        assert_eq!(
             fake.updated.lock().expect("updated lock")[0].1.as_str(),
             "Updated trip"
         );
+
+        let invalid = service
+            .create_group(GroupCreateInput { name: "   ".into() })
+            .await
+            .expect_err("empty group name");
+        assert!(matches!(
+            invalid,
+            ApplicationError::Validation(debtor_domain::model::ValidationError::Empty {
+                field: "name"
+            })
+        ));
 
         let failing = Arc::new(Fake {
             listed_archived: Mutex::new(Vec::new()),
@@ -266,9 +309,8 @@ mod tests {
             fail_create: true,
         });
         let error = GroupService::new(failing.clone(), failing)
-            .create_group(GroupInput {
+            .create_group(GroupCreateInput {
                 name: "Trip".into(),
-                currency: "USD".into(),
             })
             .await
             .expect_err("storage error");

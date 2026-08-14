@@ -6,9 +6,9 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use debtor_application::{
     ApplicationError, AuthenticationService, AuthenticationUseCases, Clock, DebtResult,
-    DebtUseCases, GroupInput, GroupUseCases, LoginAdmission, LoginAttemptLimiter,
-    ParticipantUseCases, PasswordVerifier, RateMode, ReadinessUseCases, SpendingInput,
-    SpendingPage, SpendingUseCases, UtcClock,
+    DebtUseCases, GroupCreateInput, GroupInput, GroupMutationExecutor, GroupUseCases,
+    LoginAdmission, LoginAttemptLimiter, ParticipantUseCases, PasswordVerifier, RateMode,
+    ReadinessUseCases, SpendingInput, SpendingPage, SpendingUseCases, UtcClock,
 };
 use debtor_domain::{
     currency::Currency,
@@ -162,6 +162,7 @@ fn state_with_errors_and_password(
     TestState {
         app: AppState {
             groups: groups_use_cases,
+            group_mutations: groups.clone(),
             participants: participants_use_cases,
             spendings,
             debts,
@@ -217,14 +218,14 @@ impl GroupUseCases for FakeGroups {
         Ok(self.group.clone())
     }
 
-    async fn create_group(&self, input: GroupInput) -> Result<Group, ApplicationError> {
+    async fn create_group(&self, input: GroupCreateInput) -> Result<Group, ApplicationError> {
         if self.create_validation_error {
             return Err(validation_error());
         }
-        self.created.lock().expect("group calls lock").push((
-            input.name,
-            input.currency.parse().map_err(|_| validation_error())?,
-        ));
+        self.created
+            .lock()
+            .expect("group calls lock")
+            .push((input.name, Currency::Usd));
         Ok(self.group.clone())
     }
 
@@ -248,6 +249,17 @@ impl GroupUseCases for FakeGroups {
     async fn delete_empty(&self, _: i64) -> Result<(), ApplicationError> {
         self.deleted.fetch_add(1, Ordering::Relaxed);
         Ok(())
+    }
+}
+
+impl GroupMutationExecutor for FakeGroups {
+    fn create_group(
+        &self,
+        input: GroupCreateInput,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Group, ApplicationError>> + Send + '_>,
+    > {
+        Box::pin(async move { GroupUseCases::create_group(self, input).await })
     }
 }
 

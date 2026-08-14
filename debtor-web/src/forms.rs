@@ -192,6 +192,11 @@ fn csrf_rejection() -> Response {
     (StatusCode::FORBIDDEN, "Invalid form token.").into_response()
 }
 
+#[derive(Debug)]
+pub(crate) struct GroupCreateForm {
+    pub(crate) name: String,
+}
+
 pub(crate) struct GroupForm {
     pub(crate) name: String,
     pub(crate) currency: String,
@@ -264,6 +269,16 @@ pub(crate) fn parse_group_form(form: OrderedForm) -> Result<GroupForm, FormError
     Ok(GroupForm {
         name: value(&fields, "name"),
         currency: value(&fields, "currency"),
+    })
+}
+
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn parse_group_create_form(form: OrderedForm) -> Result<GroupCreateForm, FormError> {
+    let fields = form
+        .required_fields(&["name", "csrf", "submission_token"])
+        .map_err(malformed_form)?;
+    Ok(GroupCreateForm {
+        name: value(&fields, "name"),
     })
 }
 
@@ -421,8 +436,8 @@ mod tests {
     use axum::http::StatusCode;
 
     use super::{
-        OrderedForm, parse_expense_form, parse_group_form, parse_member_form,
-        validate_percent_encoding,
+        OrderedForm, parse_expense_form, parse_group_create_form, parse_group_form,
+        parse_member_form, validate_percent_encoding,
     };
 
     #[test]
@@ -455,6 +470,32 @@ mod tests {
         assert_eq!(
             parse_group_form(unknown).err().map(|error| error.status),
             Some(StatusCode::BAD_REQUEST)
+        );
+    }
+
+    #[test]
+    fn group_creation_accepts_only_name_and_security_fields() {
+        let form = OrderedForm(vec![
+            ("name".into(), "Trip".into()),
+            ("csrf".into(), "token".into()),
+            ("submission_token".into(), "submission".into()),
+        ]);
+        assert_eq!(
+            parse_group_create_form(form).expect("create form").name,
+            "Trip"
+        );
+
+        let with_currency = OrderedForm(vec![
+            ("name".into(), "Trip".into()),
+            ("currency".into(), "EUR".into()),
+            ("csrf".into(), "token".into()),
+            ("submission_token".into(), "submission".into()),
+        ]);
+        assert_eq!(
+            parse_group_create_form(with_currency)
+                .expect_err("currency must not be accepted")
+                .status,
+            StatusCode::BAD_REQUEST
         );
     }
 

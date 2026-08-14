@@ -36,16 +36,27 @@ impl GroupRepository for SqliteLedgerStore {
         currency: Currency,
     ) -> Result<Group, ApplicationError> {
         let _write_guard = self.write_guard().await?;
+        let mut transaction = self.pool.begin().await.map_err(storage)?;
         let id = sqlx::query!(
             "INSERT INTO groups (name, currency) VALUES (?, ?)",
             name.as_str(),
             currency.code()
         )
-        .execute(&self.pool)
+        .execute(&mut *transaction)
         .await
         .map_err(storage)?
         .last_insert_rowid();
-        self.group(id).await
+        let created = sqlx::query_as!(
+            DbGroup,
+            "SELECT id, name, currency, is_archived FROM groups WHERE id = ?",
+            id
+        )
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(storage)
+        .and_then(group)?;
+        transaction.commit().await.map_err(storage)?;
+        Ok(created)
     }
 
     async fn update_group(

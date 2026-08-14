@@ -5,3 +5,7 @@
 ## Deferred from: code review of 1-9-shut-down-the-authenticated-runtime-safely.md (2026-08-14)
 
 - Real mutation registration and definitive outcome publication remain unwired [src/runtime.rs:78, src/composition.rs:95, src/runtime.rs:588-612] — Story 1.9 intentionally adds only the empty root-owned lifecycle seam. Existing mutation routes still do not register leases or publish `Committed`/`RolledBack`/`Unknown`; Story 2.1 owns that integration and must avoid a second registry or generic post-dispatch cancellation path.
+
+## Deferred from: code review of 2-1-create-and-select-a-group (2026-08-14)
+
+- Add contextual Group navigation to the existing Debts page [debtor-web/templates/debts.html:12-20] — pre-existing separate Debts template remains outside the Story 2.1 Group shell change; address it with the broader debts/context-shell work.

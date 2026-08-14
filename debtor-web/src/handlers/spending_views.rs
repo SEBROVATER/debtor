@@ -117,6 +117,7 @@ pub(super) async fn build_group_template(
     Ok(GroupTemplate {
         name: group.name.to_string(),
         group_id: id,
+        section: "summary".to_owned(),
         currency: group.currency.to_string(),
         csrf: shell.csrf.clone(),
         shell,

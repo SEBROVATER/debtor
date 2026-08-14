@@ -51,10 +51,6 @@ pub struct GroupsTemplate {
     pub archived: bool,
     /// Group name draft for the create form.
     pub create_name: String,
-    /// Group currency draft for the create form.
-    pub create_currency: String,
-    /// Currency options for the create form.
-    pub currencies: Vec<SelectOption>,
     /// Inline validation error.
     pub error: Option<String>,
 }
@@ -87,6 +83,8 @@ pub struct GroupRow {
     pub name: String,
     /// Currency.
     pub currency: String,
+    /// Number of active, non-archived participants in the Group.
+    pub active_participants: usize,
 }
 
 /// Debt view page.
@@ -193,6 +191,8 @@ pub struct GroupTemplate {
     pub name: String,
     /// Group identifier.
     pub group_id: i64,
+    /// Current contextual shell destination.
+    pub section: String,
     /// Target currency.
     pub currency: String,
     /// CSRF token.
