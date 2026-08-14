@@ -115,6 +115,25 @@ pub async fn user_admission_or_probe(
     user_admission_with_control(control, request, next).await
 }
 
+/// Cancels safe reads only after the root exhausts its bounded HTTP drain.
+pub async fn force_safe_request_shutdown(
+    control: RuntimeControl,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    if !matches!(*request.method(), Method::GET | Method::HEAD) {
+        return next.run(request).await;
+    }
+
+    tokio::select! {
+        response = next.run(request) => response,
+        () = control.wait_forced_safe_request_shutdown() => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Service temporarily unavailable.",
+        ).into_response(),
+    }
+}
+
 /// Rejects unauthenticated requests before protected handlers are selected.
 pub async fn require_authenticated(
     session: Session,
@@ -338,8 +357,8 @@ mod tests {
     use tracing_subscriber::fmt::MakeWriter;
 
     use super::{
-        login_timeout_with_limit, matched_route, probe_timeout_with_limit, record_http_response,
-        safe_read_timeout_with_limits,
+        force_safe_request_shutdown, login_timeout_with_limit, matched_route,
+        probe_timeout_with_limit, record_http_response, safe_read_timeout_with_limits,
     };
 
     #[derive(Clone)]
@@ -542,5 +561,58 @@ mod tests {
             .expect("readiness timeout response");
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert!(!control.user_admission_open());
+    }
+
+    #[tokio::test]
+    async fn forced_shutdown_does_not_cancel_unsafe_requests() {
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let control = crate::state::RuntimeControl::default();
+        let app = Router::new()
+            .route(
+                "/{*path}",
+                any({
+                    let entered = entered.clone();
+                    let release = release.clone();
+                    move || {
+                        let entered = entered.clone();
+                        let release = release.clone();
+                        async move {
+                            entered.notify_one();
+                            release.notified().await;
+                            "completed"
+                        }
+                    }
+                }),
+            )
+            .layer(middleware::from_fn({
+                let control = control.clone();
+                move |request, next| force_safe_request_shutdown(control.clone(), request, next)
+            }));
+        let mut request = tokio::spawn(
+            app.oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/mutation")
+                    .body(Body::empty())
+                    .expect("mutation request"),
+            ),
+        );
+        entered.notified().await;
+        control.force_safe_request_shutdown();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut request)
+                .await
+                .is_err()
+        );
+        release.notify_one();
+        assert_eq!(
+            request
+                .await
+                .expect("mutation task")
+                .expect("mutation response")
+                .status(),
+            StatusCode::OK
+        );
     }
 }

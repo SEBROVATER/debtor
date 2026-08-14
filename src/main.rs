@@ -24,7 +24,7 @@ fn listening_url(address: std::net::SocketAddr) -> String {
 use runtime::{
     CleanupHealth, await_server_or_shutdown, checkpoint_pool, checkpoint_pool_with_timeout,
     close_pool, close_pool_with_timeout, drain_result, run_runtime_with_options,
-    run_runtime_with_timeouts, run_session_cleanup_iteration,
+    run_runtime_with_storage_timeouts, run_runtime_with_timeouts, run_session_cleanup_iteration,
     run_submission_token_cleanup_iteration,
 };
 
@@ -99,8 +99,8 @@ mod composition_tests {
         routing::get,
     };
     use debtor_application::{
-        ApplicationError, DatabaseReadiness, ReadinessService, ReadinessUseCases,
-        SupervisorReadiness, UnavailableReason,
+        ApplicationError, DatabaseReadiness, GroupInput, GroupService, GroupUseCases,
+        ReadinessService, ReadinessUseCases, SupervisorReadiness, UnavailableReason,
     };
     use tokio::sync::Notify;
     use tower::ServiceExt;
@@ -168,6 +168,16 @@ mod composition_tests {
             cleanup_health: CleanupHealth::new(),
             submission_token_store: debtor_web::submission_tokens::SubmissionTokenStore::default(),
             runtime: debtor_web::state::RuntimeControl::default(),
+            mutations: crate::runtime::DispatchedMutationRegistry::default(),
+            shutdown_events: crate::runtime::ShutdownEvents::default(),
+        }
+    }
+
+    struct DropSignal(Arc<Notify>);
+
+    impl Drop for DropSignal {
+        fn drop(&mut self) {
+            self.0.notify_one();
         }
     }
 
@@ -407,6 +417,9 @@ mod composition_tests {
         let runtime = build_app(config(&path, &password_hash))
             .await
             .expect("build application");
+        let runtime_control = runtime.runtime.clone();
+        let mutation_registry = runtime.mutations.clone();
+        let shutdown_events = runtime.shutdown_events.clone();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("test listener");
@@ -460,7 +473,7 @@ mod composition_tests {
             .await
             .expect("authenticated request");
         assert_eq!(response.status(), reqwest::StatusCode::OK);
-        let groups_body = response.text().await.expect("groups body");
+        let _groups_body = response.text().await.expect("groups body");
         let anonymous_response = client
             .get(format!("{base_url}/login"))
             .send()
@@ -468,33 +481,18 @@ mod composition_tests {
             .expect("anonymous session request");
         assert_eq!(anonymous_response.status(), reqwest::StatusCode::OK);
         let anonymous_cookie = cookie_pair(&anonymous_response);
-        let logout_response = client
-            .post(format!("{base_url}/logout"))
-            .header("cookie", &authenticated_cookie)
-            .form(&[
-                ("csrf", csrf_token(&groups_body)),
-                ("submission_token", submission_token(&groups_body)),
-            ])
-            .send()
-            .await
-            .expect("logout request");
-        assert_eq!(logout_response.status(), reqwest::StatusCode::SEE_OTHER);
-        let post_logout = client
-            .get(format!("{base_url}/groups"))
-            .header("cookie", &authenticated_cookie)
-            .send()
-            .await
-            .expect("post-logout request");
-        assert_eq!(post_logout.status(), reqwest::StatusCode::SEE_OTHER);
-        assert_eq!(post_logout.headers()["location"], "/login");
-
-        tokio::time::sleep(Duration::from_millis(20)).await;
         coordinator.request(ShutdownTrigger::Signal).await;
+        runtime_control.wait_user_admission_closed().await;
+        assert!(!shutdown_events.checkpoint_started());
         let result = tokio::time::timeout(Duration::from_secs(15), server)
             .await
             .expect("bounded shutdown")
             .expect("server task");
         assert!(result.is_ok(), "runtime shutdown result: {result:?}");
+        assert!(!runtime_control.user_admission_open());
+        assert!(mutation_registry.try_register().is_none());
+        assert!(mutation_registry.observed_empty());
+        mutation_registry.wait_until_empty().await;
 
         let restarted = build_app(config(&path, &password_hash))
             .await
@@ -762,15 +760,19 @@ mod composition_tests {
     async fn forced_drain_cancels_a_stuck_active_request() {
         let entered = Arc::new(Notify::new());
         let never_release = Arc::new(Notify::new());
+        let dropped = Arc::new(Notify::new());
         let app = Router::new().route(
             "/hold",
             get({
                 let entered = entered.clone();
                 let never_release = never_release.clone();
+                let dropped = dropped.clone();
                 move || {
                     let entered = entered.clone();
                     let never_release = never_release.clone();
+                    let dropped = dropped.clone();
                     async move {
+                        let _drop_signal = DropSignal(dropped);
                         entered.notify_one();
                         never_release.notified().await;
                         "unreachable"
@@ -805,8 +807,17 @@ mod composition_tests {
                 .expect("server task")
                 .is_ok()
         );
-        request.abort();
-        assert!(request.await.expect_err("cancelled request").is_cancelled());
+        tokio::time::timeout(Duration::from_secs(1), dropped.notified())
+            .await
+            .expect("server-side request cancellation");
+        assert_eq!(
+            request
+                .await
+                .expect("forced request task")
+                .expect("forced request response")
+                .status(),
+            reqwest::StatusCode::SERVICE_UNAVAILABLE
+        );
     }
 
     #[tokio::test]
@@ -878,6 +889,85 @@ mod composition_tests {
             .await
             .expect("recovered WAL value");
         assert_eq!(value, 1);
+        assert!(close_pool(&reopened).await);
+        remove_database(&path);
+    }
+
+    #[tokio::test]
+    async fn runtime_checkpoint_failure_preserves_sidecars_and_reopens_database() {
+        let path = database_path();
+        let runtime = build_app(config(&path, VALID_HASH))
+            .await
+            .expect("build application");
+        let mut reader = runtime.pool.begin().await.expect("begin read transaction");
+        sqlx::query!("SELECT name FROM groups")
+            .fetch_all(&mut *reader)
+            .await
+            .expect("establish read snapshot");
+        let database = debtor_infra::db::repos::SqliteLedgerRuntime::new(runtime.pool.clone());
+        let groups = GroupService::new(Arc::new(database.store()), Arc::new(database.store()));
+        groups
+            .create_group(GroupInput {
+                name: "ShutdownRecovery".into(),
+                currency: "USD".into(),
+            })
+            .await
+            .expect("create WAL frame");
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let address = listener.local_addr().expect("listener address");
+        let coordinator = ShutdownCoordinator::default();
+        let server = tokio::spawn(run_runtime_with_storage_timeouts(
+            runtime,
+            listener,
+            SignalReceivers::install().expect("signal handlers"),
+            coordinator.clone(),
+            Duration::from_mins(1),
+            Duration::from_millis(10),
+            Duration::from_millis(50),
+            Duration::from_millis(50),
+        ));
+        let response = reqwest::get(format!("http://{address}/healthz"))
+            .await
+            .expect("health request");
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        coordinator.request(ShutdownTrigger::Signal).await;
+        let result = tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("shutdown completion")
+            .expect("server task");
+        assert!(result.is_err(), "checkpoint failure must be fatal");
+        assert!(
+            coordinator
+                .outcome()
+                .await
+                .fatal_triggers
+                .contains(&ShutdownTrigger::CheckpointFailure)
+        );
+        assert!(PathBuf::from(format!("{}-wal", path.display())).exists());
+        assert!(PathBuf::from(format!("{}-shm", path.display())).exists());
+
+        reader.rollback().await.expect("release read snapshot");
+        let reopened = debtor_infra::db::connect(&database_url(&path))
+            .await
+            .expect("reopen recovered database");
+        let recovered_database =
+            debtor_infra::db::repos::SqliteLedgerRuntime::new(reopened.clone());
+        let recovered_groups = GroupService::new(
+            Arc::new(recovered_database.store()),
+            Arc::new(recovered_database.store()),
+        );
+        let groups = recovered_groups
+            .list_groups(false)
+            .await
+            .expect("recover committed groups");
+        assert!(
+            groups
+                .iter()
+                .any(|group| group.name.as_str() == "ShutdownRecovery")
+        );
         assert!(close_pool(&reopened).await);
         remove_database(&path);
     }

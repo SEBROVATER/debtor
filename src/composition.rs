@@ -25,7 +25,7 @@ use tower_http::timeout::TimeoutLayer;
 use tower_sessions::SessionManagerLayer;
 
 use crate::config::Config;
-use crate::runtime::CleanupHealth;
+use crate::runtime::{CleanupHealth, DispatchedMutationRegistry};
 use crate::startup_error::StartupError;
 
 pub(crate) struct BuiltApp {
@@ -35,6 +35,9 @@ pub(crate) struct BuiltApp {
     pub(crate) cleanup_health: CleanupHealth,
     pub(crate) submission_token_store: SubmissionTokenStore,
     pub(crate) runtime: RuntimeControl,
+    pub(crate) mutations: DispatchedMutationRegistry,
+    #[cfg(test)]
+    pub(crate) shutdown_events: crate::runtime::ShutdownEvents,
 }
 
 async fn static_headers(request: Request, next: axum::middleware::Next) -> Response {
@@ -91,6 +94,7 @@ pub(crate) async fn build_app_with_control(
     let database = SqliteLedgerRuntime::new(pool.clone());
     let store = Arc::new(database.store());
     let cleanup_health = CleanupHealth::new();
+    let mutations = DispatchedMutationRegistry::default();
     let readiness: Arc<dyn ReadinessUseCases> = Arc::new(ReadinessService::with_supervisor(
         store.clone(),
         Arc::new(cleanup_health.clone()),
@@ -185,5 +189,8 @@ pub(crate) async fn build_app_with_control(
         cleanup_health,
         submission_token_store,
         runtime: runtime_control,
+        mutations,
+        #[cfg(test)]
+        shutdown_events: crate::runtime::ShutdownEvents::default(),
     })
 }

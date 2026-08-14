@@ -2,7 +2,7 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use std::time::Duration;
 
@@ -40,6 +40,104 @@ impl CleanupHealth {
 impl SupervisorReadiness for CleanupHealth {
     fn is_healthy(&self) -> bool {
         self.0.load(Ordering::Acquire)
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Default)]
+pub(crate) struct ShutdownEvents {
+    checkpoint_started: Arc<AtomicBool>,
+}
+
+#[cfg(test)]
+impl ShutdownEvents {
+    pub(crate) fn checkpoint_started(&self) -> bool {
+        self.checkpoint_started.load(Ordering::Acquire)
+    }
+
+    fn mark_checkpoint_started(&self) {
+        self.checkpoint_started.store(true, Ordering::Release);
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct DispatchedMutationRegistry {
+    accepting: Arc<AtomicBool>,
+    active: Arc<AtomicUsize>,
+    empty: Arc<Notify>,
+    observed_empty: Arc<AtomicBool>,
+}
+
+impl Default for DispatchedMutationRegistry {
+    fn default() -> Self {
+        Self {
+            accepting: Arc::new(AtomicBool::new(true)),
+            active: Arc::new(AtomicUsize::new(0)),
+            empty: Arc::new(Notify::new()),
+            observed_empty: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) struct MutationLease {
+    active: Arc<AtomicUsize>,
+    empty: Arc<Notify>,
+}
+
+impl DispatchedMutationRegistry {
+    pub(crate) fn close(&self) {
+        self.accepting.store(false, Ordering::Release);
+        self.empty.notify_waiters();
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn try_register(&self) -> Option<MutationLease> {
+        if !self.accepting.load(Ordering::Acquire) {
+            return None;
+        }
+
+        self.active.fetch_add(1, Ordering::AcqRel);
+        if !self.accepting.load(Ordering::Acquire) {
+            self.release();
+            return None;
+        }
+
+        Some(MutationLease {
+            active: self.active.clone(),
+            empty: self.empty.clone(),
+        })
+    }
+
+    pub(crate) async fn wait_until_empty(&self) {
+        self.observed_empty.store(true, Ordering::Release);
+        loop {
+            let notified = self.empty.notified();
+            if self.active.load(Ordering::Acquire) == 0 {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn observed_empty(&self) -> bool {
+        self.observed_empty.load(Ordering::Acquire)
+    }
+
+    #[allow(dead_code)]
+    fn release(&self) {
+        if self.active.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.empty.notify_waiters();
+        }
+    }
+}
+
+impl Drop for MutationLease {
+    fn drop(&mut self) {
+        if self.active.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.empty.notify_waiters();
+        }
     }
 }
 
@@ -426,6 +524,30 @@ pub(crate) async fn run_runtime_with_timeouts(
     cleanup_interval: Duration,
     http_drain_timeout: Duration,
 ) -> Result<()> {
+    run_runtime_with_storage_timeouts(
+        runtime,
+        listener,
+        signals,
+        coordinator,
+        cleanup_interval,
+        http_drain_timeout,
+        WAL_CHECKPOINT_TIMEOUT,
+        POOL_CLOSE_TIMEOUT,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+pub(crate) async fn run_runtime_with_storage_timeouts(
+    runtime: BuiltApp,
+    listener: tokio::net::TcpListener,
+    signals: SignalReceivers,
+    coordinator: ShutdownCoordinator,
+    cleanup_interval: Duration,
+    http_drain_timeout: Duration,
+    checkpoint_timeout: Duration,
+    pool_close_timeout: Duration,
+) -> Result<()> {
     let cleanup_handle: JoinHandle<()> = tokio::spawn(cleanup_worker(
         runtime.session_store.clone(),
         coordinator.clone(),
@@ -464,6 +586,16 @@ pub(crate) async fn run_runtime_with_timeouts(
             listener,
             runtime
                 .app
+                .layer(axum::middleware::from_fn({
+                    let runtime_control = runtime.runtime.clone();
+                    move |request, next| {
+                        debtor_web::middleware::force_safe_request_shutdown(
+                            runtime_control.clone(),
+                            request,
+                            next,
+                        )
+                    }
+                }))
                 .into_make_service_with_connect_info::<SocketAddr>(),
         )
         .with_graceful_shutdown(async move { server_shutdown_signal.notified().await })
@@ -472,6 +604,7 @@ pub(crate) async fn run_runtime_with_timeouts(
 
     let server_finished = await_server_or_shutdown(&mut server, &coordinator).await;
     runtime.runtime.close_user_admission();
+    runtime.mutations.close();
 
     if !server_finished {
         let server_shutdown_signal = server_shutdown.clone();
@@ -487,11 +620,13 @@ pub(crate) async fn run_runtime_with_timeouts(
                 }
             }
             () = &mut drain_deadline => {
+                runtime.runtime.force_safe_request_shutdown();
                 server_shutdown.notify_one();
             }
         }
     }
     drop(server);
+    runtime.mutations.wait_until_empty().await;
 
     match tokio::time::timeout(CLEANUP_STOP_TIMEOUT, &mut cleanup_supervisor).await {
         Ok(Ok(())) => {}
@@ -532,12 +667,24 @@ pub(crate) async fn run_runtime_with_timeouts(
         }
     }
 
-    if !checkpoint_pool(&runtime.pool).await {
+    #[cfg(test)]
+    runtime.shutdown_events.mark_checkpoint_started();
+    let checkpointed = if checkpoint_timeout == WAL_CHECKPOINT_TIMEOUT {
+        checkpoint_pool(&runtime.pool).await
+    } else {
+        checkpoint_pool_with_timeout(&runtime.pool, checkpoint_timeout).await
+    };
+    if !checkpointed {
         coordinator
             .request(ShutdownTrigger::CheckpointFailure)
             .await;
     }
-    if !close_pool(&runtime.pool).await {
+    let pool_closed = if pool_close_timeout == POOL_CLOSE_TIMEOUT {
+        close_pool(&runtime.pool).await
+    } else {
+        close_pool_with_timeout(&runtime.pool, pool_close_timeout).await
+    };
+    if !pool_closed {
         coordinator.request(ShutdownTrigger::PoolCloseFailure).await;
     }
 
@@ -651,5 +798,30 @@ mod tests {
 
         assert!(health.is_healthy());
         assert!(runtime.user_admission_open());
+    }
+
+    #[tokio::test]
+    #[allow(clippy::expect_used)]
+    async fn dispatched_mutation_registry_closes_and_waits_for_active_leases() {
+        let registry = DispatchedMutationRegistry::default();
+        let lease = registry.try_register().expect("registry accepts dispatch");
+
+        registry.close();
+        assert!(registry.try_register().is_none());
+
+        let mut wait = tokio::spawn({
+            let registry = registry.clone();
+            async move {
+                registry.wait_until_empty().await;
+            }
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut wait)
+                .await
+                .is_err()
+        );
+
+        drop(lease);
+        wait.await.expect("empty registry barrier");
     }
 }

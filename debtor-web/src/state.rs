@@ -47,6 +47,9 @@ pub struct AppState {
 #[derive(Clone)]
 pub struct RuntimeControl {
     user_admission: Arc<AtomicBool>,
+    user_admission_closed_notify: Arc<tokio::sync::Notify>,
+    forced_shutdown: Arc<AtomicBool>,
+    forced_shutdown_notify: Arc<tokio::sync::Notify>,
     shutdown_request: Arc<dyn Fn() + Send + Sync>,
 }
 
@@ -64,6 +67,9 @@ impl RuntimeControl {
     {
         Self {
             user_admission: Arc::new(AtomicBool::new(true)),
+            user_admission_closed_notify: Arc::new(tokio::sync::Notify::new()),
+            forced_shutdown: Arc::new(AtomicBool::new(false)),
+            forced_shutdown_notify: Arc::new(tokio::sync::Notify::new()),
             shutdown_request: Arc::new(shutdown_request),
         }
     }
@@ -75,15 +81,48 @@ impl RuntimeControl {
 
     /// Closes new user admission and reports whether this call changed state.
     pub fn close_user_admission(&self) -> bool {
-        self.user_admission
+        let closed = self
+            .user_admission
             .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
+            .is_ok();
+        if closed {
+            self.user_admission_closed_notify.notify_waiters();
+        }
+        closed
     }
 
     /// Closes user admission and requests one coordinated fatal shutdown.
     pub fn fail_readiness(&self) {
         if self.close_user_admission() {
             (self.shutdown_request)();
+        }
+    }
+
+    /// Requests cancellation of already-running safe reads after forced drain.
+    pub fn force_safe_request_shutdown(&self) {
+        self.forced_shutdown.store(true, Ordering::Release);
+        self.forced_shutdown_notify.notify_waiters();
+    }
+
+    /// Waits until the root has forced safe request cancellation.
+    pub async fn wait_forced_safe_request_shutdown(&self) {
+        loop {
+            let notified = self.forced_shutdown_notify.notified();
+            if self.forced_shutdown.load(Ordering::Acquire) {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    /// Waits until new user admission has closed.
+    pub async fn wait_user_admission_closed(&self) {
+        loop {
+            let notified = self.user_admission_closed_notify.notified();
+            if !self.user_admission_open() {
+                return;
+            }
+            notified.await;
         }
     }
 }
