@@ -55,7 +55,13 @@ pub(crate) async fn create_participant(
         Err(error) => return error_response(error.status, error.message),
     };
     let ParticipantForm { name, color, .. } = form;
-    if let Err(response) = csrf_form.dispatch() {
+    let Some(session_id) = session.id() else {
+        return super::response::session_error();
+    };
+    if let Err(response) = csrf_form
+        .reserve_and_dispatch(&state.submission_tokens, session_id)
+        .await
+    {
         return response;
     }
     match state
@@ -100,7 +106,13 @@ pub(crate) async fn update_participant(
         Err(error) => return error_response(error.status, error.message),
     };
     let ParticipantForm { name, color, .. } = form;
-    if let Err(response) = csrf_form.dispatch() {
+    let Some(session_id) = session.id() else {
+        return super::response::session_error();
+    };
+    if let Err(response) = csrf_form
+        .reserve_and_dispatch(&state.submission_tokens, session_id)
+        .await
+    {
         return response;
     }
     match state
@@ -145,7 +157,13 @@ async fn set_participant_archive(
     if let Err(response) = require_auth(&session).await {
         return response;
     }
-    if let Err(response) = form.dispatch() {
+    let Some(session_id) = session.id() else {
+        return super::response::session_error();
+    };
+    if let Err(response) = form
+        .reserve_and_dispatch(&state.submission_tokens, session_id)
+        .await
+    {
         return response;
     }
     match state.participants.set_archived(id, archived).await {

@@ -11,6 +11,7 @@ use tower_sessions::Session;
 
 use crate::middleware::MutationPreflight;
 use crate::session;
+use crate::{state::AppState, submission_tokens::TokenPool};
 
 /// Decoded URL-encoded pairs in their original wire order.
 #[derive(Clone)]
@@ -20,12 +21,42 @@ pub struct OrderedForm(pub Vec<(String, String)>);
 pub(crate) struct CsrfValidatedForm {
     form: OrderedForm,
     preflight: Option<MutationPreflight>,
+    submission_token: Option<String>,
+    token_pool: TokenPool,
+    request_path: String,
+    enhanced: bool,
 }
 
 impl CsrfValidatedForm {
     /// Returns the validated ordered form for route-specific parsing.
     pub(crate) fn ordered(&self) -> OrderedForm {
         self.form.clone()
+    }
+
+    pub(crate) async fn reserve_and_dispatch(
+        &self,
+        store: &crate::submission_tokens::SubmissionTokenStore,
+        session_id: tower_sessions::session::Id,
+    ) -> Result<(), Response> {
+        store
+            .reserve_form_and_dispatch(
+                session_id,
+                self.token_pool,
+                self.submission_token.as_deref().unwrap_or_default(),
+                || self.dispatch().map_err(|_| ()),
+            )
+            .await
+            .map_err(|error| match error {
+                crate::submission_tokens::ReserveError::Conflict => {
+                    crate::handlers::response::submission_token_conflict_for(
+                        &self.request_path,
+                        self.enhanced,
+                    )
+                }
+                crate::submission_tokens::ReserveError::Deadline => {
+                    crate::handlers::response::timeout_response()
+                }
+            })
     }
 
     /// Marks the request as dispatched immediately before its first mutation.
@@ -37,14 +68,20 @@ impl CsrfValidatedForm {
     }
 }
 
-impl<S> FromRequest<S> for CsrfValidatedForm
-where
-    S: Send + Sync,
-{
+impl FromRequest<AppState> for CsrfValidatedForm {
     type Rejection = Response;
 
-    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+    #[allow(clippy::too_many_lines)]
+    async fn from_request(req: Request, state: &AppState) -> Result<Self, Self::Rejection> {
         let (mut parts, body) = req.into_parts();
+        let request_path = parts.uri.path().to_owned();
+        let request_headers = parts.headers.clone();
+        let enhanced = request_headers.contains_key("hx-request");
+        let token_pool = if parts.uri.path() == "/login" {
+            TokenPool::Anonymous
+        } else {
+            TokenPool::Authenticated
+        };
         let preflight = parts.extensions.get::<MutationPreflight>().cloned();
         let session = match &preflight {
             Some(preflight) => preflight
@@ -87,7 +124,63 @@ where
         if tokens.len() != 1 || !csrf_matches {
             return Err(csrf_rejection());
         }
-        Ok(Self { form, preflight })
+        let submission_token = form
+            .0
+            .iter()
+            .filter(|(key, _)| key == "submission_token")
+            .map(|(_, value)| value.as_str())
+            .collect::<Vec<_>>();
+        if token_pool == TokenPool::Anonymous && submission_token.len() > 1 {
+            return Err(crate::handlers::response::login_error_response(
+                StatusCode::BAD_REQUEST,
+                "Malformed form submission.",
+            ));
+        }
+        if token_pool == TokenPool::Authenticated && submission_token.len() != 1 {
+            return Err(if request_path == "/logout" {
+                crate::handlers::response::logout_error_response(
+                    &request_headers,
+                    StatusCode::CONFLICT,
+                    "Invalid sign-out request.",
+                )
+            } else {
+                crate::handlers::response::submission_token_conflict_for(&request_path, enhanced)
+            });
+        }
+        let Some(session_id) = session.id() else {
+            return Err(session_rejection());
+        };
+        let submission_token = if token_pool == TokenPool::Anonymous {
+            submission_token.first().map(|value| (*value).to_owned())
+        } else {
+            state
+                .submission_tokens
+                .validate(session_id, token_pool, submission_token[0])
+                .await
+                .map_err(|_| {
+                    if request_path == "/logout" {
+                        crate::handlers::response::logout_error_response(
+                            &request_headers,
+                            StatusCode::CONFLICT,
+                            "Invalid sign-out request.",
+                        )
+                    } else {
+                        crate::handlers::response::submission_token_conflict_for(
+                            &request_path,
+                            enhanced,
+                        )
+                    }
+                })?;
+            Some(submission_token[0].to_owned())
+        };
+        Ok(Self {
+            form,
+            preflight,
+            submission_token,
+            token_pool,
+            request_path,
+            enhanced,
+        })
     }
 }
 
@@ -166,7 +259,7 @@ impl OrderedForm {
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn parse_group_form(form: OrderedForm) -> Result<GroupForm, FormError> {
     let fields = form
-        .required_fields(&["name", "currency", "csrf"])
+        .required_fields(&["name", "currency", "csrf", "submission_token"])
         .map_err(malformed_form)?;
     Ok(GroupForm {
         name: value(&fields, "name"),
@@ -177,7 +270,7 @@ pub(crate) fn parse_group_form(form: OrderedForm) -> Result<GroupForm, FormError
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn parse_participant_form(form: OrderedForm) -> Result<ParticipantForm, FormError> {
     let fields = form
-        .required_fields(&["name", "color", "csrf"])
+        .required_fields(&["name", "color", "csrf", "submission_token"])
         .map_err(malformed_form)?;
     Ok(ParticipantForm {
         name: value(&fields, "name"),
@@ -188,7 +281,7 @@ pub(crate) fn parse_participant_form(form: OrderedForm) -> Result<ParticipantFor
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn parse_member_form(form: OrderedForm) -> Result<MemberForm, FormError> {
     let fields = form
-        .required_fields(&["participant_id", "csrf"])
+        .required_fields(&["participant_id", "csrf", "submission_token"])
         .map_err(malformed_form)?;
     let participant_id = value(&fields, "participant_id")
         .parse()
@@ -201,7 +294,7 @@ pub(crate) fn parse_member_form(form: OrderedForm) -> Result<MemberForm, FormErr
 
 /// Parses expense field structure without applying financial eligibility policy.
 pub(crate) fn parse_expense_form(form: OrderedForm) -> Result<ExpenseForm, FormError> {
-    const SCALARS: [&str; 9] = [
+    const SCALARS: [&str; 10] = [
         "description",
         "total",
         "currency",
@@ -211,6 +304,7 @@ pub(crate) fn parse_expense_form(form: OrderedForm) -> Result<ExpenseForm, FormE
         "single_payer_id",
         "split_mode",
         "csrf",
+        "submission_token",
     ];
 
     let mut scalars = HashMap::new();
@@ -287,7 +381,7 @@ where
         let RawForm(bytes) = RawForm::from_request(req, state)
             .await
             .map_err(IntoResponse::into_response)?;
-        validate_percent_encoding(&bytes).map_err(|()| {
+        validate_form_encoding(&bytes).map_err(|()| {
             (
                 axum::http::StatusCode::BAD_REQUEST,
                 "Malformed form encoding.",
@@ -316,6 +410,11 @@ fn validate_percent_encoding(bytes: &[u8]) -> Result<(), ()> {
     Ok(())
 }
 
+fn validate_form_encoding(bytes: &[u8]) -> Result<(), ()> {
+    validate_percent_encoding(bytes)?;
+    std::str::from_utf8(bytes).map(|_| ()).map_err(|_| ())
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
@@ -332,6 +431,11 @@ mod tests {
         assert!(validate_percent_encoding(b"value=%0").is_err());
         assert!(validate_percent_encoding(b"value=%xz").is_err());
         assert!(validate_percent_encoding(b"value=%20").is_ok());
+    }
+
+    #[test]
+    fn rejects_invalid_utf8_form_bytes() {
+        assert!(super::validate_form_encoding(b"name=\xff").is_err());
     }
 
     #[test]
@@ -359,6 +463,7 @@ mod tests {
         let form = OrderedForm(vec![
             ("participant_id".into(), "not-an-id".into()),
             ("csrf".into(), "token".into()),
+            ("submission_token".into(), "submission".into()),
         ]);
 
         assert_eq!(
@@ -378,6 +483,7 @@ mod tests {
             ("single_payer_id".into(), "1".into()),
             ("split_mode".into(), "equal".into()),
             ("csrf".into(), "token".into()),
+            ("submission_token".into(), "submission".into()),
         ])
     }
 

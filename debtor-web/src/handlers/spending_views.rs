@@ -25,7 +25,7 @@ pub(super) struct ParticipantDraft {
 
 pub(super) enum GroupTemplateError {
     Application(debtor_application::ApplicationError),
-    Session,
+    Response(Response),
 }
 
 impl From<debtor_application::ApplicationError> for GroupTemplateError {
@@ -37,7 +37,7 @@ impl From<debtor_application::ApplicationError> for GroupTemplateError {
 pub(super) fn map_group_template_error(error: GroupTemplateError) -> Response {
     match error {
         GroupTemplateError::Application(error) => map_error(error),
-        GroupTemplateError::Session => super::response::session_error(),
+        GroupTemplateError::Response(response) => response,
     }
 }
 
@@ -113,7 +113,7 @@ pub(super) async fn build_group_template(
     );
     let shell = authenticated_shell(state, session)
         .await
-        .map_err(|_| GroupTemplateError::Session)?;
+        .map_err(GroupTemplateError::Response)?;
     Ok(GroupTemplate {
         name: group.name.to_string(),
         group_id: id,

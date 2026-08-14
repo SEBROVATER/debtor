@@ -26,14 +26,14 @@
       <h1>Archived participants</h1>
       {% else %}
       <h1>Participants</h1>
-      <form method="post" action="/participants" class="compact-form">
-        <input type="hidden" name="csrf" value="{{ csrf }}" /><label
+       <form method="post" action="/participants" class="compact-form mutation-form" aria-describedby="participants-error" hx-post="/participants" hx-disabled-elt="button" hx-indicator="#participant-create-status" aria-busy="false">
+        <input type="hidden" name="csrf" value="{{ csrf }}" /><input type="hidden" name="submission_token" value="{{ shell.submission_token }}" /><label
           >Name <input name="name" value="{{ create_name }}" required /></label
         ><label>Color <input type="color" name="color" value="{{ create_color }}" required /></label
-        ><button>Create participant</button>
+        ><button type="submit">Create participant</button><p id="participant-create-status" class="mutation-status" role="status" aria-live="polite" aria-atomic="true"> </p>
       </form>
       {% endif %}{% match error %}{% when Some with (message) %}
-      <p class="error" role="alert">{{ message }}</p>
+       <p id="participants-error" class="error" role="alert">{{ message }}</p>
       {% when None %}{% endmatch %}{% if participants.len() == 0 %}
       <p class="empty">No participants yet.</p>
       {% else %}
@@ -55,12 +55,12 @@
             <td data-label="Color">{{ participant.color }}</td>
             <td data-label="Actions">
               {% if archived %}
-              <form method="post" action="/participants/{{ participant.id }}/restore">
-                <input type="hidden" name="csrf" value="{{ csrf }}" /><button>Restore</button>
+              <form method="post" action="/participants/{{ participant.id }}/restore" class="mutation-form" hx-post="/participants/{{ participant.id }}/restore" hx-disabled-elt="button" hx-indicator="#participant-{{ participant.id }}-status" aria-busy="false">
+                <input type="hidden" name="csrf" value="{{ csrf }}" /><input type="hidden" name="submission_token" value="{{ shell.submission_token }}" /><button type="submit">Restore</button><p id="participant-{{ participant.id }}-status" class="mutation-status" role="status" aria-live="polite" aria-atomic="true"> </p>
               </form>
               {% else %}<a href="/participants/{{ participant.id }}/edit">Edit</a>
-              <form method="post" action="/participants/{{ participant.id }}/archive">
-                <input type="hidden" name="csrf" value="{{ csrf }}" /><button>Archive</button>
+              <form method="post" action="/participants/{{ participant.id }}/archive" class="mutation-form" hx-post="/participants/{{ participant.id }}/archive" hx-disabled-elt="button" hx-indicator="#participant-{{ participant.id }}-status" aria-busy="false">
+                <input type="hidden" name="csrf" value="{{ csrf }}" /><input type="hidden" name="submission_token" value="{{ shell.submission_token }}" /><button type="submit">Archive</button><p id="participant-{{ participant.id }}-status" class="mutation-status" role="status" aria-live="polite" aria-atomic="true"> </p>
               </form>
               {% endif %}
             </td>

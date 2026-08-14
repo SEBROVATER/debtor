@@ -21,10 +21,10 @@
     <main>
       <h1>Edit group</h1>
       {% match error %}{% when Some with (message) %}
-      <p class="error" role="alert">{{ message }}</p>
+       <p id="group-edit-error" class="error" role="alert">{{ message }}</p>
       {% when None %}{% endmatch %}
-      <form method="post" action="/groups/{{ id }}/edit">
-        <input type="hidden" name="csrf" value="{{ csrf }}" /><label
+      <form method="post" action="/groups/{{ id }}/edit" class="mutation-form" aria-describedby="group-edit-error" hx-post="/groups/{{ id }}/edit" hx-disabled-elt="button" hx-indicator="#group-edit-status" aria-busy="false">
+        <input type="hidden" name="csrf" value="{{ csrf }}" /><input type="hidden" name="submission_token" value="{{ shell.submission_token }}" /><label
           >Name <input name="name" value="{{ name }}" required /></label
         ><label
           >Settlement currency
@@ -37,7 +37,7 @@
           </select></label
         >
         <p class="helper">Changing this affects settlement display, not stored expense amounts.</p>
-        <button>Save group</button>
+        <button type="submit">Save group</button><p id="group-edit-status" class="mutation-status" role="status" aria-live="polite" aria-atomic="true"> </p>
       </form>
     </main>
   </body>

@@ -13,6 +13,10 @@ header { display: flex; justify-content: space-between; gap: 1rem; align-items: 
 .sign-out-form .status.htmx-indicator::before { content: "Signing out..."; }
 .sign-out-form.htmx-request .status { color: var(--warn); }
 .sign-out-form.htmx-request .status::before { content: "Signing out..."; }
+.mutation-form .mutation-status { color: transparent; min-block-size: 1.5rem; }
+.mutation-form.htmx-request .mutation-status { color: var(--warn); }
+.mutation-form.htmx-request .mutation-status::before { content: "Working..."; }
+.mutation-form.htmx-request button[type="submit"] { cursor: wait; opacity: .7; }
 nav { display: flex; gap: 1rem; flex-wrap: wrap; }
 a { color: var(--accent); display: inline-block; min-block-size: 48px; min-inline-size: 48px; }
 .page-heading { display: flex; justify-content: space-between; gap: 1rem; align-items: start; }
@@ -69,7 +73,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .login-page .access-submit[aria-disabled="true"] { cursor: wait; opacity: .7; }
 .login-page button:focus-visible, .login-page a:focus-visible, .login-page input:focus-visible { outline: 2px solid #FFFFFF; outline-offset: 2px; }
 .error-page section { max-inline-size: 40rem; }
-.error-page h1:focus { outline: 2px solid #16697a; outline-offset: 2px; }
+.error-page h1:focus { outline: 2px solid var(--focus); outline-offset: 2px; }
+.error-page a { display: inline-block; min-block-size: 48px; min-inline-size: 48px; padding-block: .75rem; }
 @media (max-width: 40rem) {
   header { align-items: start; flex-direction: column; }
   .page-heading, .member-actions { display: block; }

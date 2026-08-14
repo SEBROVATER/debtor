@@ -32,7 +32,13 @@ pub(crate) async fn add_member(
     if let Err(response) = require_writable_group(&state, id).await {
         return response;
     }
-    if let Err(response) = csrf_form.dispatch() {
+    let Some(session_id) = session.id() else {
+        return super::response::session_error();
+    };
+    if let Err(response) = csrf_form
+        .reserve_and_dispatch(&state.submission_tokens, session_id)
+        .await
+    {
         return response;
     }
     match state.participants.add_member(id, form.participant_id).await {
@@ -59,7 +65,13 @@ pub(crate) async fn create_group_participant(
         return response;
     }
     let ParticipantForm { name, color, .. } = form;
-    if let Err(response) = csrf_form.dispatch() {
+    let Some(session_id) = session.id() else {
+        return super::response::session_error();
+    };
+    if let Err(response) = csrf_form
+        .reserve_and_dispatch(&state.submission_tokens, session_id)
+        .await
+    {
         return response;
     }
     match state
@@ -103,7 +115,13 @@ pub(crate) async fn deactivate_member(
     if let Err(response) = require_writable_group(&state, group_id).await {
         return response;
     }
-    if let Err(response) = form.dispatch() {
+    let Some(session_id) = session.id() else {
+        return super::response::session_error();
+    };
+    if let Err(response) = form
+        .reserve_and_dispatch(&state.submission_tokens, session_id)
+        .await
+    {
         return response;
     }
     match state

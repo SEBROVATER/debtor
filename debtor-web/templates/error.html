@@ -7,14 +7,14 @@
     <link rel="stylesheet" href="/static/css/app.css" />
   </head>
     <body class="error-page">
-      <main>
-       <section aria-busy="false" aria-labelledby="error-heading">
-         <h1 id="error-heading" tabindex="-1">Request status</h1>
-         <p id="login-status" class="error" role="status" aria-live="polite" aria-atomic="true">{{ message }}</p>
+       <main>
+        <section aria-busy="false" aria-labelledby="error-heading">
+          <h1 id="error-heading" tabindex="-1" autofocus>Request status</h1>
+          <p id="error-status" class="error" role="alert" aria-live="assertive" aria-atomic="true">{{ message }}</p>
          {% if login_recovery %}
          <a href="/login">Return to Sign in</a>
-         {% else %}
-         <a href="/groups">Return to groups</a>
+          {% else %}
+          <a href="{{ recovery_path }}">Reload the form</a>
          {% endif %}
        </section>
       </main>

@@ -87,9 +87,12 @@ pub(crate) async fn login(
     };
     match state
         .submission_tokens
-        .reserve_and_dispatch(session_id, submission_token, || {
-            form.dispatch().map_err(|_| ())
-        })
+        .reserve_and_dispatch(
+            session_id,
+            crate::submission_tokens::TokenPool::Anonymous,
+            submission_token,
+            || form.dispatch().map_err(|_| ()),
+        )
         .await
     {
         Ok(()) => {}
@@ -192,9 +195,12 @@ pub(crate) async fn logout(
     };
     match state
         .submission_tokens
-        .reserve_sign_out_and_dispatch(session_id, submission_token, || {
-            form.dispatch().map_err(|_| ())
-        })
+        .reserve_and_dispatch(
+            session_id,
+            crate::submission_tokens::TokenPool::Authenticated,
+            submission_token,
+            || form.dispatch().map_err(|_| ()),
+        )
         .await
     {
         Ok(()) => {}
@@ -209,7 +215,12 @@ pub(crate) async fn logout(
             return (StatusCode::GATEWAY_TIMEOUT, "Request timed out.").into_response();
         }
     }
-    match session::flush(&session).await {
+    let flush_result = session::flush(&session).await;
+    state
+        .submission_tokens
+        .remove_authenticated_session(session_id)
+        .await;
+    match flush_result {
         Ok(()) => Redirect::to("/login").into_response(),
         Err(_) => super::response::session_error(),
     }
@@ -269,9 +280,14 @@ pub(crate) async fn authenticated_shell(
     };
     let submission_token = state
         .submission_tokens
-        .issue_sign_out(session_id)
+        .issue_authenticated(session_id)
         .await
-        .map_err(|_| super::response::session_unavailable())?;
+        .map_err(|error| match error {
+            crate::submission_tokens::IssueError::Capacity(_) => {
+                super::response::submission_capacity_unavailable()
+            }
+            crate::submission_tokens::IssueError::ClockRange => super::response::session_error(),
+        })?;
     Ok(AuthenticatedShell {
         csrf,
         submission_token,

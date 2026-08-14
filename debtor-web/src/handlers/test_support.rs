@@ -16,7 +16,7 @@ use debtor_domain::{
 };
 
 use crate::state::{AppState, TrustedProxyConfig};
-use crate::submission_tokens::AnonymousSubmissionTokenStore;
+use crate::submission_tokens::SubmissionTokenStore;
 
 pub(crate) struct TestState {
     pub(crate) app: AppState,
@@ -33,6 +33,8 @@ pub(crate) struct FakeGroups {
     pub(crate) update_validation_error: bool,
     pub(crate) created: Mutex<Vec<(String, Currency)>>,
     pub(crate) updated: Mutex<Vec<(i64, String, Currency)>>,
+    pub(crate) archived: AtomicUsize,
+    pub(crate) deleted: AtomicUsize,
 }
 
 pub(crate) struct FakeParticipants {
@@ -43,6 +45,8 @@ pub(crate) struct FakeParticipants {
     pub(crate) created: Mutex<Vec<(String, String)>>,
     pub(crate) updated: Mutex<Vec<(i64, String, String)>>,
     pub(crate) group_created: Mutex<Vec<(i64, String, String)>>,
+    pub(crate) archived: AtomicUsize,
+    pub(crate) memberships: AtomicUsize,
 }
 
 pub(crate) fn state(archived: bool) -> TestState {
@@ -117,6 +121,8 @@ fn state_with_errors_and_password(
         update_validation_error: group_update_validation_error,
         created: Mutex::new(Vec::new()),
         updated: Mutex::new(Vec::new()),
+        archived: AtomicUsize::new(0),
+        deleted: AtomicUsize::new(0),
     });
     let participants = Arc::new(FakeParticipants {
         participant: Participant {
@@ -131,6 +137,8 @@ fn state_with_errors_and_password(
         created: Mutex::new(Vec::new()),
         updated: Mutex::new(Vec::new()),
         group_created: Mutex::new(Vec::new()),
+        archived: AtomicUsize::new(0),
+        memberships: AtomicUsize::new(0),
     });
     let spendings: Arc<dyn SpendingUseCases> = Arc::new(FakeSpendings);
     let debts: Arc<dyn DebtUseCases> = Arc::new(FakeDebts);
@@ -161,7 +169,7 @@ fn state_with_errors_and_password(
             clock,
             readiness: Arc::new(FakeReadiness { healthy: true }),
             proxy: TrustedProxyConfig::default(),
-            submission_tokens: AnonymousSubmissionTokenStore::default(),
+            submission_tokens: SubmissionTokenStore::default(),
         },
         groups,
         participants,
@@ -232,10 +240,12 @@ impl GroupUseCases for FakeGroups {
     }
 
     async fn set_archived(&self, _: i64, _: bool) -> Result<(), ApplicationError> {
+        self.archived.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
     async fn delete_empty(&self, _: i64) -> Result<(), ApplicationError> {
+        self.deleted.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 }
@@ -298,6 +308,7 @@ impl ParticipantUseCases for FakeParticipants {
     }
 
     async fn set_archived(&self, _: i64, _: bool) -> Result<(), ApplicationError> {
+        self.archived.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
@@ -316,10 +327,12 @@ impl ParticipantUseCases for FakeParticipants {
     }
 
     async fn add_member(&self, _: i64, _: i64) -> Result<(), ApplicationError> {
+        self.memberships.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
     async fn deactivate_member(&self, _: i64, _: i64) -> Result<(), ApplicationError> {
+        self.memberships.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 }

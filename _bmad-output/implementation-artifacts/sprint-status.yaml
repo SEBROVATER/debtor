@@ -1,5 +1,5 @@
 # generated: 2026-08-12T12:16:16+06:00
-# last_updated: 2026-08-13T15:30:00+06:00
+# last_updated: 2026-08-13T18:10:00+06:00
 # project: debtor
 # project_key: NOKEY
 # tracking_system: file-system
@@ -41,7 +41,7 @@
 # - Retrospective appends its action items to action_items; sprint-status surfaces open ones
 
 generated: 2026-08-12T12:16:16+06:00
-last_updated: 2026-08-13T15:30:00+06:00
+last_updated: 2026-08-13T18:10:00+06:00
 project: debtor
 project_key: NOKEY
 tracking_system: file-system
@@ -55,7 +55,7 @@ development_status:
   1-4-open-a-protected-and-accessible-login-page: done
   1-5-sign-in-with-bounded-password-verification: done
   1-6-maintain-an-authenticated-session-and-sign-out: done
-  1-7-extend-replay-protection-beyond-login-and-sign-out: backlog
+  1-7-extend-replay-protection-beyond-login-and-sign-out: done
   1-8-expose-health-readiness-and-bounded-admission: backlog
   1-9-shut-down-the-authenticated-runtime-safely: backlog
   1-10-define-the-pre-production-https-edge-gate: backlog

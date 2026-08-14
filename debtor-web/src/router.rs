@@ -327,7 +327,15 @@ mod tests {
             .expect("groups page");
         assert_eq!(page.status(), StatusCode::OK);
         let body = response_body(page).await;
-        assert_eq!(body.matches("name=\"submission_token\"").count(), 1);
+        assert_eq!(body.matches("name=\"submission_token\"").count(), 3);
+        let first_token = submission_token(&body);
+        assert_eq!(
+            body.matches(&format!(
+                "name=\"submission_token\" value=\"{first_token}\""
+            ))
+            .count(),
+            3
+        );
         assert_eq!(body.matches("action=\"/logout\"").count(), 1);
         let csrf_token = csrf(&body);
         let sign_out_token = submission_token(&body);
@@ -546,6 +554,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn authenticated_mutation_forms_expose_pending_ownership() {
+        let test_state = state(false);
+        let app = app(&test_state);
+        let cookie = login(&app).await;
+        let response = app
+            .oneshot(request(Method::GET, "/groups", "", Some(&cookie)))
+            .await
+            .expect("groups page");
+        let body = response_body(response).await;
+        assert!(body.matches("mutation-form").count() >= 2);
+        assert!(body.matches("aria-busy=\"false\"").count() >= 3);
+        assert!(body.matches("role=\"status\"").count() >= 3);
+        assert!(body.contains("hx-disabled-elt=\"button\""));
+    }
+
+    #[tokio::test]
     async fn sign_out_rejects_duplicate_fields_before_flush() {
         let test_state = state(false);
         let app = app(&test_state);
@@ -587,6 +611,122 @@ mod tests {
             .await
             .expect("authenticated session after rejection");
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn authenticated_page_uses_one_shared_token_for_all_forms() {
+        let test_state = state(false);
+        let app = app(&test_state);
+        let cookie = login(&app).await;
+        let response = app
+            .clone()
+            .oneshot(request(Method::GET, "/groups", "", Some(&cookie)))
+            .await
+            .expect("groups page");
+        let body = response_body(response).await;
+        let token = submission_token(&body);
+        assert!(body.matches("name=\"submission_token\"").count() >= 3);
+        assert_eq!(
+            body.matches(&format!("name=\"submission_token\" value=\"{token}\""))
+                .count(),
+            body.matches("name=\"submission_token\"").count()
+        );
+
+        let second = app
+            .oneshot(request(Method::GET, "/groups", "", Some(&cookie)))
+            .await
+            .expect("second groups page");
+        let second_body = response_body(second).await;
+        assert_ne!(token, submission_token(&second_body));
+    }
+
+    #[tokio::test]
+    async fn invalid_authenticated_token_returns_conflict_without_dispatch() {
+        let test_state = state(false);
+        let app = app(&test_state);
+        let cookie = login(&app).await;
+        let page = app
+            .clone()
+            .oneshot(request(Method::GET, "/groups", "", Some(&cookie)))
+            .await
+            .expect("groups page");
+        let body = response_body(page).await;
+        let response = app
+            .oneshot(request(
+                Method::POST,
+                "/groups",
+                &format!(
+                    "csrf={}&submission_token=unknown&name=New&currency=USD",
+                    csrf(&body)
+                ),
+                Some(&cookie),
+            ))
+            .await
+            .expect("token conflict");
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(response_body(response).await.contains("No change occurred"));
+        assert!(
+            test_state
+                .groups
+                .created
+                .lock()
+                .expect("group calls")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn login_missing_submission_token_keeps_login_recovery() {
+        let test_state = state(false);
+        let app = app(&test_state);
+        let response = app
+            .clone()
+            .oneshot(request(Method::GET, "/login", "", None))
+            .await
+            .expect("login form");
+        let cookie = session_cookie(&response);
+        let body = response_body(response).await;
+        let response = app
+            .oneshot(request(
+                Method::POST,
+                "/login",
+                &format!("csrf={}&password=wrong", csrf(&body)),
+                Some(&cookie),
+            ))
+            .await
+            .expect("login recovery");
+        let body = response_body(response).await;
+        assert!(body.contains("/login"));
+        assert!(!body.contains("Reload the form"));
+    }
+
+    #[tokio::test]
+    async fn dispatched_application_validation_consumes_authenticated_token() {
+        let test_state = state_with_errors(false, true, false, false, false, false);
+        let app = app(&test_state);
+        let cookie = login(&app).await;
+        let page = app
+            .clone()
+            .oneshot(request(Method::GET, "/groups", "", Some(&cookie)))
+            .await
+            .expect("groups page");
+        let body = response_body(page).await;
+        let form = format!(
+            "csrf={}&submission_token={}&name=Draft&currency=USD",
+            csrf(&body),
+            submission_token(&body)
+        );
+        let response = app
+            .clone()
+            .oneshot(request(Method::POST, "/groups", &form, Some(&cookie)))
+            .await
+            .expect("validation response");
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let response = app
+            .oneshot(request(Method::POST, "/groups", &form, Some(&cookie)))
+            .await
+            .expect("second validation response");
+        assert_eq!(response.status(), StatusCode::CONFLICT);
     }
 
     #[tokio::test]
@@ -704,7 +844,11 @@ mod tests {
             .oneshot(request(
                 Method::POST,
                 "/groups/1/edit",
-                &format!("csrf={}&name=Renamed&currency=USD", csrf(&edit_form)),
+                &format!(
+                    "csrf={}&submission_token={}&name=Renamed&currency=USD",
+                    csrf(&edit_form),
+                    submission_token(&edit_form)
+                ),
                 Some(&session_cookie),
             ))
             .await
@@ -725,7 +869,11 @@ mod tests {
             .oneshot(request(
                 Method::POST,
                 "/groups",
-                &format!("csrf={}&name=New+group&currency=USD", csrf(&groups_page)),
+                &format!(
+                    "csrf={}&submission_token={}&name=New+group&currency=USD",
+                    csrf(&groups_page),
+                    submission_token(&groups_page)
+                ),
                 Some(&session_cookie),
             ))
             .await
@@ -751,8 +899,9 @@ mod tests {
                 Method::POST,
                 "/participants",
                 &format!(
-                    "csrf={}&name=New+person&color=%23abcdef",
-                    csrf(&participants_page)
+                    "csrf={}&submission_token={}&name=New+person&color=%23abcdef",
+                    csrf(&participants_page),
+                    submission_token(&participants_page)
                 ),
                 Some(&session_cookie),
             ))
@@ -775,8 +924,9 @@ mod tests {
                 Method::POST,
                 "/groups/1/participants",
                 &format!(
-                    "csrf={}&name=Joined+person&color=%23fedcba",
-                    csrf(&group_detail_page)
+                    "csrf={}&submission_token={}&name=Joined+person&color=%23fedcba",
+                    csrf(&group_detail_page),
+                    submission_token(&group_detail_page)
                 ),
                 Some(&session_cookie),
             ))
@@ -804,8 +954,9 @@ mod tests {
                 Method::POST,
                 "/participants/1",
                 &format!(
-                    "csrf={}&name=Edited+person&color=%23aabbcc",
-                    csrf(&participant_edit_page)
+                    "csrf={}&submission_token={}&name=Edited+person&color=%23aabbcc",
+                    csrf(&participant_edit_page),
+                    submission_token(&participant_edit_page)
                 ),
                 Some(&session_cookie),
             ))
@@ -837,7 +988,11 @@ mod tests {
             .oneshot(request(
                 Method::POST,
                 "/groups/1/edit",
-                &format!("csrf={}&name=Updated+group&currency=EUR", csrf(&form)),
+                &format!(
+                    "csrf={}&submission_token={}&name=Updated+group&currency=EUR",
+                    csrf(&form),
+                    submission_token(&form)
+                ),
                 Some(&session_cookie),
             ))
             .await
@@ -866,8 +1021,9 @@ mod tests {
                 Method::POST,
                 "/groups/1/spendings",
                 &format!(
-                    "description=Lunch&total=12.00&currency=USD&spending_type=food&spent_date=2026-08-04&payer_mode=single&single_payer_id=1&split_mode=equal&csrf={}&share_1=on",
-                    csrf(&group_page)
+                    "description=Lunch&total=12.00&currency=USD&spending_type=food&spent_date=2026-08-04&payer_mode=single&single_payer_id=1&split_mode=equal&csrf={}&submission_token={}&share_1=on",
+                    csrf(&group_page),
+                    submission_token(&group_page)
                 ),
                 Some(&session_cookie),
             ))
@@ -1321,7 +1477,7 @@ mod tests {
                 .load(std::sync::atomic::Ordering::SeqCst),
             0
         );
-        assert_eq!(body.matches("name=\"submission_token\"").count(), 1);
+        assert!(body.matches("name=\"submission_token\"").count() >= 1);
     }
 
     #[tokio::test]

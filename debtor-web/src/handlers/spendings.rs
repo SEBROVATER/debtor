@@ -171,7 +171,13 @@ pub(crate) async fn delete_spending(
     if let Err(response) = require_writable_group(&state, group_id).await {
         return response;
     }
-    if let Err(response) = form.dispatch() {
+    let Some(session_id) = session.id() else {
+        return super::response::session_error();
+    };
+    if let Err(response) = form
+        .reserve_and_dispatch(&state.submission_tokens, session_id)
+        .await
+    {
         return response;
     }
     match state.spendings.delete(group_id, spending_id).await {
@@ -222,7 +228,13 @@ async fn save_spending(
             .await;
         }
     };
-    if let Err(response) = csrf_form.dispatch() {
+    let Some(session_id) = session.id() else {
+        return super::response::session_error();
+    };
+    if let Err(response) = csrf_form
+        .reserve_and_dispatch(&state.submission_tokens, session_id)
+        .await
+    {
         return response;
     }
     let result = if let Some(id) = spending_id {

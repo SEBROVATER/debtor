@@ -152,8 +152,7 @@ mod composition_tests {
             pool,
             session_store: debtor_web::session_store::ReapingMemoryStore::default(),
             cleanup_health: CleanupHealth::new(),
-            submission_token_store:
-                debtor_web::submission_tokens::AnonymousSubmissionTokenStore::default(),
+            submission_token_store: debtor_web::submission_tokens::SubmissionTokenStore::default(),
         }
     }
 

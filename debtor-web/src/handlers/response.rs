@@ -1,6 +1,6 @@
 use askama::Template;
 use axum::{
-    http::{HeaderMap, HeaderValue, StatusCode, header::CONTENT_TYPE},
+    http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse, Response},
 };
 
@@ -14,28 +14,32 @@ pub(super) fn render(template: &impl Template) -> Response {
 }
 
 pub(super) fn error_response(status: StatusCode, message: &str) -> Response {
+    error_response_with_recovery(status, message, "/groups")
+}
+
+fn error_response_with_recovery(
+    status: StatusCode,
+    message: &str,
+    recovery_path: &str,
+) -> Response {
     let template = ErrorTemplate {
         message,
         login_recovery: false,
+        recovery_path,
     };
     (status, render(&template)).into_response()
 }
 
-pub(super) fn logout_error_response(
+pub(crate) fn logout_error_response(
     headers: &HeaderMap,
     status: StatusCode,
     message: &'static str,
 ) -> Response {
     if headers.contains_key("hx-request") {
-        return (
-            status,
-            [(
-                CONTENT_TYPE,
-                HeaderValue::from_static("text/plain; charset=utf-8"),
-            )],
-            message,
-        )
-            .into_response();
+        return Html(format!(
+            "<section id=\"sign-out-status\" aria-labelledby=\"sign-out-conflict-heading\"><h2 id=\"sign-out-conflict-heading\" tabindex=\"-1\">{status}</h2><p class=\"status error\" role=\"alert\" aria-live=\"assertive\" aria-atomic=\"true\">{message} No change occurred.</p><a href=\"/login\">Reload Sign in</a></section>"
+        ))
+        .into_response();
     }
     error_response(status, message)
 }
@@ -44,6 +48,7 @@ pub(crate) fn login_error_response(status: StatusCode, message: &str) -> Respons
     let template = ErrorTemplate {
         message,
         login_recovery: true,
+        recovery_path: "/login",
     };
     (status, render(&template)).into_response()
 }
@@ -53,6 +58,55 @@ pub(crate) fn login_token_conflict() -> Response {
         StatusCode::CONFLICT,
         "This sign-in form is no longer valid. Open Sign in to try again.",
     )
+}
+
+pub(crate) fn submission_token_conflict_for(path: &str, enhanced: bool) -> Response {
+    let recovery_path = canonical_recovery_path(path);
+    let message = format!(
+        "409 Conflict. This form is no longer valid. No change occurred. Reload it at {recovery_path} to try again."
+    );
+    if enhanced {
+        return Html(format!(
+            "<section id=\"mutation-conflict\" aria-labelledby=\"mutation-conflict-heading\"><h2 id=\"mutation-conflict-heading\" tabindex=\"-1\">409 Conflict</h2><p class=\"status error\" role=\"alert\" aria-live=\"assertive\" aria-atomic=\"true\">{message}</p><a href=\"{recovery_path}\">Reload the form</a></section>"
+        ))
+        .into_response();
+    }
+    error_response_with_recovery(StatusCode::CONFLICT, &message, &recovery_path)
+}
+
+fn canonical_recovery_path(path: &str) -> String {
+    if path == "/groups"
+        || path == "/participants"
+        || path.ends_with("/edit")
+        || path.ends_with("/delete")
+    {
+        return path.to_owned();
+    }
+    if let Some(participant_id) = path
+        .strip_prefix("/participants/")
+        .and_then(|value| value.split('/').next())
+        .filter(|value| value.parse::<i64>().is_ok())
+    {
+        return format!("/participants/{participant_id}/edit");
+    }
+    if let Some((prefix, suffix)) = path.rsplit_once("/spendings/") {
+        if suffix.parse::<i64>().is_ok() {
+            return path.to_owned();
+        }
+        return prefix.to_owned();
+    }
+    if let Some(group_id) = path
+        .strip_prefix("/groups/")
+        .and_then(|value| value.split('/').next())
+        && group_id.parse::<i64>().is_ok()
+    {
+        return format!("/groups/{group_id}");
+    }
+    "/groups".to_owned()
+}
+
+pub(crate) fn timeout_response() -> Response {
+    error_response(StatusCode::GATEWAY_TIMEOUT, "Request timed out.")
 }
 
 pub(crate) fn login_timeout() -> Response {
@@ -71,10 +125,10 @@ pub(super) fn session_error() -> Response {
     error_response(StatusCode::INTERNAL_SERVER_ERROR, "Session error.")
 }
 
-pub(super) fn session_unavailable() -> Response {
+pub(super) fn submission_capacity_unavailable() -> Response {
     error_response(
         StatusCode::SERVICE_UNAVAILABLE,
-        "Session storage is temporarily unavailable. Try again.",
+        "Form capacity is temporarily unavailable. Try again.",
     )
 }
 

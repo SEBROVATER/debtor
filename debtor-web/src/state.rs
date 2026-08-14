@@ -13,7 +13,7 @@ use debtor_application::{
     ReadinessUseCases, SpendingUseCases,
 };
 
-use crate::submission_tokens::AnonymousSubmissionTokenStore;
+use crate::submission_tokens::SubmissionTokenStore;
 
 /// Dependencies exposed to the HTTP layer as application interfaces.
 #[derive(Clone)]
@@ -34,8 +34,8 @@ pub struct AppState {
     pub readiness: Arc<dyn ReadinessUseCases>,
     /// Trusted reverse-proxy client-IP policy.
     pub proxy: TrustedProxyConfig,
-    /// Anonymous Login submission-token owner.
-    pub submission_tokens: AnonymousSubmissionTokenStore,
+    /// Shared anonymous and authenticated submission-token owner.
+    pub submission_tokens: SubmissionTokenStore,
 }
 
 /// Selected forwarding-header policy.

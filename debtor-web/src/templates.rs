@@ -7,7 +7,7 @@ use askama::Template;
 pub struct AuthenticatedShell {
     /// Current synchronizer token.
     pub csrf: String,
-    /// Single-use Sign out token.
+    /// Single-use token shared by mutually exclusive unsafe forms on this page.
     pub submission_token: String,
 }
 
@@ -33,6 +33,8 @@ pub struct ErrorTemplate<'a> {
     pub message: &'a str,
     /// Whether the error can be retried from the anonymous Login route.
     pub login_recovery: bool,
+    /// Allow-listed native recovery destination.
+    pub recovery_path: &'a str,
 }
 
 /// Group list page.

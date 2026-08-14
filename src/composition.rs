@@ -15,7 +15,7 @@ use debtor_infra::exchange_rates::FrankfurterClient;
 use debtor_web::session;
 use debtor_web::session_store::ReapingMemoryStore;
 use debtor_web::state::{AppState, TrustedProxyConfig};
-use debtor_web::submission_tokens::AnonymousSubmissionTokenStore;
+use debtor_web::submission_tokens::SubmissionTokenStore;
 use sqlx::SqlitePool;
 use tokio::sync::Semaphore;
 use tower::limit::concurrency::GlobalConcurrencyLimitLayer;
@@ -33,7 +33,7 @@ pub(crate) struct BuiltApp {
     pub(crate) pool: SqlitePool,
     pub(crate) session_store: ReapingMemoryStore,
     pub(crate) cleanup_health: CleanupHealth,
-    pub(crate) submission_token_store: AnonymousSubmissionTokenStore,
+    pub(crate) submission_token_store: SubmissionTokenStore,
 }
 
 async fn static_headers(request: Request, next: axum::middleware::Next) -> Response {
@@ -120,7 +120,7 @@ pub(crate) async fn build_app(config: Config) -> Result<BuiltApp, StartupError> 
         clock,
         readiness,
         proxy,
-        submission_tokens: AnonymousSubmissionTokenStore::default(),
+        submission_tokens: SubmissionTokenStore::default(),
     };
     let session_store = ReapingMemoryStore::default();
     let submission_token_store = state.submission_tokens.clone();

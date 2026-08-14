@@ -24,14 +24,14 @@
     </header>
     <main>
       {% match error %}{% when Some with (message) %}
-      <p class="error" role="alert">{{ message }}</p>
+       <p id="groups-error" class="error" role="alert">{{ message }}</p>
       {% when None %}{% endmatch %}
       {% if archived %}
        <h1 id="groups-heading" tabindex="-1" autofocus>Archived groups</h1>
       {% else %}
        <h1 id="groups-heading" tabindex="-1" autofocus>Groups</h1>
-      <form method="post" action="/groups" class="inline-form">
-        <input type="hidden" name="csrf" value="{{ csrf }}" /><label
+        <form method="post" action="/groups" class="inline-form mutation-form" aria-describedby="groups-error" hx-post="/groups" hx-disabled-elt="button" hx-indicator="#group-create-status" aria-busy="false">
+        <input type="hidden" name="csrf" value="{{ csrf }}" /><input type="hidden" name="submission_token" value="{{ shell.submission_token }}" /><label
           >Name <input name="name" value="{{ create_name }}" required /></label
         ><label
           >Currency
@@ -42,7 +42,7 @@
             </option>
             {% endfor %}
           </select></label
-        ><button>Create group</button>
+        ><button type="submit">Create group</button><p id="group-create-status" class="mutation-status" role="status" aria-live="polite" aria-atomic="true"> </p>
       </form>
       {% endif %}{% if groups.len() == 0 %}
       <p class="empty">No groups yet.</p>
@@ -62,12 +62,12 @@
             <td>{{ group.currency }}</td>
             <td>
               <a href="/groups/{{ group.id }}/debts">Debts</a>{% if archived %}
-              <form method="post" action="/groups/{{ group.id }}/restore">
-                <input type="hidden" name="csrf" value="{{ csrf }}" /><button>Restore</button>
+              <form method="post" action="/groups/{{ group.id }}/restore" class="mutation-form" hx-post="/groups/{{ group.id }}/restore" hx-disabled-elt="button" hx-indicator="#group-{{ group.id }}-status" aria-busy="false">
+                <input type="hidden" name="csrf" value="{{ csrf }}" /><input type="hidden" name="submission_token" value="{{ shell.submission_token }}" /><button type="submit">Restore</button><p id="group-{{ group.id }}-status" class="mutation-status" role="status" aria-live="polite" aria-atomic="true"> </p>
               </form>
               {% else %}
-              <form method="post" action="/groups/{{ group.id }}/archive">
-                <input type="hidden" name="csrf" value="{{ csrf }}" /><button>Archive</button>
+              <form method="post" action="/groups/{{ group.id }}/archive" class="mutation-form" hx-post="/groups/{{ group.id }}/archive" hx-disabled-elt="button" hx-indicator="#group-{{ group.id }}-status" aria-busy="false">
+                <input type="hidden" name="csrf" value="{{ csrf }}" /><input type="hidden" name="submission_token" value="{{ shell.submission_token }}" /><button type="submit">Archive</button><p id="group-{{ group.id }}-status" class="mutation-status" role="status" aria-live="polite" aria-atomic="true"> </p>
               </form>
               {% endif %}
             </td>

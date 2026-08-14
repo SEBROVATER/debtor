@@ -51,7 +51,13 @@ pub(crate) async fn create_group(
         currency: currency_value,
         ..
     } = form;
-    if let Err(response) = csrf_form.dispatch() {
+    let Some(session_id) = session.id() else {
+        return super::response::session_error();
+    };
+    if let Err(response) = csrf_form
+        .reserve_and_dispatch(&state.submission_tokens, session_id)
+        .await
+    {
         return response;
     }
     match state
@@ -144,7 +150,13 @@ pub(crate) async fn update_group(
         currency: currency_value,
         ..
     } = form;
-    if let Err(response) = csrf_form.dispatch() {
+    let Some(session_id) = session.id() else {
+        return super::response::session_error();
+    };
+    if let Err(response) = csrf_form
+        .reserve_and_dispatch(&state.submission_tokens, session_id)
+        .await
+    {
         return response;
     }
     match state
@@ -214,7 +226,13 @@ pub(crate) async fn delete_group(
     if let Err(response) = require_writable_group(&state, id).await {
         return response;
     }
-    if let Err(response) = form.dispatch() {
+    let Some(session_id) = session.id() else {
+        return super::response::session_error();
+    };
+    if let Err(response) = form
+        .reserve_and_dispatch(&state.submission_tokens, session_id)
+        .await
+    {
         return response;
     }
     match state.groups.delete_empty(id).await {
@@ -354,7 +372,16 @@ async fn archive(
     if let Err(response) = require_auth(&session).await {
         return response;
     }
-    if let Err(response) = form.dispatch() {
+    if let Err(response) = require_writable_group(&state, id).await {
+        return response;
+    }
+    let Some(session_id) = session.id() else {
+        return super::response::session_error();
+    };
+    if let Err(response) = form
+        .reserve_and_dispatch(&state.submission_tokens, session_id)
+        .await
+    {
         return response;
     }
     match state.groups.set_archived(id, archived).await {

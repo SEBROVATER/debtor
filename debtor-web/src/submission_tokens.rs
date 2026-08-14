@@ -11,12 +11,27 @@ use time::{Duration, OffsetDateTime};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-/// Maximum number of live anonymous submission tokens.
+/// Maximum number of live anonymous Login submission tokens.
 pub const ANONYMOUS_CAPACITY: usize = 4_096;
+/// Maximum number of live authenticated page-scoped submission tokens.
+pub const AUTHENTICATED_CAPACITY: usize = 1_024;
+/// Maximum number of live authenticated tokens for one session.
+pub const AUTHENTICATED_SESSION_CAPACITY: usize = 32;
 
-const TOKEN_LIFETIME: Duration = Duration::minutes(10);
-const CAPACITY_ERROR: &str = "anonymous submission capacity reached";
+const ANONYMOUS_LIFETIME: Duration = Duration::minutes(10);
+const AUTHENTICATED_LIFETIME: Duration = Duration::minutes(30);
+const ANONYMOUS_CAPACITY_ERROR: &str = "anonymous submission capacity reached";
+const AUTHENTICATED_CAPACITY_ERROR: &str = "authenticated submission capacity reached";
 const CONFLICT_ERROR: &str = "invalid submission token";
+
+/// Identifies the isolated token pool used by a request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenPool {
+    /// Anonymous Login form tokens.
+    Anonymous,
+    /// Authenticated page-scoped form tokens.
+    Authenticated,
+}
 
 #[derive(Debug, Clone)]
 struct TokenRecord {
@@ -26,22 +41,25 @@ struct TokenRecord {
 }
 
 #[derive(Debug, Default)]
-struct StoreState {
+struct PoolState {
     records: HashMap<String, TokenRecord>,
-    session_tokens: HashMap<i128, String>,
-    sign_out_records: HashMap<String, TokenRecord>,
-    sign_out_session_tokens: HashMap<i128, String>,
+    session_tokens: HashMap<i128, BTreeSet<String>>,
     expiry_index: BTreeMap<OffsetDateTime, BTreeSet<String>>,
-    sign_out_expiry_index: BTreeMap<OffsetDateTime, BTreeSet<String>>,
 }
 
-/// A bounded, process-local store for Login and Sign out submission tokens.
-pub struct AnonymousSubmissionTokenStore {
+#[derive(Debug, Default)]
+struct StoreState {
+    anonymous: PoolState,
+    authenticated: PoolState,
+}
+
+/// A bounded, process-local owner for all Login and authenticated form tokens.
+pub struct SubmissionTokenStore {
     state: Arc<Mutex<StoreState>>,
     now: Arc<dyn Fn() -> OffsetDateTime + Send + Sync>,
 }
 
-impl Clone for AnonymousSubmissionTokenStore {
+impl Clone for SubmissionTokenStore {
     fn clone(&self) -> Self {
         Self {
             state: self.state.clone(),
@@ -50,22 +68,22 @@ impl Clone for AnonymousSubmissionTokenStore {
     }
 }
 
-impl fmt::Debug for AnonymousSubmissionTokenStore {
+impl fmt::Debug for SubmissionTokenStore {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("AnonymousSubmissionTokenStore")
+            .debug_struct("SubmissionTokenStore")
             .field("state", &self.state)
             .finish_non_exhaustive()
     }
 }
 
-impl Default for AnonymousSubmissionTokenStore {
+impl Default for SubmissionTokenStore {
     fn default() -> Self {
         Self::with_clock(OffsetDateTime::now_utc)
     }
 }
 
-impl AnonymousSubmissionTokenStore {
+impl SubmissionTokenStore {
     /// Creates a store using the supplied clock.
     pub fn with_clock<F>(clock: F) -> Self
     where
@@ -81,76 +99,96 @@ impl AnonymousSubmissionTokenStore {
         (self.now)()
     }
 
-    fn remove_from_index(state: &mut StoreState, token: &str, expiry: OffsetDateTime) {
-        Self::remove_from_expiry_index(&mut state.expiry_index, token, expiry);
+    fn pool_mut(state: &mut StoreState, pool: TokenPool) -> &mut PoolState {
+        match pool {
+            TokenPool::Anonymous => &mut state.anonymous,
+            TokenPool::Authenticated => &mut state.authenticated,
+        }
     }
 
-    fn remove_from_expiry_index(
-        index: &mut BTreeMap<OffsetDateTime, BTreeSet<String>>,
-        token: &str,
-        expiry: OffsetDateTime,
-    ) {
-        let remove_bucket = index.get_mut(&expiry).is_some_and(|tokens| {
+    fn lifetime(pool: TokenPool) -> Duration {
+        match pool {
+            TokenPool::Anonymous => ANONYMOUS_LIFETIME,
+            TokenPool::Authenticated => AUTHENTICATED_LIFETIME,
+        }
+    }
+
+    fn capacity(pool: TokenPool) -> usize {
+        match pool {
+            TokenPool::Anonymous => ANONYMOUS_CAPACITY,
+            TokenPool::Authenticated => AUTHENTICATED_CAPACITY,
+        }
+    }
+
+    fn remove_from_expiry_index(pool: &mut PoolState, token: &str, expiry: OffsetDateTime) {
+        let remove_bucket = pool.expiry_index.get_mut(&expiry).is_some_and(|tokens| {
             tokens.remove(token);
             tokens.is_empty()
         });
         if remove_bucket {
-            index.remove(&expiry);
+            pool.expiry_index.remove(&expiry);
         }
     }
 
-    fn remove_token(state: &mut StoreState, token: &str) -> Option<TokenRecord> {
-        let record = state.records.remove(token)?;
-        Self::remove_from_index(state, token, record.expiry);
-        if state
-            .session_tokens
-            .get(&record.session_id)
-            .is_some_and(|value| value == token)
-        {
-            state.session_tokens.remove(&record.session_id);
+    fn remove_token(pool: &mut PoolState, token: &str) -> Option<TokenRecord> {
+        let record = pool.records.remove(token)?;
+        Self::remove_from_expiry_index(pool, token, record.expiry);
+        if let Some(tokens) = pool.session_tokens.get_mut(&record.session_id) {
+            tokens.remove(token);
+            if tokens.is_empty() {
+                pool.session_tokens.remove(&record.session_id);
+            }
         }
         Some(record)
     }
 
-    fn remove_expired(state: &mut StoreState, now: OffsetDateTime) {
-        while let Some((&expiry, _)) = state.expiry_index.first_key_value() {
+    fn remove_expired(pool: &mut PoolState, now: OffsetDateTime) {
+        while let Some((&expiry, _)) = pool.expiry_index.first_key_value() {
             if expiry > now {
                 break;
             }
-            let tokens = state.expiry_index.remove(&expiry).unwrap_or_default();
+            let tokens = pool.expiry_index.remove(&expiry).unwrap_or_default();
             for token in tokens {
-                if let Some(record) = state.records.remove(&token)
-                    && state
-                        .session_tokens
-                        .get(&record.session_id)
-                        .is_some_and(|value| value == &token)
+                if let Some(record) = pool.records.remove(&token)
+                    && let Some(session_tokens) = pool.session_tokens.get_mut(&record.session_id)
                 {
-                    state.session_tokens.remove(&record.session_id);
+                    session_tokens.remove(&token);
+                    if session_tokens.is_empty() {
+                        pool.session_tokens.remove(&record.session_id);
+                    }
                 }
             }
         }
     }
 
-    fn remove_expired_sign_out(state: &mut StoreState, now: OffsetDateTime) {
-        while let Some((&expiry, _)) = state.sign_out_expiry_index.first_key_value() {
-            if expiry > now {
-                break;
+    fn cleanup_pool(state: &mut StoreState, pool: TokenPool, now: OffsetDateTime) {
+        Self::remove_expired(Self::pool_mut(state, pool), now);
+    }
+
+    fn insert_token(pool: &mut PoolState, session_id: i128, expiry: OffsetDateTime) -> String {
+        let token = loop {
+            let token = Uuid::new_v4().to_string();
+            if !pool.records.contains_key(&token) {
+                break token;
             }
-            let tokens = state
-                .sign_out_expiry_index
-                .remove(&expiry)
-                .unwrap_or_default();
-            for token in tokens {
-                if let Some(record) = state.sign_out_records.remove(&token)
-                    && state
-                        .sign_out_session_tokens
-                        .get(&record.session_id)
-                        .is_some_and(|value| value == &token)
-                {
-                    state.sign_out_session_tokens.remove(&record.session_id);
-                }
-            }
-        }
+        };
+        pool.records.insert(
+            token.clone(),
+            TokenRecord {
+                session_id,
+                expiry,
+                reserved: false,
+            },
+        );
+        pool.session_tokens
+            .entry(session_id)
+            .or_default()
+            .insert(token.clone());
+        pool.expiry_index
+            .entry(expiry)
+            .or_default()
+            .insert(token.clone());
+        token
     }
 
     /// Issues or refreshes the one anonymous Login token for a session.
@@ -164,226 +202,175 @@ impl AnonymousSubmissionTokenStore {
     ) -> Result<String, IssueError> {
         let session_id = session_id.0;
         let now = self.current_time();
-        let expiry = now + TOKEN_LIFETIME;
+        let expiry = now
+            .checked_add(Self::lifetime(TokenPool::Anonymous))
+            .ok_or(IssueError::ClockRange)?;
         let mut state = self.state.lock().await;
-        Self::remove_expired(&mut state, now);
+        Self::cleanup_pool(&mut state, TokenPool::Anonymous, now);
+        let pool = &mut state.anonymous;
 
-        if let Some(token) = state.session_tokens.get(&session_id).cloned() {
-            if let Some(record) = state.records.get(&token)
+        if let Some(token) = pool
+            .session_tokens
+            .get(&session_id)
+            .and_then(|tokens| tokens.iter().next())
+            .cloned()
+        {
+            if let Some(record) = pool.records.get(&token)
                 && !record.reserved
             {
                 let previous_expiry = record.expiry;
-                Self::remove_from_index(&mut state, &token, previous_expiry);
-                if let Some(record) = state.records.get_mut(&token) {
+                Self::remove_from_expiry_index(pool, &token, previous_expiry);
+                if let Some(record) = pool.records.get_mut(&token) {
                     record.expiry = expiry;
                 }
-                state
-                    .expiry_index
+                pool.expiry_index
                     .entry(expiry)
                     .or_default()
                     .insert(token.clone());
                 return Ok(token);
             }
-            Self::remove_token(&mut state, &token);
+            Self::remove_token(pool, &token);
         }
 
-        if state.records.len() >= ANONYMOUS_CAPACITY {
-            return Err(IssueError::Capacity);
+        if pool.records.len() >= ANONYMOUS_CAPACITY {
+            return Err(IssueError::Capacity(TokenPool::Anonymous));
         }
-
-        let token = Uuid::new_v4().to_string();
-        state.records.insert(
-            token.clone(),
-            TokenRecord {
-                session_id,
-                expiry,
-                reserved: false,
-            },
-        );
-        state.session_tokens.insert(session_id, token.clone());
-        state
-            .expiry_index
-            .entry(expiry)
-            .or_default()
-            .insert(token.clone());
-        Ok(token)
+        Ok(Self::insert_token(pool, session_id, expiry))
     }
 
-    /// Issues or refreshes the one Sign out token for an authenticated session.
-    ///
-    /// This first authenticated consumer intentionally has its own namespace;
-    /// the general authenticated token pool is introduced by Story 1.7.
+    /// Issues a fresh page-scoped token for an authenticated response.
     ///
     /// # Errors
     ///
-    /// Returns `Capacity` when the Sign out pool cannot admit a new token.
-    pub async fn issue_sign_out(
+    /// Returns `Capacity` when the global or per-session authenticated bound is full.
+    pub async fn issue_authenticated(
         &self,
         session_id: tower_sessions::session::Id,
     ) -> Result<String, IssueError> {
         let session_id = session_id.0;
         let now = self.current_time();
-        let expiry = now + TOKEN_LIFETIME;
+        let expiry = now
+            .checked_add(Self::lifetime(TokenPool::Authenticated))
+            .ok_or(IssueError::ClockRange)?;
         let mut state = self.state.lock().await;
-        Self::remove_expired_sign_out(&mut state, now);
-
-        if let Some(token) = state.sign_out_session_tokens.get(&session_id).cloned() {
-            if let Some(record) = state.sign_out_records.get(&token)
-                && !record.reserved
-            {
-                let previous_expiry = record.expiry;
-                Self::remove_from_expiry_index(
-                    &mut state.sign_out_expiry_index,
-                    &token,
-                    previous_expiry,
-                );
-                if let Some(record) = state.sign_out_records.get_mut(&token) {
-                    record.expiry = expiry;
-                }
-                state
-                    .sign_out_expiry_index
-                    .entry(expiry)
-                    .or_default()
-                    .insert(token.clone());
-                return Ok(token);
-            }
-            // A reserved token is terminal. Keep returning its opaque value
-            // rather than replacing it during a concurrent render.
-            if state.sign_out_records.contains_key(&token) {
-                return Err(IssueError::Reserved);
-            }
+        Self::cleanup_pool(&mut state, TokenPool::Authenticated, now);
+        let pool = &mut state.authenticated;
+        if pool.records.len() >= Self::capacity(TokenPool::Authenticated)
+            || pool
+                .session_tokens
+                .get(&session_id)
+                .is_some_and(|tokens| tokens.len() >= AUTHENTICATED_SESSION_CAPACITY)
+        {
+            return Err(IssueError::Capacity(TokenPool::Authenticated));
         }
-
-        if state.sign_out_records.len() >= ANONYMOUS_CAPACITY {
-            return Err(IssueError::Capacity);
-        }
-
-        let token = Uuid::new_v4().to_string();
-        state.sign_out_records.insert(
-            token.clone(),
-            TokenRecord {
-                session_id,
-                expiry,
-                reserved: false,
-            },
-        );
-        state
-            .sign_out_session_tokens
-            .insert(session_id, token.clone());
-        state
-            .sign_out_expiry_index
-            .entry(expiry)
-            .or_default()
-            .insert(token.clone());
-        Ok(token)
+        Ok(Self::insert_token(pool, session_id, expiry))
     }
 
-    /// Reserves a token for the Login dispatch boundary.
-    ///
-    /// This is intentionally not called by Story 1.4. Story 1.5 uses it
-    /// immediately before password verification and keeps reservation terminal.
+    /// Validates a token without reserving it for dispatch.
     ///
     /// # Errors
     ///
-    /// Returns `Conflict` when the token is absent, expired, session-bound to a
-    /// different session, or already reserved.
-    pub async fn reserve(
+    /// Returns `Conflict` for absent, expired, reserved, or session-mismatched tokens.
+    pub(crate) async fn validate(
         &self,
         session_id: tower_sessions::session::Id,
+        pool: TokenPool,
         token: &str,
     ) -> Result<(), ReserveError> {
         let mut state = self.state.lock().await;
         let now = self.current_time();
-        Self::remove_expired(&mut state, now);
-        let valid_record = state.records.get(token).is_some_and(|record| {
+        Self::cleanup_pool(&mut state, pool, now);
+        let pool = Self::pool_mut(&mut state, pool);
+        if pool.records.get(token).is_some_and(|record| {
             record.session_id == session_id.0 && !record.reserved && record.expiry > now
-        });
-        if !valid_record {
-            return Err(ReserveError::Conflict);
+        }) {
+            Ok(())
+        } else {
+            Err(ReserveError::Conflict)
         }
-        state
-            .records
-            .get_mut(token)
-            .ok_or(ReserveError::Conflict)?
-            .reserved = true;
-        Ok(())
     }
 
-    /// Validates, dispatches, and reserves a token as one boundary.
+    /// Validates, marks dispatch, and terminally reserves a token as one atomic boundary.
     ///
-    /// The callback is invoked while the store lock is held. It must only mark
-    /// the request's dispatch boundary and must not await or perform external
-    /// work. A rejected callback leaves the token available for retry.
+    /// The callback runs while the store lock is held. It must only mark the request's
+    /// dispatch boundary and must not await or perform external work. A rejected callback
+    /// leaves the token available for retry.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Conflict` for invalid tokens and `Deadline` when dispatch cannot cross the
+    /// request's pre-dispatch boundary.
     pub(crate) async fn reserve_and_dispatch(
         &self,
         session_id: tower_sessions::session::Id,
+        pool_kind: TokenPool,
         token: &str,
         dispatch: impl FnOnce() -> Result<(), ()>,
     ) -> Result<(), ReserveError> {
         let mut state = self.state.lock().await;
         let now = self.current_time();
-        Self::remove_expired(&mut state, now);
-        let valid_record = state.records.get(token).is_some_and(|record| {
+        Self::cleanup_pool(&mut state, pool_kind, now);
+        let pool = Self::pool_mut(&mut state, pool_kind);
+        let valid_record = pool.records.get(token).is_some_and(|record| {
             record.session_id == session_id.0 && !record.reserved && record.expiry > now
         });
         if !valid_record {
             return Err(ReserveError::Conflict);
         }
         dispatch().map_err(|()| ReserveError::Deadline)?;
-        state
-            .records
+        pool.records
             .get_mut(token)
             .ok_or(ReserveError::Conflict)?
             .reserved = true;
         Ok(())
     }
 
-    /// Validates and terminally reserves a Sign out token at dispatch.
-    pub(crate) async fn reserve_sign_out_and_dispatch(
+    /// Reserves a token and crosses the request dispatch boundary atomically.
+    pub(crate) async fn reserve_form_and_dispatch(
         &self,
         session_id: tower_sessions::session::Id,
+        pool: TokenPool,
         token: &str,
         dispatch: impl FnOnce() -> Result<(), ()>,
     ) -> Result<(), ReserveError> {
-        let mut state = self.state.lock().await;
-        let now = self.current_time();
-        Self::remove_expired_sign_out(&mut state, now);
-        let valid_record = state.sign_out_records.get(token).is_some_and(|record| {
-            record.session_id == session_id.0 && !record.reserved && record.expiry > now
-        });
-        if !valid_record {
-            return Err(ReserveError::Conflict);
-        }
-        if state
-            .sign_out_session_tokens
-            .get(&session_id.0)
-            .is_none_or(|value| value != token)
-        {
-            return Err(ReserveError::Conflict);
-        }
-        dispatch().map_err(|()| ReserveError::Deadline)?;
-        state
-            .sign_out_records
-            .get_mut(token)
-            .ok_or(ReserveError::Conflict)?
-            .reserved = true;
-        Ok(())
+        self.reserve_and_dispatch(session_id, pool, token, dispatch)
+            .await
     }
 
-    /// Returns the number of stored anonymous tokens, for invariant-owning tests.
+    /// Removes all authenticated tokens owned by a flushed session.
+    pub(crate) async fn remove_authenticated_session(
+        &self,
+        session_id: tower_sessions::session::Id,
+    ) {
+        let mut state = self.state.lock().await;
+        let tokens = state
+            .authenticated
+            .session_tokens
+            .get(&session_id.0)
+            .map(|tokens| tokens.iter().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        for token in tokens {
+            Self::remove_token(&mut state.authenticated, &token);
+        }
+    }
+
     #[cfg(test)]
-    async fn len(&self) -> usize {
-        self.state.lock().await.records.len()
+    async fn len(&self, pool: TokenPool) -> usize {
+        let state = self.state.lock().await;
+        match pool {
+            TokenPool::Anonymous => state.anonymous.records.len(),
+            TokenPool::Authenticated => state.authenticated.records.len(),
+        }
     }
 }
 
-/// Anonymous token issuance failed because the bounded pool is full.
+/// Submission-token issuance failed because a bounded pool is full.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IssueError {
     /// No new token can be admitted without evicting a live token.
-    Capacity,
-    /// The session's existing Sign out token has already crossed dispatch.
-    Reserved,
+    Capacity(TokenPool),
+    /// The configured clock cannot represent the token expiry.
+    ClockRange,
 }
 
 /// A token could not cross the future dispatch boundary.
@@ -398,8 +385,9 @@ pub enum ReserveError {
 impl fmt::Display for IssueError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::Capacity => CAPACITY_ERROR,
-            Self::Reserved => CONFLICT_ERROR,
+            Self::Capacity(TokenPool::Anonymous) => ANONYMOUS_CAPACITY_ERROR,
+            Self::Capacity(TokenPool::Authenticated) => AUTHENTICATED_CAPACITY_ERROR,
+            Self::ClockRange => "submission expiry unavailable",
         })
     }
 }
@@ -408,18 +396,18 @@ impl fmt::Display for ReserveError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::Conflict => CONFLICT_ERROR,
-            Self::Deadline => "login request timed out",
+            Self::Deadline => "request timed out",
         })
     }
 }
 
-impl AnonymousSubmissionTokenStore {
-    /// Removes expired tokens using the indexed expiry buckets.
+impl SubmissionTokenStore {
+    /// Removes expired tokens using indexed expiry buckets.
     pub async fn delete_expired(&self) {
         let mut state = self.state.lock().await;
         let now = self.current_time();
-        Self::remove_expired(&mut state, now);
-        Self::remove_expired_sign_out(&mut state, now);
+        Self::remove_expired(&mut state.anonymous, now);
+        Self::remove_expired(&mut state.authenticated, now);
     }
 }
 
@@ -431,7 +419,7 @@ pub trait SubmissionTokenCleanup: Send + Sync {
 }
 
 #[async_trait]
-impl SubmissionTokenCleanup for AnonymousSubmissionTokenStore {
+impl SubmissionTokenCleanup for SubmissionTokenStore {
     async fn cleanup_expired(&self) -> Result<(), ()> {
         self.delete_expired().await;
         Ok(())
@@ -450,13 +438,14 @@ mod tests {
     use tower_sessions::session::Id;
 
     use super::{
-        ANONYMOUS_CAPACITY, AnonymousSubmissionTokenStore, IssueError, ReserveError, TOKEN_LIFETIME,
+        ANONYMOUS_CAPACITY, AUTHENTICATED_CAPACITY, AUTHENTICATED_SESSION_CAPACITY, IssueError,
+        ReserveError, SubmissionTokenStore, TokenPool,
     };
 
-    fn store() -> (Arc<Mutex<OffsetDateTime>>, AnonymousSubmissionTokenStore) {
+    fn store() -> (Arc<Mutex<OffsetDateTime>>, SubmissionTokenStore) {
         let now = Arc::new(Mutex::new(OffsetDateTime::UNIX_EPOCH));
         let source = now.clone();
-        let store = AnonymousSubmissionTokenStore::with_clock(move || *source.lock().unwrap());
+        let store = SubmissionTokenStore::with_clock(move || *source.lock().unwrap());
         (now, store)
     }
 
@@ -465,20 +454,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn issues_one_token_per_session_and_refreshes_expiry() {
+    async fn issues_one_anonymous_token_per_session_and_refreshes_expiry() {
         let (now, store) = store();
         let first = store.issue(id(1)).await.expect("first token");
         *now.lock().unwrap() += time::Duration::minutes(5);
         let second = store.issue(id(1)).await.expect("refreshed token");
         assert_eq!(first, second);
-        assert_eq!(store.len().await, 1);
+        assert_eq!(store.len(TokenPool::Anonymous).await, 1);
         *now.lock().unwrap() += time::Duration::minutes(11);
         store.delete_expired().await;
-        assert_eq!(store.len().await, 0);
+        assert_eq!(store.len(TokenPool::Anonymous).await, 0);
     }
 
     #[tokio::test]
-    async fn capacity_is_exact_and_does_not_evict_existing_tokens() {
+    async fn anonymous_capacity_is_exact_and_does_not_evict_existing_tokens() {
         let (_, store) = store();
         let mut first = String::new();
         for session in 0..ANONYMOUS_CAPACITY {
@@ -492,144 +481,199 @@ mod tests {
         }
         assert_eq!(
             store.issue(id(ANONYMOUS_CAPACITY as i128)).await,
-            Err(IssueError::Capacity)
+            Err(IssueError::Capacity(TokenPool::Anonymous))
         );
         assert_eq!(store.issue(id(0)).await.expect("existing token"), first);
-        assert_eq!(store.len().await, ANONYMOUS_CAPACITY);
     }
 
     #[tokio::test]
-    async fn reservation_is_session_bound_and_terminal() {
+    async fn authenticated_pages_get_unique_tokens_with_a_per_session_bound() {
         let (_, store) = store();
-        let token = store.issue(id(1)).await.expect("token");
+        let first = store.issue_authenticated(id(1)).await.expect("first token");
+        for _ in 1..AUTHENTICATED_SESSION_CAPACITY {
+            store
+                .issue_authenticated(id(1))
+                .await
+                .expect("session token");
+        }
         assert_eq!(
-            store.reserve(id(2), &token).await,
-            Err(ReserveError::Conflict)
+            store.len(TokenPool::Authenticated).await,
+            AUTHENTICATED_SESSION_CAPACITY
         );
-        store.reserve(id(1), &token).await.expect("reserve token");
         assert_eq!(
-            store.reserve(id(1), &token).await,
-            Err(ReserveError::Conflict)
+            store.issue_authenticated(id(1)).await,
+            Err(IssueError::Capacity(TokenPool::Authenticated))
         );
-    }
-
-    #[tokio::test]
-    async fn dispatch_rejection_does_not_consume_the_token() {
-        let (_, store) = store();
-        let token = store.issue(id(1)).await.expect("token");
-        assert_eq!(
-            store.reserve_and_dispatch(id(1), &token, || Err(())).await,
-            Err(ReserveError::Deadline)
-        );
-        store
-            .reserve_and_dispatch(id(1), &token, || Ok(()))
-            .await
-            .expect("dispatch token");
-        assert_eq!(
-            store.reserve(id(1), &token).await,
-            Err(ReserveError::Conflict)
-        );
-    }
-
-    #[tokio::test]
-    async fn reservation_reads_the_clock_after_lock_acquisition() {
-        let now = Arc::new(std::sync::Mutex::new(OffsetDateTime::UNIX_EPOCH));
-        let clock = now.clone();
-        let store = AnonymousSubmissionTokenStore::with_clock(move || *clock.lock().unwrap());
-        let token = store.issue(id(1)).await.expect("token");
-        *now.lock().unwrap() += TOKEN_LIFETIME + time::Duration::seconds(1);
-        assert_eq!(
-            store.reserve_and_dispatch(id(1), &token, || Ok(())).await,
-            Err(ReserveError::Conflict)
-        );
-    }
-
-    #[tokio::test]
-    async fn expired_tokens_are_physically_removed_by_indexed_cleanup() {
-        let (now, store) = store();
-        store.issue(id(1)).await.expect("token");
-        store.issue(id(2)).await.expect("token");
-        *now.lock().unwrap() += Duration::from_secs(601);
-        store.delete_expired().await;
-        assert_eq!(store.len().await, 0);
-        assert_eq!(store.issue(id(3)).await.expect("reused capacity").len(), 36);
-    }
-
-    #[tokio::test]
-    async fn issues_and_reserves_one_sign_out_token_per_authenticated_session() {
-        let (_, store) = store();
-        let first = store.issue_sign_out(id(7)).await.expect("sign-out token");
         let second = store
-            .issue_sign_out(id(7))
+            .issue_authenticated(id(2))
             .await
-            .expect("same sign-out token");
-        assert_eq!(first, second);
-        assert_ne!(first, store.issue(id(7)).await.expect("anonymous token"));
+            .expect("second session token");
+        assert_ne!(first, second);
+    }
 
-        store
-            .reserve_sign_out_and_dispatch(id(7), &first, || Ok(()))
-            .await
-            .expect("reserve sign-out token");
-        assert_eq!(store.issue_sign_out(id(7)).await, Err(IssueError::Reserved));
+    #[tokio::test]
+    async fn authenticated_global_capacity_is_bounded_without_eviction() {
+        let (_, store) = store();
+        for session in 0..(AUTHENTICATED_CAPACITY / AUTHENTICATED_SESSION_CAPACITY) {
+            for _ in 0..AUTHENTICATED_SESSION_CAPACITY {
+                store
+                    .issue_authenticated(id(session as i128))
+                    .await
+                    .expect("capacity token");
+            }
+        }
         assert_eq!(
-            store
-                .reserve_sign_out_and_dispatch(id(7), &first, || Ok(()))
-                .await,
-            Err(ReserveError::Conflict)
+            store.len(TokenPool::Authenticated).await,
+            AUTHENTICATED_CAPACITY
+        );
+        assert_eq!(
+            store.issue_authenticated(id(99_999)).await,
+            Err(IssueError::Capacity(TokenPool::Authenticated))
         );
     }
 
     #[tokio::test]
-    async fn sign_out_tokens_are_session_bound_and_expire() {
-        let (now, store) = store();
-        let token = store.issue_sign_out(id(7)).await.expect("token");
-        assert_eq!(
-            store
-                .reserve_sign_out_and_dispatch(id(8), &token, || Ok(()))
-                .await,
-            Err(ReserveError::Conflict)
-        );
-        *now.lock().unwrap() += TOKEN_LIFETIME + time::Duration::seconds(1);
-        assert_eq!(
-            store
-                .reserve_sign_out_and_dispatch(id(7), &token, || Ok(()))
-                .await,
-            Err(ReserveError::Conflict)
-        );
-    }
-
-    #[tokio::test]
-    async fn login_and_sign_out_pools_have_independent_capacity() {
+    async fn pools_are_isolated() {
         let (_, store) = store();
         for session in 0..ANONYMOUS_CAPACITY {
             store
                 .issue(id(session as i128))
                 .await
-                .expect("login token capacity");
-            store
-                .issue_sign_out(id(session as i128))
-                .await
-                .expect("sign-out token capacity");
+                .expect("anonymous capacity");
         }
-        assert_eq!(store.len().await, ANONYMOUS_CAPACITY);
-        assert_eq!(
-            store.issue(id(ANONYMOUS_CAPACITY as i128)).await,
-            Err(IssueError::Capacity)
-        );
-        assert!(
+        for session in 0..AUTHENTICATED_SESSION_CAPACITY {
             store
-                .issue_sign_out(id(ANONYMOUS_CAPACITY as i128))
+                .issue_authenticated(id(session as i128))
                 .await
-                .is_err()
+                .expect("authenticated capacity");
+        }
+        assert_eq!(store.len(TokenPool::Anonymous).await, ANONYMOUS_CAPACITY);
+        assert_eq!(
+            store.len(TokenPool::Authenticated).await,
+            AUTHENTICATED_SESSION_CAPACITY
         );
     }
 
     #[tokio::test]
-    async fn cleanup_physically_removes_expired_sign_out_tokens() {
+    async fn validation_is_session_bound_and_does_not_reserve() {
+        let (_, store) = store();
+        let token = store.issue_authenticated(id(1)).await.expect("token");
+        assert_eq!(
+            store
+                .validate(id(2), TokenPool::Authenticated, &token)
+                .await,
+            Err(ReserveError::Conflict)
+        );
+        store
+            .validate(id(1), TokenPool::Authenticated, &token)
+            .await
+            .expect("validate token");
+        store
+            .validate(id(1), TokenPool::Authenticated, &token)
+            .await
+            .expect("validate again");
+    }
+
+    #[tokio::test]
+    async fn dispatch_rejection_does_not_consume_and_success_is_terminal() {
+        let (_, store) = store();
+        let token = store.issue_authenticated(id(1)).await.expect("token");
+        assert_eq!(
+            store
+                .reserve_and_dispatch(id(1), TokenPool::Authenticated, &token, || Err(()))
+                .await,
+            Err(ReserveError::Deadline)
+        );
+        store
+            .reserve_and_dispatch(id(1), TokenPool::Authenticated, &token, || Ok(()))
+            .await
+            .expect("dispatch token");
+        assert_eq!(
+            store
+                .validate(id(1), TokenPool::Authenticated, &token)
+                .await,
+            Err(ReserveError::Conflict)
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_authenticated_reservation_has_one_winner() {
+        let (_, store) = store();
+        let token = store.issue_authenticated(id(1)).await.expect("token");
+        let barrier = Arc::new(tokio::sync::Barrier::new(3));
+        let first_store = store.clone();
+        let second_store = store.clone();
+        let first_barrier = barrier.clone();
+        let second_barrier = barrier.clone();
+        let first_token = token.clone();
+        let second_token = token;
+        let first = tokio::spawn(async move {
+            first_barrier.wait().await;
+            first_store
+                .reserve_and_dispatch(id(1), TokenPool::Authenticated, &first_token, || Ok(()))
+                .await
+        });
+        let second = tokio::spawn(async move {
+            second_barrier.wait().await;
+            second_store
+                .reserve_and_dispatch(id(1), TokenPool::Authenticated, &second_token, || Ok(()))
+                .await
+        });
+        barrier.wait().await;
+        let results = [
+            first.await.expect("first reservation"),
+            second.await.expect("second reservation"),
+        ];
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| **result == Err(ReserveError::Conflict))
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn authenticated_tokens_expire_after_thirty_minutes() {
         let (now, store) = store();
-        store.issue_sign_out(id(7)).await.expect("sign-out token");
-        *now.lock().unwrap() += TOKEN_LIFETIME + time::Duration::seconds(1);
+        let token = store.issue_authenticated(id(1)).await.expect("token");
+        *now.lock().unwrap() += time::Duration::minutes(30) + time::Duration::seconds(1);
         store.delete_expired().await;
-        assert!(store.issue_sign_out(id(7)).await.is_ok());
+        assert_eq!(
+            store
+                .validate(id(1), TokenPool::Authenticated, &token)
+                .await,
+            Err(ReserveError::Conflict)
+        );
+        assert_eq!(store.len(TokenPool::Authenticated).await, 0);
+    }
+
+    #[tokio::test]
+    async fn flushing_a_session_removes_all_authenticated_tokens() {
+        let (_, store) = store();
+        for _ in 0..AUTHENTICATED_SESSION_CAPACITY {
+            store
+                .issue_authenticated(id(1))
+                .await
+                .expect("session token");
+        }
+        store.remove_authenticated_session(id(1)).await;
+        assert_eq!(store.len(TokenPool::Authenticated).await, 0);
+        store
+            .issue_authenticated(id(1))
+            .await
+            .expect("reused capacity");
+    }
+
+    #[tokio::test]
+    async fn expired_tokens_are_physically_removed_by_indexed_cleanup() {
+        let (now, store) = store();
+        store.issue_authenticated(id(1)).await.expect("token");
+        store.issue(id(2)).await.expect("token");
+        *now.lock().unwrap() += Duration::from_secs(1_801);
+        store.delete_expired().await;
+        assert_eq!(store.len(TokenPool::Authenticated).await, 0);
+        assert_eq!(store.len(TokenPool::Anonymous).await, 0);
     }
 }
