@@ -7,7 +7,7 @@ paradigm: "Hexagonal Architecture with a domain-centric layered core"
 scope: "Project-wide first-release architecture governing independently implemented epics"
 status: final
 created: 2026-08-10
-updated: 2026-08-11
+updated: 2026-08-14
 binds: [groups, participants, spendings, summaries, debts, authentication, web, persistence, runtime, deployment]
 sources:
   - specs/design.md
@@ -287,7 +287,7 @@ First release uses Frankfurter v2 behind the application-owned `ExchangeRateProv
 | Physical table/index names and migration statement order | Persistence epic; logical ownership, cardinalities, constraints, aggregate boundaries, and transaction rules are already fixed. |
 | Route inventory, template layout, and source-tree layout | Implementing epics; native behavior and crate ownership are already fixed. |
 | Migration sequencing from obsolete scaffold | Migration epic; normative target behavior takes precedence. |
-| Reverse-proxy vendor and vendor-specific configuration | Deployment implementation; edge responsibilities are already fixed. |
+| Reverse-proxy vendor and vendor-specific configuration | Resolved for pre-production by `specs/adr/0003-pre-production-edge-gate.md`: Caddy `2.11.2`, with `deploy/Caddyfile.example` as the checked configuration template. Production rollout remains gated on environment-specific evidence. |
 | Deployment automation, artifact packaging, durable-volume ownership, backup/restore, upgrade/rollback | Operations design before first production deployment; topology and lifecycle interfaces are already fixed. |
 | Telemetry backend, retention, export protocol, and alert routing | Operations design before staging acceptance; diagnostic schema and required health signals are already fixed. |
 | Cache internal representation | Rate-adapter implementation; keys, classes, bounds, rollover, stale eligibility, determinism, and single-flight semantics are binding. |

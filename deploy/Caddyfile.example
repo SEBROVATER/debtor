@@ -1,13 +1,37 @@
-# Non-normative edge example. Replace the hostname and keep Debtor bound to
-# a private interface. Caddy terminates TLS/HTTP/3 and forwards HTTP/1.1.
-# Configure APP_TRUSTED_PROXY_CIDRS for Caddy's backend source CIDR and
-# APP_TRUSTED_PROXY_HEADER=x-forwarded-for. Caddy is not a runtime dependency.
-example.com {
+# Debtor pre-production edge template for Caddy 2.11.2.
+#
+# This file is the selected template recorded by
+# specs/adr/0003-pre-production-edge-gate.md. Replace the hostname and backend
+# address for the target environment, keep Debtor bound to a private interface,
+# and configure the application with:
+#
+#   APP_TRUSTED_PROXY_CIDRS=<Caddy backend source CIDR>
+#   APP_TRUSTED_PROXY_HEADER=x-forwarded-for
+#   reverse_proxy 127.0.0.1:3000
+#
+# Replace only the host:port value on the reverse_proxy line. Do not add an
+# http:// or https:// scheme; Debtor's backend transport must remain private
+# cleartext HTTP/1.1.
+#
+# Validate with the selected version before rollout:
+#
+#   docker run --rm -v "$PWD/deploy/Caddyfile.example:/etc/caddy/Caddyfile:ro" caddy:2.11.2 caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+{
+	servers {
+		# Debtor does not treat CSRF or submission tokens as replay protection for
+		# QUIC/TLS early data. Keep 0-RTT disabled at the selected edge.
+		0rtt off
+		strict_sni_host on
+	}
+}
+
+{$DEBTOR_SITE:example.com} {
 	encode gzip
 
-	# Start HTTP/3 rollout with a short Alt-Svc lifetime at the edge/CDN, then
-	# lengthen it only after validating UDP fallback and client-IP parity. Caddy
-	# may manage Alt-Svc automatically; do not add a conflicting second header.
+	# Advertise HTTP/3 with a short initial lifetime. Do not increase it until UDP
+	# reachability, blocked-UDP fallback, early-data rejection, and client-IP parity
+	# are verified in the target environment.
+	header Alt-Svc "h3=\":443\"; ma=300"
 
 	# Match the application's form limits before proxying requests.
 	@login {
@@ -18,37 +42,49 @@ example.com {
 		max_size 8KiB
 	}
 	@other_forms {
-		method POST
+		method POST PUT PATCH DELETE
 		not path /login
 	}
 	request_body @other_forms {
 		max_size 256KiB
 	}
 
-	# Never replay mutation requests received as marked QUIC/TLS 0-RTT early
-	# data. Verify that every upstream edge sends Early-Data: 1; otherwise
-	# disable early data there instead of relying on this matcher.
-	@unsafe_early_data {
+	# Defense in depth if an upstream edge reintroduces marked early data before
+	# Caddy. Only GET/HEAD probes and immutable static assets are allow-listed.
+	# Login, authenticated HTML, and every session/token touching path get 425.
+	@early_data_not_allowlisted {
 		header Early-Data 1
-		not method GET HEAD
+		not {
+			method GET HEAD
+			path /healthz /readyz /static/*
+		}
 	}
-	respond @unsafe_early_data 425
+	respond @early_data_not_allowlisted 425
 
 	reverse_proxy 127.0.0.1:3000 {
 		# Remove client-supplied forwarding values, then set Caddy's immediate
-		# peer identity. Validate identical behavior over HTTP/3 and TCP fallback.
+		# peer identity. Debtor must trust only Caddy's backend source CIDR.
 		header_up -X-Forwarded-For
+		header_up -Forwarded
+		header_up -X-Forwarded-Host
+		header_up -X-Forwarded-Port
+		header_up -X-Forwarded-Server
 		header_up X-Forwarded-For {remote_host}
 		header_up -X-Forwarded-Proto
 		header_up X-Forwarded-Proto {scheme}
+		header_up X-Forwarded-Host {host}
+		header_up -X-Real-IP
+		header_up -Client-IP
+		header_up -True-Client-IP
+		header_up -CF-Connecting-IP
+		header_up -X-Cluster-Client-IP
 
-		# Reuse a private HTTP/1.1 backend connection. Bound connection setup and
-		# response headers, but do not add read/write/stream timeouts that can cut
-		# off an admitted mutation before its definitive commit or rollback.
+		# Reuse a private HTTP/1.1 backend connection. Bound connection setup only.
+		# Do not add response-header, read, write, stream, or request timeouts that
+		# can cut off an admitted mutation before its definitive commit or rollback.
 		transport http {
 			versions 1.1
 			dial_timeout 5s
-			response_header_timeout 95s
 			keepalive 30s
 			keepalive_idle_conns_per_host 32
 		}
