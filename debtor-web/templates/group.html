@@ -28,30 +28,62 @@
     <main>
       <div class="page-heading">
         <div>
-          <h1 id="group-heading" tabindex="-1" autofocus>{{ name }}</h1>
+           <h1 id="group-heading" class="group-heading" tabindex="-1"{% if !archived && section != "manage" && settings_notice.is_none() && settings_error.is_none() %} autofocus{% endif %}>{{ name }}{% if archived %} <span id="archived-status">Archived</span>{% endif %}</h1>
           <p>Settlement target: <strong>{{ currency }}</strong></p>
         </div>
         {% if !archived && section != "manage" %}<a class="button secondary" href="/groups/{{ group_id }}/delete"
           >Delete empty group</a
         >{% endif %}
       </div>
-      {% if members.len() == 0 && !archived %}
+       {% if members.len() == 0 && !archived %}
       <p id="add-spending-guidance" class="helper">
         <button type="button" disabled>Add Spending</button>
         <span>Add Spending is unavailable until this Group has an active Participant.</span>
         <a href="/groups/{{ group_id }}/manage#participants">Manage Participants</a>
       </p>
       {% endif %}
-      {% match error %}{% when Some with (message) %}
+       {% match error %}{% when Some with (message) %}
        <p id="group-error" class="error" role="alert">{{ message }}</p>
-      {% when None %}{% endmatch %} {% if archived %}
-      <p class="warning">
-        This group is archived and read-only. Historical participants and expense details remain
-        available.
-      </p>
-      {% else %}
-      {% if section == "manage" %}
-      <section id="participants" class="card">
+       {% when None %}{% endmatch %} {% if archived %}
+       <p class="warning">
+         This group is archived and read-only. Historical participants and expense details remain
+         available.
+       </p>
+       <section id="group-settings" class="manage-section" aria-labelledby="group-settings-heading">
+         <h2 id="group-settings-heading" tabindex="-1">Group settings</h2>
+         <dl class="settings-readonly">
+           <div><dt>Group name</dt><dd class="settings-value">{{ settings_name }}</dd></div>
+           <div><dt>Group Currency</dt><dd>{{ settings_currency }}</dd></div>
+         </dl>
+       </section>
+       {% else %}
+       {% if section == "manage" %}
+       <section id="group-settings" class="manage-section" aria-labelledby="group-settings-heading">
+         <h2 id="group-settings-heading" tabindex="-1"{% if settings_notice.is_some() || settings_error.is_some() %} autofocus{% endif %}>Group settings</h2>
+         {% match settings_error %}{% when Some with (message) %}
+         <p id="settings-error" class="error" role="alert">{{ message }}</p>
+         {% when None %}{% endmatch %}
+         {% match settings_notice %}{% when Some with (message) %}<p id="settings-notice" class="notice" role="status" aria-live="polite" aria-atomic="true">{{ message }}: {{ settings_name }} ({{ settings_currency }}).</p>{% when None %}{% endmatch %}
+         <form method="post" action="/groups/{{ group_id }}/edit" class="mutation-form settings-form" aria-describedby="settings-guidance{% if settings_error.is_some() %} settings-error{% endif %}" hx-post="/groups/{{ group_id }}/edit" hx-target="#group-settings" hx-select="#group-settings" hx-swap="outerHTML" hx-disabled-elt="button" hx-indicator="#group-settings-status" aria-busy="false">
+           <input type="hidden" name="csrf" value="{{ csrf }}" /><input type="hidden" name="submission_token" value="{{ shell.submission_token }}" />
+           <div class="settings-grid">
+             <label for="group-settings-name">Group name
+                <input id="group-settings-name" name="name" value="{{ settings_name }}" required{% match settings_invalid_field %}{% when Some with (field) %}{% if field == "name" %} aria-invalid="true" aria-describedby="settings-guidance settings-error"{% endif %}{% when None %}{% endmatch %} />
+             </label>
+             <label for="group-settings-currency">Group Currency
+                <select id="group-settings-currency" name="currency" required{% match settings_invalid_field %}{% when Some with (field) %}{% if field == "currency" %} aria-invalid="true" aria-describedby="settings-guidance settings-error"{% endif %}{% when None %}{% endmatch %}>
+                 {% for option in settings_currencies %}
+                 <option value="{{ option.value }}"{% if option.selected %} selected{% endif %}>{{ option.label }}</option>
+                 {% endfor %}
+               </select>
+             </label>
+           </div>
+           <p id="settings-guidance" class="helper">Changing Group Currency affects settlement display, not stored Spending amounts.</p>
+           <button type="submit">Save Group settings</button>
+           <p id="group-settings-status" class="mutation-status" role="status" aria-live="polite" aria-atomic="true"> </p>
+         </form>
+       </section>
+       <section id="participants" class="card">
         <h2>Manage participants</h2>
         <p class="helper">Add an active Participant before recording a Spending.</p>
         <a class="button secondary" href="/groups/{{ group_id }}/manage#participants">Add Participant</a>

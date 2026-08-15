@@ -33,6 +33,18 @@ pub struct GroupInput {
     pub currency: String,
 }
 
+/// Validates raw Group settings without performing a mutation.
+///
+/// # Errors
+///
+/// Returns a validation error when the name or currency is invalid.
+pub fn validate_group_update(input: &GroupInput) -> Result<(), ApplicationError> {
+    Name::new(input.name.clone())?;
+    input.currency.parse::<Currency>().map(|_| ()).map_err(|_| {
+        debtor_domain::model::ValidationError::InvalidField { field: "currency" }.into()
+    })
+}
+
 /// Reads group records.
 #[async_trait]
 pub trait GroupReader: Send + Sync {
@@ -95,6 +107,15 @@ pub trait GroupMutationExecutor: Send + Sync {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<Group, ApplicationError>> + Send + '_>,
     >;
+
+    /// Updates Group settings and returns only after its mutation outcome is definitive.
+    fn update_group(
+        &self,
+        id: EntityId,
+        input: GroupInput,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Group, ApplicationError>> + Send + '_>,
+    >;
 }
 
 /// Group workflow implementation.
@@ -135,6 +156,7 @@ impl GroupUseCases for GroupService {
         if self.reader.group(id).await?.is_archived {
             return Err(ApplicationError::Conflict);
         }
+        validate_group_update(&input)?;
         let currency = input.currency.parse::<Currency>().map_err(|_| {
             debtor_domain::model::ValidationError::InvalidField { field: "currency" }
         })?;
@@ -317,6 +339,56 @@ mod tests {
         assert!(matches!(
             error,
             ApplicationError::Storage(StorageReason::Unexpected)
+        ));
+    }
+
+    #[test]
+    fn validates_group_settings_without_repository_access() {
+        validate_group_update(&GroupInput {
+            name: "  Renamed  ".into(),
+            currency: "EUR".into(),
+        })
+        .expect("valid settings");
+        for currency in Currency::ALL {
+            validate_group_update(&GroupInput {
+                name: "Trip".into(),
+                currency: currency.to_string(),
+            })
+            .expect("supported currency");
+        }
+        let overlong_name = "x".repeat(101);
+        assert!(matches!(
+            validate_group_update(&GroupInput {
+                name: overlong_name,
+                currency: "USD".into(),
+            }),
+            Err(ApplicationError::Validation(
+                debtor_domain::model::ValidationError::TooLong { field: "name", .. }
+            ))
+        ));
+
+        let invalid_name = validate_group_update(&GroupInput {
+            name: "  ".into(),
+            currency: "USD".into(),
+        })
+        .expect_err("empty name");
+        assert!(matches!(
+            invalid_name,
+            ApplicationError::Validation(debtor_domain::model::ValidationError::Empty {
+                field: "name"
+            })
+        ));
+
+        let invalid_currency = validate_group_update(&GroupInput {
+            name: "Trip".into(),
+            currency: "usd".into(),
+        })
+        .expect_err("unknown currency");
+        assert!(matches!(
+            invalid_currency,
+            ApplicationError::Validation(debtor_domain::model::ValidationError::InvalidField {
+                field: "currency"
+            })
         ));
     }
 }

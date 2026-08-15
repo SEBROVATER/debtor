@@ -4,8 +4,8 @@ use axum::{error_handling::HandleErrorLayer, middleware};
 use axum::{extract::Request, response::Response};
 use debtor_application::{
     AuthenticationService, AuthenticationUseCases, Clock, DebtService, DebtUseCases,
-    GroupCreateInput, GroupMutationExecutor, GroupReader, GroupRepository, GroupService,
-    GroupUseCases, LedgerSnapshotReader, ParticipantReader, ParticipantRepository,
+    GroupCreateInput, GroupInput, GroupMutationExecutor, GroupReader, GroupRepository,
+    GroupService, GroupUseCases, LedgerSnapshotReader, ParticipantReader, ParticipantRepository,
     ParticipantService, ParticipantUseCases, ReadinessService, ReadinessUseCases,
     SpendingEligibilityReader, SpendingReader, SpendingRepository, SpendingService,
     SpendingUseCases, UtcClock,
@@ -114,6 +114,52 @@ impl GroupMutationExecutor for RootGroupMutationExecutor {
             let task = tokio::spawn(async move {
                 let mut guard = GroupMutationGuard::new(lease, mutations, runtime);
                 match groups.create_group(input).await {
+                    Ok(group) => {
+                        guard.committed();
+                        Ok(group)
+                    }
+                    Err(error) => {
+                        guard.rolled_back();
+                        Err(error)
+                    }
+                }
+            });
+            match task.await {
+                Ok(result) => result,
+                Err(_) => Err(debtor_application::ApplicationError::Storage(
+                    debtor_application::StorageReason::Unexpected,
+                )),
+            }
+        })
+    }
+
+    fn update_group(
+        &self,
+        id: i64,
+        input: GroupInput,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        debtor_application::Group,
+                        debtor_application::ApplicationError,
+                    >,
+                > + Send
+                + '_,
+        >,
+    > {
+        Box::pin(async move {
+            let Some(lease) = self.mutations.try_register() else {
+                return Err(debtor_application::ApplicationError::Storage(
+                    debtor_application::StorageReason::Contention,
+                ));
+            };
+            let groups = self.groups.clone();
+            let mutations = self.mutations.clone();
+            let runtime = self.runtime.clone();
+            let task = tokio::spawn(async move {
+                let mut guard = GroupMutationGuard::new(lease, mutations, runtime);
+                match groups.update_group(id, input).await {
                     Ok(group) => {
                         guard.committed();
                         Ok(group)

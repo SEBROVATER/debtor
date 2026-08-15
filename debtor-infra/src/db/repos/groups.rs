@@ -4,7 +4,9 @@ use debtor_domain::currency::Currency;
 use debtor_domain::model::{EntityId, Group, Name};
 
 use super::decoding::{DbGroup, group};
-use super::{SqliteLedgerStore, changed, group_write_failure, storage};
+use super::{
+    SqliteLedgerStore, changed, group_write_failure, group_write_failure_in_transaction, storage,
+};
 
 #[async_trait]
 impl GroupReader for SqliteLedgerStore {
@@ -66,17 +68,28 @@ impl GroupRepository for SqliteLedgerStore {
         currency: Currency,
     ) -> Result<Group, ApplicationError> {
         let _write_guard = self.write_guard().await?;
+        let mut transaction = self.pool.begin().await.map_err(storage)?;
         let result = sqlx::query!("UPDATE groups SET name = ?, currency = ?, updated_at = datetime('now') WHERE id = ? AND is_archived = 0", name.as_str(), currency.code(), id)
-            .execute(&self.pool).await.map_err(storage)?;
+            .execute(&mut *transaction).await.map_err(storage)?;
         if result.rows_affected() == 0 {
-            return Err(group_write_failure(
-                &self.pool,
+            return Err(group_write_failure_in_transaction(
+                &mut transaction,
                 id,
-                ApplicationError::Storage(debtor_application::StorageReason::Unexpected),
+                ApplicationError::NotFound,
             )
             .await);
         }
-        self.group(id).await
+        let updated = sqlx::query_as!(
+            DbGroup,
+            "SELECT id, name, currency, is_archived FROM groups WHERE id = ?",
+            id
+        )
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(storage)
+        .and_then(group)?;
+        transaction.commit().await.map_err(storage)?;
+        Ok(updated)
     }
 
     async fn set_group_archived(

@@ -44,6 +44,11 @@ pub(crate) struct SpendingQuery {
     pub(super) cursor: Option<String>,
 }
 
+#[derive(Deserialize, Default)]
+pub(crate) struct ManageQuery {
+    pub(super) saved: Option<String>,
+}
+
 #[derive(Deserialize)]
 pub(crate) struct DebtQuery {
     pub(super) rate_mode: Option<String>,

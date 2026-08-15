@@ -55,26 +55,6 @@ pub struct GroupsTemplate {
     pub error: Option<String>,
 }
 
-/// Group settings page.
-#[derive(Template)]
-#[template(path = "group_edit.html")]
-pub struct GroupEditTemplate {
-    /// Group ID.
-    pub id: i64,
-    /// Name.
-    pub name: String,
-    /// Currency.
-    pub currency: String,
-    /// Currency options.
-    pub currencies: Vec<SelectOption>,
-    /// CSRF token.
-    pub csrf: String,
-    /// Shared authenticated shell protection values.
-    pub shell: AuthenticatedShell,
-    /// Error.
-    pub error: Option<String>,
-}
-
 /// Renderable group row.
 pub struct GroupRow {
     /// ID.
@@ -195,6 +175,18 @@ pub struct GroupTemplate {
     pub section: String,
     /// Target currency.
     pub currency: String,
+    /// Group settings name draft.
+    pub settings_name: String,
+    /// Group settings currency draft.
+    pub settings_currency: String,
+    /// Supported Group Currency options.
+    pub settings_currencies: Vec<SelectOption>,
+    /// Group settings validation error.
+    pub settings_error: Option<String>,
+    /// Committed settings announcement.
+    pub settings_notice: Option<String>,
+    /// Submitted settings field that failed validation.
+    pub settings_invalid_field: Option<String>,
     /// CSRF token.
     pub csrf: String,
     /// Shared authenticated shell protection values.

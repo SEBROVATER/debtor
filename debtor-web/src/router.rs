@@ -553,6 +553,7 @@ mod tests {
         );
 
         let response = app
+            .clone()
             .oneshot(request(
                 Method::GET,
                 "/groups",
@@ -1174,6 +1175,7 @@ mod tests {
             .expect("group edit response");
         let form = response_body(response).await;
         let response = app
+            .clone()
             .oneshot(request(
                 Method::POST,
                 "/groups/1/edit",
@@ -1192,6 +1194,95 @@ mod tests {
             *test_state.groups.updated.lock().expect("group calls lock"),
             vec![(1, "Updated group".to_owned(), Currency::Eur)]
         );
+    }
+
+    #[tokio::test]
+    async fn manage_renders_settings_and_invalid_update_preserves_token() {
+        let test_state = state(false);
+        let app = app(&test_state);
+        let session_cookie = login(&app).await;
+        let response = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                "/groups/1/manage",
+                "",
+                Some(&session_cookie),
+            ))
+            .await
+            .expect("manage response");
+        let body = response_body(response).await;
+        let csrf_token = csrf(&body);
+        let submission = submission_token(&body);
+        assert!(body.contains("id=\"group-settings\""));
+        assert!(body.contains("name=\"name\""));
+        assert!(body.contains("name=\"currency\""));
+        assert!(body.contains("value=\"USD\""));
+        assert!(body.contains("value=\"OMR\""));
+        assert!(body.contains("aria-current=\"page\">Manage</a>"));
+
+        let response = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                "/groups/1/edit",
+                &format!("csrf={csrf_token}&submission_token={submission}&name=+&currency=EUR"),
+                Some(&session_cookie),
+            ))
+            .await
+            .expect("invalid settings response");
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let invalid_body = response_body(response).await;
+        assert!(invalid_body.contains("id=\"settings-error\""));
+        assert!(invalid_body.contains("name=\"name\" value=\" \""));
+        assert!(invalid_body.contains("name=\"currency\""));
+        assert!(invalid_body.contains("aria-describedby=\"settings-guidance settings-error\""));
+
+        let response = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                "/groups/1/edit",
+                &format!(
+                    "csrf={csrf_token}&submission_token={submission}&name=Renamed&currency=ZZZ"
+                ),
+                Some(&session_cookie),
+            ))
+            .await
+            .expect("invalid currency response");
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let invalid_currency_body = response_body(response).await;
+        assert!(!invalid_currency_body.contains("value=\"ZZZ\""));
+        assert!(invalid_currency_body.contains("Group Currency"));
+
+        let response = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                "/groups/1/edit",
+                &format!(
+                    "csrf={csrf_token}&submission_token={submission}&name=Renamed&currency=EUR"
+                ),
+                Some(&session_cookie),
+            ))
+            .await
+            .expect("retry settings response");
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(response.headers()["location"], "/groups/1/manage?saved=1");
+
+        let response = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                "/groups/1/manage?saved=1",
+                "",
+                Some(&session_cookie),
+            ))
+            .await
+            .expect("saved settings response");
+        let saved_body = response_body(response).await;
+        assert!(saved_body.contains("id=\"settings-notice\""));
+        assert!(saved_body.contains("Group settings saved."));
     }
 
     #[tokio::test]
@@ -1329,6 +1420,22 @@ mod tests {
         assert!(!archived_group_page.contains("/groups/1/edit"));
         assert!(!archived_group_page.contains("/groups/1/delete"));
         assert!(!archived_group_page.contains("/groups/1/members"));
+
+        let response = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                "/groups/1/manage",
+                "",
+                Some(&session_cookie),
+            ))
+            .await
+            .expect("archived manage response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let archived_manage = response_body(response).await;
+        assert!(archived_manage.contains("id=\"archived-status\""));
+        assert!(archived_manage.contains("id=\"group-settings\""));
+        assert!(!archived_manage.contains("action=\"/groups/1/edit\""));
 
         for (method, uri, form) in [
             (Method::GET, "/groups/1/edit", ""),

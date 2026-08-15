@@ -20,6 +20,15 @@ header { display: flex; justify-content: space-between; gap: 1rem; align-items: 
 nav { display: flex; gap: 1rem; flex-wrap: wrap; }
 a { color: var(--accent); display: inline-block; min-block-size: 48px; min-inline-size: 48px; }
 .page-heading { display: flex; justify-content: space-between; gap: 1rem; align-items: start; }
+.group-heading { min-inline-size: 0; overflow-wrap: anywhere; }
+.manage-section { border-block: 2px solid var(--line); margin-block: 1rem; padding-block: 1rem; }
+.settings-grid { display: grid; grid-template-columns: minmax(0, 1fr) 116px; gap: .75rem; }
+.settings-form { max-inline-size: 48rem; }
+.settings-readonly { display: grid; gap: .75rem; margin: 0; }
+.settings-readonly div { border-block-end: 1px solid var(--line); display: flex; justify-content: space-between; gap: 1rem; padding-block: .5rem; }
+.settings-readonly dt { font-weight: 700; }
+.settings-readonly dd { margin: 0; }
+.settings-value { min-inline-size: 0; overflow-wrap: anywhere; }
 .card { background: var(--card); border: 1px solid var(--line); border-radius: .5rem; padding: 1rem; margin-block: 1rem; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; }
 form { margin-block: 1rem; }
@@ -79,6 +88,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   header { align-items: start; flex-direction: column; }
   .page-heading, .member-actions { display: block; }
   .form-grid { grid-template-columns: 1fr; }
+  .settings-grid { grid-template-columns: 1fr; }
   .page-heading .button { margin-block: .5rem; }
   table, thead, tbody, tr, th, td { display: block; }
   thead { position: absolute; inline-size: 1px; block-size: 1px; overflow: hidden; }

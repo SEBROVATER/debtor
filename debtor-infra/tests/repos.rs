@@ -4,8 +4,8 @@
 
 use chrono::NaiveDate;
 use debtor_application::{
-    ApplicationError, GroupRepository, ParticipantReader, ParticipantRepository, SpendingCursor,
-    SpendingPageDirection, SpendingReader, SpendingRepository, StorageReason,
+    ApplicationError, GroupReader, GroupRepository, ParticipantReader, ParticipantRepository,
+    SpendingCursor, SpendingPageDirection, SpendingReader, SpendingRepository, StorageReason,
 };
 use debtor_domain::currency::Currency;
 use debtor_domain::model::{Allocation, Color, Description, Name, Spending, SpendingType};
@@ -27,6 +27,27 @@ async fn active_group_and_participant(pool: &SqlitePool) -> (SqliteLedgerStore, 
         .await
         .expect("create participant");
     (store, group.id, participant.id)
+}
+
+#[sqlx::test(migrations = "../migrations")]
+async fn group_settings_update_is_transactional_and_preserves_group_state(pool: SqlitePool) {
+    let (store, group_id, _) = active_group_and_participant(&pool).await;
+
+    let updated = store
+        .update_group(
+            group_id,
+            Name::new("Renamed trip").expect("valid name"),
+            Currency::Eur,
+        )
+        .await
+        .expect("update settings");
+
+    assert_eq!(updated.name.as_str(), "Renamed trip");
+    assert_eq!(updated.currency, Currency::Eur);
+    assert!(!updated.is_archived);
+    let loaded = store.group(group_id).await.expect("load updated group");
+    assert_eq!(loaded.name.as_str(), "Renamed trip");
+    assert_eq!(loaded.currency, Currency::Eur);
 }
 
 fn spending(group_id: i64, participant_id: i64) -> Spending {

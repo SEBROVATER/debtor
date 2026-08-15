@@ -41,7 +41,7 @@ pub(super) fn map_group_template_error(error: GroupTemplateError) -> Response {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub(super) async fn build_group_template(
     state: &AppState,
     session: &Session,
@@ -119,6 +119,12 @@ pub(super) async fn build_group_template(
         group_id: id,
         section: "summary".to_owned(),
         currency: group.currency.to_string(),
+        settings_name: group.name.to_string(),
+        settings_currency: group.currency.to_string(),
+        settings_currencies: super::groups::currency_options(&group.currency.to_string()),
+        settings_error: None,
+        settings_notice: None,
+        settings_invalid_field: None,
         csrf: shell.csrf.clone(),
         shell,
         members: active_members,
@@ -143,6 +149,91 @@ pub(super) async fn build_group_template(
         create_name,
         create_color,
         expense,
+    })
+}
+
+pub(super) async fn build_group_manage_template(
+    state: &AppState,
+    session: &Session,
+    id: i64,
+    settings_draft: Option<(String, String)>,
+    settings_error: Option<String>,
+    settings_invalid_field: Option<String>,
+    settings_notice: Option<String>,
+) -> Result<GroupTemplate, GroupTemplateError> {
+    let mut template =
+        match build_group_template(state, session, id, None, None, None, None, None).await {
+            Ok(template) => template,
+            Err(_error) if settings_draft.is_some() || settings_error.is_some() => {
+                build_group_settings_fallback(state, session, id).await?
+            }
+            Err(error) => return Err(error),
+        };
+    "manage".clone_into(&mut template.section);
+    if let Some((name, currency)) = settings_draft {
+        template.settings_name = name;
+        template.settings_currency.clone_from(&currency);
+        template.settings_currencies = super::groups::currency_options(&currency);
+    }
+    template.settings_error = settings_error;
+    template.settings_invalid_field = settings_invalid_field;
+    template.settings_notice = settings_notice;
+    Ok(template)
+}
+
+async fn build_group_settings_fallback(
+    state: &AppState,
+    session: &Session,
+    id: i64,
+) -> Result<GroupTemplate, GroupTemplateError> {
+    let group = state.groups.group(id).await?;
+    let shell = authenticated_shell(state, session)
+        .await
+        .map_err(GroupTemplateError::Response)?;
+    let currency = group.currency.to_string();
+    Ok(GroupTemplate {
+        name: group.name.to_string(),
+        group_id: id,
+        section: "manage".to_owned(),
+        currency: currency.clone(),
+        settings_name: group.name.to_string(),
+        settings_currency: currency.clone(),
+        settings_currencies: super::groups::currency_options(&currency),
+        settings_error: None,
+        settings_notice: None,
+        settings_invalid_field: None,
+        csrf: shell.csrf.clone(),
+        shell,
+        members: Vec::new(),
+        inactive_members: Vec::new(),
+        available_participants: Vec::new(),
+        spendings: Vec::new(),
+        older_spendings: None,
+        newer_spendings: None,
+        show_newest_spendings: false,
+        archived: group.is_archived,
+        error: None,
+        create_name: String::new(),
+        create_color: String::new(),
+        expense: ExpenseFormView {
+            action: format!("/groups/{id}/spendings"),
+            heading: String::new(),
+            submit_label: String::new(),
+            description: String::new(),
+            total: String::new(),
+            currency: currency.clone(),
+            currencies: super::groups::currency_options(&currency),
+            spending_type: String::new(),
+            categories: Vec::new(),
+            spent_date: String::new(),
+            payer_mode: String::new(),
+            split_mode: String::new(),
+            single_payer_id: 0,
+            payer_rows: Vec::new(),
+            share_rows: Vec::new(),
+            exact_rows: Vec::new(),
+            error: None,
+        },
     })
 }
 

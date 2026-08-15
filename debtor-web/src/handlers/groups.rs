@@ -7,15 +7,15 @@ use debtor_domain::currency::Currency;
 use tower_sessions::Session;
 
 use super::{
-    GroupsQuery,
+    GroupsQuery, ManageQuery,
     auth::{authenticated_shell, require_auth},
     response::{error_response, map_error, render},
-    spending_views::{build_group_template, map_group_template_error},
+    spending_views::{build_group_manage_template, build_group_template, map_group_template_error},
 };
 use crate::{
     forms::{CsrfValidatedForm, GroupForm, parse_group_create_form, parse_group_form},
     state::AppState,
-    templates::{ConfirmTemplate, GroupEditTemplate, GroupRow, GroupsTemplate, SelectOption},
+    templates::{ConfirmTemplate, GroupRow, GroupsTemplate, SelectOption},
 };
 
 pub(crate) async fn groups(
@@ -99,15 +99,14 @@ pub(crate) async fn group_manage(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<i64>,
+    Query(query): Query<ManageQuery>,
 ) -> Response {
     if let Err(response) = require_auth(&session).await {
         return response;
     }
-    match build_group_template(&state, &session, id, None, None, None, None, None).await {
-        Ok(mut template) => {
-            "manage".clone_into(&mut template.section);
-            render(&template)
-        }
+    let notice = (query.saved.as_deref() == Some("1")).then(|| "Group settings saved.".to_owned());
+    match build_group_manage_template(&state, &session, id, None, None, None, notice).await {
+        Ok(template) => render(&template),
         Err(error) => map_group_template_error(error),
     }
 }
@@ -160,10 +159,16 @@ pub(crate) async fn group_edit_form(
     if let Err(response) = require_auth(&session).await {
         return response;
     }
-    match group_edit_template(&state, &session, id, None, None).await {
-        Ok(template) => render(&template),
-        Err(response) => response,
+    if let Err(response) = require_writable_group(&state, id).await {
+        return response;
     }
+    group_manage(
+        State(state),
+        session,
+        Path(id),
+        Query(ManageQuery::default()),
+    )
+    .await
 }
 
 pub(crate) async fn update_group(
@@ -188,6 +193,21 @@ pub(crate) async fn update_group(
         currency: currency_value,
         ..
     } = form;
+    if let Err(error) = debtor_application::validate_group_update(&debtor_application::GroupInput {
+        name: name.clone(),
+        currency: currency_value.clone(),
+    }) {
+        return render_group_edit_error(
+            &state,
+            &session,
+            id,
+            name,
+            currency_value,
+            error.to_string(),
+            validation_field(&error),
+        )
+        .await;
+    }
     let Some(session_id) = session.id() else {
         return super::response::session_error();
     };
@@ -198,7 +218,7 @@ pub(crate) async fn update_group(
         return response;
     }
     match state
-        .groups
+        .group_mutations
         .update_group(
             id,
             debtor_application::GroupInput {
@@ -208,7 +228,7 @@ pub(crate) async fn update_group(
         )
         .await
     {
-        Ok(_) => Redirect::to(&format!("/groups/{id}")).into_response(),
+        Ok(_) => Redirect::to(&format!("/groups/{id}/manage?saved=1")).into_response(),
         Err(debtor_application::ApplicationError::Validation(error)) => {
             render_group_edit_error(
                 &state,
@@ -217,6 +237,7 @@ pub(crate) async fn update_group(
                 name,
                 currency_value,
                 error.to_string(),
+                domain_validation_field(&error),
             )
             .await
         }
@@ -339,34 +360,6 @@ async fn render_group_create_error(
     }
 }
 
-async fn group_edit_template(
-    state: &AppState,
-    session: &Session,
-    id: i64,
-    draft: Option<(String, String)>,
-    error: Option<String>,
-) -> Result<GroupEditTemplate, Response> {
-    let group = state.groups.group(id).await.map_err(map_error)?;
-    if group.is_archived {
-        return Err(error_response(
-            StatusCode::CONFLICT,
-            "Archived groups are read-only.",
-        ));
-    }
-    let (name, currency) =
-        draft.unwrap_or_else(|| (group.name.to_string(), group.currency.to_string()));
-    let shell = authenticated_shell(state, session).await?;
-    Ok(GroupEditTemplate {
-        id,
-        name,
-        currency: currency.clone(),
-        currencies: currency_options(&currency),
-        csrf: shell.csrf.clone(),
-        shell,
-        error,
-    })
-}
-
 async fn render_group_edit_error(
     state: &AppState,
     session: &Session,
@@ -374,33 +367,55 @@ async fn render_group_edit_error(
     name: String,
     currency: String,
     error: String,
+    invalid_field: Option<String>,
 ) -> Response {
-    match group_edit_template(state, session, id, Some((name, currency)), Some(error)).await {
+    match build_group_manage_template(
+        state,
+        session,
+        id,
+        Some((name, currency)),
+        Some(error),
+        invalid_field,
+        None,
+    )
+    .await
+    {
         Ok(template) => (StatusCode::UNPROCESSABLE_ENTITY, render(&template)).into_response(),
-        Err(response) => response,
+        Err(error) => map_group_template_error(error),
     }
 }
 
-fn currency_options(selected: &str) -> Vec<SelectOption> {
-    let mut options = Currency::ALL
+fn validation_field(error: &debtor_application::ApplicationError) -> Option<String> {
+    match error {
+        debtor_application::ApplicationError::Validation(
+            debtor_domain::model::ValidationError::Empty { field }
+            | debtor_domain::model::ValidationError::TooLong { field, .. }
+            | debtor_domain::model::ValidationError::InvalidField { field },
+        ) => Some((*field).to_owned()),
+        _ => None,
+    }
+}
+
+fn domain_validation_field(error: &debtor_domain::model::ValidationError) -> Option<String> {
+    match error {
+        debtor_domain::model::ValidationError::Empty { field }
+        | debtor_domain::model::ValidationError::TooLong { field, .. }
+        | debtor_domain::model::ValidationError::InvalidField { field } => {
+            Some((*field).to_owned())
+        }
+        _ => None,
+    }
+}
+
+pub(super) fn currency_options(selected: &str) -> Vec<SelectOption> {
+    Currency::ALL
         .iter()
         .map(|currency| SelectOption {
             value: currency.to_string(),
             label: currency.to_string(),
             selected: currency.to_string() == selected,
         })
-        .collect::<Vec<_>>();
-    if !selected.is_empty() && !options.iter().any(|option| option.value == selected) {
-        options.insert(
-            0,
-            SelectOption {
-                value: selected.to_owned(),
-                label: selected.to_owned(),
-                selected: true,
-            },
-        );
-    }
-    options
+        .collect::<Vec<_>>()
 }
 
 async fn archive(

@@ -261,6 +261,16 @@ impl GroupMutationExecutor for FakeGroups {
     > {
         Box::pin(async move { GroupUseCases::create_group(self, input).await })
     }
+
+    fn update_group(
+        &self,
+        id: i64,
+        input: GroupInput,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Group, ApplicationError>> + Send + '_>,
+    > {
+        Box::pin(async move { GroupUseCases::update_group(self, id, input).await })
+    }
 }
 
 #[async_trait]
