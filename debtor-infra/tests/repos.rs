@@ -4,8 +4,9 @@
 
 use chrono::NaiveDate;
 use debtor_application::{
-    ApplicationError, GroupReader, GroupRepository, ParticipantReader, ParticipantRepository,
-    SpendingCursor, SpendingPageDirection, SpendingReader, SpendingRepository, StorageReason,
+    ApplicationError, GroupDeleteInput, GroupReader, GroupRepository, ParticipantReader,
+    ParticipantRepository, SpendingCursor, SpendingPageDirection, SpendingReader,
+    SpendingRepository, StorageReason,
 };
 use debtor_domain::currency::Currency;
 use debtor_domain::model::{Allocation, Color, Description, Name, Spending, SpendingType};
@@ -49,6 +50,105 @@ async fn group_settings_update_is_transactional_and_preserves_group_state(pool: 
     let loaded = store.group(group_id).await.expect("load updated group");
     assert_eq!(loaded.name.as_str(), "Renamed trip");
     assert_eq!(loaded.currency, Currency::Eur);
+}
+
+#[sqlx::test(migrations = "../migrations")]
+async fn group_lifecycle_is_state_scoped_and_history_free_delete_is_atomic(pool: SqlitePool) {
+    let (store, group_id, participant_id) = active_group_and_participant(&pool).await;
+
+    store.archive_group(group_id).await.expect("archive group");
+    assert!(
+        store
+            .group(group_id)
+            .await
+            .expect("archived group")
+            .is_archived
+    );
+    store.restore_group(group_id).await.expect("restore group");
+    assert!(
+        !store
+            .group(group_id)
+            .await
+            .expect("restored group")
+            .is_archived
+    );
+
+    let mismatch = store
+        .delete_empty_group(GroupDeleteInput {
+            group_id,
+            participant_ids: Vec::new(),
+        })
+        .await
+        .expect_err("mismatched confirmation set");
+    assert!(matches!(mismatch, ApplicationError::Conflict));
+    assert!(store.group(group_id).await.is_ok());
+
+    let (history_store, history_group_id, history_participant_id) =
+        active_group_and_participant(&pool).await;
+    history_store
+        .add_member(history_group_id, history_participant_id)
+        .await
+        .expect("history member");
+    history_store
+        .create_spending(spending(history_group_id, history_participant_id))
+        .await
+        .expect("history spending");
+    let history_delete = history_store
+        .delete_empty_group(GroupDeleteInput {
+            group_id: history_group_id,
+            participant_ids: vec![history_participant_id],
+        })
+        .await
+        .expect_err("referenced group delete");
+    assert!(matches!(history_delete, ApplicationError::Conflict));
+    assert!(history_store.group(history_group_id).await.is_ok());
+
+    let race_runtime = SqliteLedgerRuntime::new(pool.clone());
+    let race_store = race_runtime.store();
+    let race_group = race_store
+        .create_group(Name::new("Race").expect("race name"), Currency::Usd)
+        .await
+        .expect("race group");
+    let first = race_runtime.store();
+    let second = race_runtime.store();
+    let race_group_id = race_group.id;
+    let (first_result, second_result) = tokio::join!(
+        first.archive_group(race_group_id),
+        second.archive_group(race_group_id)
+    );
+    assert_eq!(
+        [first_result.is_ok(), second_result.is_ok()]
+            .into_iter()
+            .filter(|ok| *ok)
+            .count(),
+        1
+    );
+    assert!(
+        race_store
+            .group(race_group_id)
+            .await
+            .expect("race group")
+            .is_archived
+    );
+
+    store
+        .delete_empty_group(GroupDeleteInput {
+            group_id,
+            participant_ids: vec![participant_id],
+        })
+        .await
+        .expect("delete history-free group");
+    assert!(matches!(
+        store.group(group_id).await,
+        Err(ApplicationError::NotFound)
+    ));
+    let participant_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM participants WHERE id = ?")
+            .bind(participant_id)
+            .fetch_one(&pool)
+            .await
+            .expect("participant count");
+    assert_eq!(participant_count, 0);
 }
 
 fn spending(group_id: i64, participant_id: i64) -> Spending {
@@ -166,10 +266,7 @@ async fn spending_detail_does_not_materialize_unrelated_history(pool: SqlitePool
 #[sqlx::test(migrations = "../migrations")]
 async fn archived_group_rejects_member_add_without_changing_membership(pool: SqlitePool) {
     let (store, group_id, participant_id) = active_group_and_participant(&pool).await;
-    store
-        .set_group_archived(group_id, true)
-        .await
-        .expect("archive group");
+    store.archive_group(group_id).await.expect("archive group");
 
     assert!(matches!(
         store.add_member(group_id, participant_id).await,
@@ -189,10 +286,7 @@ async fn archived_group_rejects_member_add_without_changing_membership(pool: Sql
 #[sqlx::test(migrations = "../migrations")]
 async fn archived_group_rolls_back_create_and_join(pool: SqlitePool) {
     let (store, group_id, _) = active_group_and_participant(&pool).await;
-    store
-        .set_group_archived(group_id, true)
-        .await
-        .expect("archive group");
+    store.archive_group(group_id).await.expect("archive group");
 
     assert!(matches!(
         store
@@ -218,10 +312,7 @@ async fn archived_group_rejects_spending_create_without_aggregate_rows(pool: Sql
         .add_member(group_id, participant_id)
         .await
         .expect("add member");
-    store
-        .set_group_archived(group_id, true)
-        .await
-        .expect("archive group");
+    store.archive_group(group_id).await.expect("archive group");
 
     assert!(matches!(
         store
@@ -248,10 +339,7 @@ async fn archived_group_rejects_spending_delete_and_preserves_history(pool: Sqli
         .create_spending(spending(group_id, participant_id))
         .await
         .expect("create spending");
-    store
-        .set_group_archived(group_id, true)
-        .await
-        .expect("archive group");
+    store.archive_group(group_id).await.expect("archive group");
 
     assert!(matches!(
         store.delete_spending(group_id, created.id).await,
@@ -271,10 +359,7 @@ async fn archived_mutation_races_consistently_return_conflict(pool: SqlitePool) 
         .create_spending(spending(group_id, participant_id))
         .await
         .expect("create spending");
-    store
-        .set_group_archived(group_id, true)
-        .await
-        .expect("archive group");
+    store.archive_group(group_id).await.expect("archive group");
 
     let mut updated = spending;
     updated.description = Description::new("Updated dinner").expect("description");
@@ -370,10 +455,7 @@ async fn participant_update_is_group_scoped_and_preserves_identity(pool: SqliteP
 #[sqlx::test(migrations = "../migrations")]
 async fn participant_update_rechecks_group_and_membership_lifecycle(pool: SqlitePool) {
     let (store, group_id, participant_id) = active_group_and_participant(&pool).await;
-    store
-        .set_group_archived(group_id, true)
-        .await
-        .expect("archive group");
+    store.archive_group(group_id).await.expect("archive group");
     assert!(matches!(
         store
             .update_group_participant(

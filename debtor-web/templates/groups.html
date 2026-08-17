@@ -12,8 +12,7 @@
     <header id="authenticated-header" class="site-header" aria-busy="false">
       <a href="/groups">debtor</a>
       <nav>
-        <a href="/groups">Active</a><a href="/participants">Participants</a
-        ><a href="/groups?archived=true">Archived</a>
+        <a href="/groups">Active</a><a href="/groups?archived=true">Archived</a>
       </nav>
       <form method="post" action="/logout" class="sign-out-form" hx-ext="response-targets" hx-target="#sign-out-status" hx-target-4xx="#sign-out-status" hx-target-5xx="#sign-out-status">
         <input type="hidden" name="csrf" value="{{ shell.csrf }}" />
@@ -26,21 +25,23 @@
        {% match error %}{% when Some with (message) %}
        <p id="groups-error" class="error" role="alert" tabindex="-1" autofocus>{{ message }}</p>
       {% when None %}{% endmatch %}
-      {% if archived %}
-       <h1 id="groups-heading" tabindex="-1" autofocus>Archived groups</h1>
-      {% else %}
-       <h1 id="groups-heading" tabindex="-1"{% if error.is_none() %} autofocus{% endif %}>Groups</h1>
+       {% if archived %}
+        <h1 id="groups-heading" tabindex="-1"{% if focus_group.is_none() %} autofocus{% endif %}>Archived groups</h1>
+       {% else %}
+        <h1 id="groups-heading" tabindex="-1"{% if error.is_none() && focus_group.is_none() %} autofocus{% endif %}>Groups</h1>
          <form method="post" action="/groups" class="inline-form mutation-form" hx-post="/groups" hx-disabled-elt="button" hx-indicator="#group-create-status" aria-busy="false">
           <input type="hidden" name="csrf" value="{{ csrf }}" /><input type="hidden" name="submission_token" value="{{ shell.submission_token }}" /><label
             >Name <input id="group-name" name="name" value="{{ create_name }}" required{% if error.is_some() %} aria-invalid="true" aria-describedby="groups-error"{% endif %} /></label
         ><button type="submit">Create group</button><p id="group-create-status" class="mutation-status" role="status" aria-live="polite" aria-atomic="true"> </p>
       </form>
-      {% endif %}{% if groups.len() == 0 %}
+       {% endif %}
+       {% match notice %}{% when Some with (message) %}<p id="groups-status" class="notice" role="status" aria-live="polite" aria-atomic="true" tabindex="-1">{{ message }}</p>{% when None %}{% endmatch %}
+       {% if groups.len() == 0 %}
       <p class="empty">No groups yet.</p>
       {% else %}
       <table>
         <thead>
-          <tr>
+           <tr>
             <th>Group</th>
             <th>Target currency</th>
             <th>Participants</th>
@@ -49,8 +50,8 @@
         </thead>
         <tbody>
           {% for group in groups %}
-          <tr>
-            <td><a href="/groups/{{ group.id }}">{{ group.name }}</a></td>
+            <tr id="group-{{ group.id }}">
+             <td><a href="/groups/{{ group.id }}"{% if group.focused %} tabindex="-1" autofocus{% endif %}>{{ group.name }}</a></td>
             <td>{{ group.currency }}</td>
             <td>{{ group.active_participants }}</td>
             <td>
@@ -59,9 +60,7 @@
                 <input type="hidden" name="csrf" value="{{ csrf }}" /><input type="hidden" name="submission_token" value="{{ shell.submission_token }}" /><button type="submit">Restore</button><p id="group-{{ group.id }}-status" class="mutation-status" role="status" aria-live="polite" aria-atomic="true"> </p>
               </form>
               {% else %}
-              <form method="post" action="/groups/{{ group.id }}/archive" class="mutation-form" hx-post="/groups/{{ group.id }}/archive" hx-disabled-elt="button" hx-indicator="#group-{{ group.id }}-status" aria-busy="false">
-                <input type="hidden" name="csrf" value="{{ csrf }}" /><input type="hidden" name="submission_token" value="{{ shell.submission_token }}" /><button type="submit">Archive</button><p id="group-{{ group.id }}-status" class="mutation-status" role="status" aria-live="polite" aria-atomic="true"> </p>
-              </form>
+              <a href="/groups/{{ group.id }}/manage">Manage</a>
               {% endif %}
             </td>
           </tr>

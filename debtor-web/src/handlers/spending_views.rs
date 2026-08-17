@@ -66,6 +66,7 @@ pub(super) async fn build_group_template(
         .collect();
     let had_cursor = cursor.is_some();
     let spending_page = state.spendings.spending_page(id, cursor).await?;
+    let can_delete = spending_page.items.is_empty() && cursor.is_none();
     let show_newest_spendings = had_cursor && spending_page.items.is_empty();
     let mut form_members = active_members.clone();
     if let Some(spending) = editing {
@@ -126,6 +127,7 @@ pub(super) async fn build_group_template(
         newer_spendings: spending_page.newer.map(encode_cursor),
         show_newest_spendings,
         archived: group.is_archived,
+        can_delete,
         error,
         participant_invalid_field: None,
         focus_participant: None,
@@ -195,6 +197,7 @@ async fn build_group_settings_fallback(
         newer_spendings: None,
         show_newest_spendings: false,
         archived: group.is_archived,
+        can_delete: false,
         error: None,
         participant_invalid_field: None,
         focus_participant: None,

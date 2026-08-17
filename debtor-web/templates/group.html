@@ -31,7 +31,7 @@
            <h1 id="group-heading" class="group-heading" tabindex="-1"{% if !archived && section != "manage" && settings_notice.is_none() && settings_error.is_none() %} autofocus{% endif %}>{{ name }}{% if archived %} <span id="archived-status">Archived</span>{% endif %}</h1>
           <p>Settlement target: <strong>{{ currency }}</strong></p>
         </div>
-        {% if !archived && section != "manage" %}<a class="button secondary" href="/groups/{{ group_id }}/delete"
+        {% if !archived && can_delete && section != "manage" %}<a class="button secondary" href="/groups/{{ group_id }}/delete"
           >Delete empty group</a
         >{% endif %}
       </div>
@@ -83,7 +83,7 @@
            <p id="group-settings-status" class="mutation-status" role="status" aria-live="polite" aria-atomic="true"> </p>
          </form>
        </section>
-        <section id="participants" class="manage-section" aria-labelledby="participants-heading">
+         <section id="participants" class="manage-section" aria-labelledby="participants-heading">
           <h2 id="participants-heading" tabindex="-1">Participants</h2>
          <p id="participant-guidance" class="helper">Participants are accounting identities owned by this Group. Add one before recording a Spending.</p>
          {% if members.len() == 0 %}
@@ -136,7 +136,15 @@
            <p id="participant-add-status" class="mutation-status" role="status" aria-live="polite" aria-atomic="true"> </p>
          </form>
        </section>
-       {% else %}
+       <section id="group-lifecycle" class="manage-section" aria-labelledby="group-lifecycle-heading">
+         <h2 id="group-lifecycle-heading" tabindex="-1">Group lifecycle</h2>
+         <p class="helper">Archive is reversible and keeps history readable. Delete is irreversible and available only while this Group has no Spendings.</p>
+         <p id="group-lifecycle-actions" class="lifecycle-actions">
+           <a id="group-archive" class="button secondary" href="/groups/{{ group_id }}/archive">Archive Group</a>
+           {% if can_delete %}<a id="group-delete" class="button danger" href="/groups/{{ group_id }}/delete">Delete Group</a>{% endif %}
+         </p>
+       </section>
+        {% else %}
         <section id="participants-summary" class="card">
          <h2>Participants</h2>
          {% if members.len() == 0 %}

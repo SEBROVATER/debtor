@@ -13,7 +13,11 @@ use super::{
     spending_views::{build_group_manage_template, build_group_template, map_group_template_error},
 };
 use crate::{
-    forms::{CsrfValidatedForm, GroupForm, parse_group_create_form, parse_group_form},
+    forms::{
+        CsrfValidatedForm, GroupForm, parse_group_create_form, parse_group_form,
+        parse_lifecycle_form,
+    },
+    session,
     state::AppState,
     templates::{ConfirmTemplate, GroupRow, GroupsTemplate, SelectOption},
 };
@@ -27,7 +31,21 @@ pub(crate) async fn groups(
         return response;
     }
     let archived = query.archived.unwrap_or(false);
-    match groups_template(&state, &session, archived, "", None).await {
+    let focus_group = if query.notice.as_deref() == Some("restored") {
+        match session::take_restore_focus(&session).await {
+            Ok(focus) => focus,
+            Err(_) => return super::response::session_error(),
+        }
+    } else {
+        None
+    };
+    let notice = match query.notice.as_deref() {
+        Some("archived") => Some("Group archived. History remains readable.".to_owned()),
+        Some("restored") => Some("Group restored.".to_owned()),
+        Some("deleted") => Some("Group deleted.".to_owned()),
+        _ => None,
+    };
+    match groups_template(&state, &session, archived, "", None, notice, focus_group).await {
         Ok(template) => render(&template),
         Err(response) => response,
     }
@@ -145,7 +163,62 @@ pub(crate) async fn archive_group(
     Path(id): Path<i64>,
     form: CsrfValidatedForm,
 ) -> Response {
-    archive(state, session, id, true, form).await
+    if let Err(response) = require_auth(&session).await {
+        return response;
+    }
+    if let Err(error) = parse_lifecycle_form(&form.ordered()) {
+        return error_response(error.status, error.message);
+    }
+    if let Err(response) = require_active_group(&state, id).await {
+        return response;
+    }
+    let Some(session_id) = session.id() else {
+        return super::response::session_error();
+    };
+    if let Err(response) = form
+        .reserve_and_dispatch(&state.submission_tokens, session_id)
+        .await
+    {
+        return response;
+    }
+    match state.group_mutations.archive_group(id).await {
+        Ok(()) => Redirect::to("/groups?notice=archived").into_response(),
+        Err(error) => map_error(error),
+    }
+}
+
+pub(crate) async fn archive_group_form(
+    State(state): State<AppState>,
+    session: Session,
+    Path(id): Path<i64>,
+) -> Response {
+    if let Err(response) = require_auth(&session).await {
+        return response;
+    }
+    if let Err(response) = require_active_group(&state, id).await {
+        return response;
+    }
+    let group = match state.groups.group(id).await {
+        Ok(group) => group,
+        Err(error) => return map_error(error),
+    };
+    let shell = match authenticated_shell(&state, &session).await {
+        Ok(shell) => shell,
+        Err(response) => return response,
+    };
+    render(&ConfirmTemplate {
+        heading: "Archive Group".into(),
+        message: format!(
+            "Archive {}? This is reversible, and its history will remain readable.",
+            group.name
+        ),
+        action: format!("/groups/{id}/archive"),
+        cancel: format!("/groups/{id}/manage#group-archive"),
+        csrf: shell.csrf.clone(),
+        shell,
+        details: Vec::new(),
+        destructive: false,
+    })
 }
 
 pub(crate) async fn restore_group(
@@ -154,7 +227,33 @@ pub(crate) async fn restore_group(
     Path(id): Path<i64>,
     form: CsrfValidatedForm,
 ) -> Response {
-    archive(state, session, id, false, form).await
+    if let Err(response) = require_auth(&session).await {
+        return response;
+    }
+    if let Err(error) = parse_lifecycle_form(&form.ordered()) {
+        return error_response(error.status, error.message);
+    }
+    if let Err(response) = require_archived_group(&state, id).await {
+        return response;
+    }
+    let Some(session_id) = session.id() else {
+        return super::response::session_error();
+    };
+    if let Err(response) = form
+        .reserve_and_dispatch(&state.submission_tokens, session_id)
+        .await
+    {
+        return response;
+    }
+    match state.group_mutations.restore_group(id).await {
+        Ok(()) => {
+            if session::set_restore_focus(&session, id).await.is_err() {
+                return super::response::session_error();
+            }
+            Redirect::to("/groups?notice=restored").into_response()
+        }
+        Err(error) => map_error(error),
+    }
 }
 
 pub(crate) async fn group_edit_form(
@@ -261,17 +360,56 @@ pub(crate) async fn delete_group_form(
     }
     match state.groups.group(id).await {
         Ok(group) if !group.is_archived => {
+            let spending_page = match state.spendings.spending_page(id, None).await {
+                Ok(page) => page,
+                Err(error) => return map_error(error),
+            };
+            if !spending_page.items.is_empty() {
+                return error_response(
+                    StatusCode::CONFLICT,
+                    "Groups with spending history cannot be deleted.",
+                );
+            }
+            let members = match state.participants.members(id).await {
+                Ok(members) => members,
+                Err(error) => return map_error(error),
+            };
+            let participant_ids = members
+                .iter()
+                .map(|(participant, _)| participant.id)
+                .collect::<Vec<_>>();
             let shell = match authenticated_shell(&state, &session).await {
                 Ok(shell) => shell,
                 Err(response) => return response,
             };
+            if session::set_group_delete_confirmation(
+                &session,
+                id,
+                participant_ids,
+                &shell.submission_token,
+            )
+            .await
+            .is_err()
+            {
+                return super::response::session_error();
+            }
+            let mut details = members
+                .into_iter()
+                .map(|(participant, _)| participant.name.to_string())
+                .collect::<Vec<_>>();
+            details.sort();
             render(&ConfirmTemplate {
-                heading: "Delete empty group".into(),
-                message: "This permanently deletes the group only if it has no expenses.".into(),
+                heading: "Delete Group".into(),
+                message: format!(
+                    "Permanently delete {}? This cannot be undone and removes these history-free Participants:",
+                    group.name
+                ),
                 action: format!("/groups/{id}/delete"),
-                cancel: format!("/groups/{id}"),
+                cancel: format!("/groups/{id}/manage#group-delete"),
                 csrf: shell.csrf.clone(),
                 shell,
+                details,
+                destructive: true,
             })
         }
         Ok(_) => error_response(StatusCode::CONFLICT, "Archived groups cannot be deleted."),
@@ -288,8 +426,31 @@ pub(crate) async fn delete_group(
     if let Err(response) = require_auth(&session).await {
         return response;
     }
-    if let Err(response) = require_writable_group(&state, id).await {
+    if let Err(error) = parse_lifecycle_form(&form.ordered()) {
+        return error_response(error.status, error.message);
+    }
+    if let Err(response) = require_active_group(&state, id).await {
         return response;
+    }
+    let Some((confirmed_group_id, participant_ids, confirmed_token)) =
+        session::group_delete_confirmation(&session)
+            .await
+            .ok()
+            .flatten()
+    else {
+        return error_response(StatusCode::CONFLICT, "Delete confirmation expired.");
+    };
+    if confirmed_group_id != id {
+        return error_response(StatusCode::CONFLICT, "Delete confirmation expired.");
+    }
+    if form.submission_token() != Some(confirmed_token.as_str()) {
+        return error_response(StatusCode::CONFLICT, "Delete confirmation expired.");
+    }
+    if session::clear_group_delete_confirmation(&session)
+        .await
+        .is_err()
+    {
+        return super::response::session_error();
     }
     let Some(session_id) = session.id() else {
         return super::response::session_error();
@@ -300,8 +461,15 @@ pub(crate) async fn delete_group(
     {
         return response;
     }
-    match state.groups.delete_empty(id).await {
-        Ok(()) => Redirect::to("/groups").into_response(),
+    match state
+        .group_mutations
+        .delete_empty_group(debtor_application::GroupDeleteInput {
+            group_id: id,
+            participant_ids,
+        })
+        .await
+    {
+        Ok(()) => Redirect::to("/groups?notice=deleted").into_response(),
         Err(error) => map_error(error),
     }
 }
@@ -317,12 +485,36 @@ pub(super) async fn require_writable_group(state: &AppState, id: i64) -> Result<
     }
 }
 
+async fn require_active_group(state: &AppState, id: i64) -> Result<(), Response> {
+    match state.groups.group(id).await {
+        Ok(group) if group.is_archived => Err(error_response(
+            StatusCode::CONFLICT,
+            "Archived groups are read-only.",
+        )),
+        Ok(_) => Ok(()),
+        Err(error) => Err(map_error(error)),
+    }
+}
+
+async fn require_archived_group(state: &AppState, id: i64) -> Result<(), Response> {
+    match state.groups.group(id).await {
+        Ok(group) if !group.is_archived => Err(error_response(
+            StatusCode::CONFLICT,
+            "Only archived groups can be restored.",
+        )),
+        Ok(_) => Ok(()),
+        Err(error) => Err(map_error(error)),
+    }
+}
+
 async fn groups_template(
     state: &AppState,
     session: &Session,
     archived: bool,
     create_name: &str,
     error: Option<String>,
+    notice: Option<String>,
+    focus_group: Option<i64>,
 ) -> Result<GroupsTemplate, Response> {
     let items = state
         .groups
@@ -342,6 +534,7 @@ async fn groups_template(
             name: g.name.to_string(),
             currency: g.currency.to_string(),
             active_participants,
+            focused: focus_group == Some(g.id),
         });
     }
     Ok(GroupsTemplate {
@@ -351,6 +544,8 @@ async fn groups_template(
         archived,
         create_name: create_name.to_owned(),
         error,
+        notice,
+        focus_group,
     })
 }
 
@@ -360,7 +555,7 @@ async fn render_group_create_error(
     name: String,
     error: String,
 ) -> Response {
-    match groups_template(state, session, false, &name, Some(error)).await {
+    match groups_template(state, session, false, &name, Some(error), None, None).await {
         Ok(template) => (StatusCode::UNPROCESSABLE_ENTITY, render(&template)).into_response(),
         Err(response) => response,
     }
@@ -422,32 +617,4 @@ pub(super) fn currency_options(selected: &str) -> Vec<SelectOption> {
             selected: currency.to_string() == selected,
         })
         .collect::<Vec<_>>()
-}
-
-async fn archive(
-    state: AppState,
-    session: Session,
-    id: i64,
-    archived: bool,
-    form: CsrfValidatedForm,
-) -> Response {
-    if let Err(response) = require_auth(&session).await {
-        return response;
-    }
-    if let Err(response) = require_writable_group(&state, id).await {
-        return response;
-    }
-    let Some(session_id) = session.id() else {
-        return super::response::session_error();
-    };
-    if let Err(response) = form
-        .reserve_and_dispatch(&state.submission_tokens, session_id)
-        .await
-    {
-        return response;
-    }
-    match state.groups.set_archived(id, archived).await {
-        Ok(()) => Redirect::to("/groups").into_response(),
-        Err(error) => map_error(error),
-    }
 }

@@ -33,6 +33,15 @@ pub struct GroupInput {
     pub currency: String,
 }
 
+/// Participant ownership snapshot bound to a history-free Group deletion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupDeleteInput {
+    /// Group being deleted.
+    pub group_id: EntityId,
+    /// Owned Participant IDs disclosed by the confirmation page.
+    pub participant_ids: Vec<EntityId>,
+}
+
 /// Validates raw Group settings without performing a mutation.
 ///
 /// # Errors
@@ -67,14 +76,12 @@ pub trait GroupRepository: Send + Sync {
         name: Name,
         currency: Currency,
     ) -> Result<Group, ApplicationError>;
-    /// Changes archive state.
-    async fn set_group_archived(
-        &self,
-        id: EntityId,
-        archived: bool,
-    ) -> Result<(), ApplicationError>;
+    /// Archives an active Group.
+    async fn archive_group(&self, id: EntityId) -> Result<(), ApplicationError>;
+    /// Restores an archived Group.
+    async fn restore_group(&self, id: EntityId) -> Result<(), ApplicationError>;
     /// Deletes an empty group.
-    async fn delete_empty_group(&self, id: EntityId) -> Result<(), ApplicationError>;
+    async fn delete_empty_group(&self, input: GroupDeleteInput) -> Result<(), ApplicationError>;
 }
 
 /// Inbound group operations.
@@ -92,10 +99,12 @@ pub trait GroupUseCases: Send + Sync {
         id: EntityId,
         input: GroupInput,
     ) -> Result<Group, ApplicationError>;
-    /// Archives or restores a group.
-    async fn set_archived(&self, id: EntityId, archived: bool) -> Result<(), ApplicationError>;
+    /// Archives an active Group.
+    async fn archive_group(&self, id: EntityId) -> Result<(), ApplicationError>;
+    /// Restores an archived Group.
+    async fn restore_group(&self, id: EntityId) -> Result<(), ApplicationError>;
     /// Deletes an empty group.
-    async fn delete_empty(&self, id: EntityId) -> Result<(), ApplicationError>;
+    async fn delete_empty(&self, input: GroupDeleteInput) -> Result<(), ApplicationError>;
 }
 
 /// Executes a Group mutation with an outer runtime-owned definitive outcome.
@@ -115,6 +124,30 @@ pub trait GroupMutationExecutor: Send + Sync {
         input: GroupInput,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<Group, ApplicationError>> + Send + '_>,
+    >;
+
+    /// Archives an active Group under the shared mutation owner.
+    fn archive_group(
+        &self,
+        id: EntityId,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), ApplicationError>> + Send + '_>,
+    >;
+
+    /// Restores an archived Group under the shared mutation owner.
+    fn restore_group(
+        &self,
+        id: EntityId,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), ApplicationError>> + Send + '_>,
+    >;
+
+    /// Deletes a history-free Group under the shared mutation owner.
+    fn delete_empty_group(
+        &self,
+        input: GroupDeleteInput,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), ApplicationError>> + Send + '_>,
     >;
 
     /// Creates a Group-owned Participant under the same supervised mutation owner.
@@ -181,15 +214,25 @@ impl GroupUseCases for GroupService {
             .await
     }
 
-    async fn set_archived(&self, id: EntityId, archived: bool) -> Result<(), ApplicationError> {
-        self.repository.set_group_archived(id, archived).await
-    }
-
-    async fn delete_empty(&self, id: EntityId) -> Result<(), ApplicationError> {
+    async fn archive_group(&self, id: EntityId) -> Result<(), ApplicationError> {
         if self.reader.group(id).await?.is_archived {
             return Err(ApplicationError::Conflict);
         }
-        self.repository.delete_empty_group(id).await
+        self.repository.archive_group(id).await
+    }
+
+    async fn restore_group(&self, id: EntityId) -> Result<(), ApplicationError> {
+        if !self.reader.group(id).await?.is_archived {
+            return Err(ApplicationError::Conflict);
+        }
+        self.repository.restore_group(id).await
+    }
+
+    async fn delete_empty(&self, input: GroupDeleteInput) -> Result<(), ApplicationError> {
+        if self.reader.group(input.group_id).await?.is_archived {
+            return Err(ApplicationError::Conflict);
+        }
+        self.repository.delete_empty_group(input).await
     }
 }
 
@@ -206,6 +249,7 @@ mod tests {
         created: Mutex<Vec<(Name, Currency)>>,
         updated: Mutex<Vec<(EntityId, Name, Currency)>>,
         fail_create: bool,
+        group_archived: bool,
     }
 
     fn group(id: EntityId) -> Group {
@@ -228,7 +272,9 @@ mod tests {
         }
 
         async fn group(&self, id: EntityId) -> Result<Group, ApplicationError> {
-            Ok(group(id))
+            let mut value = group(id);
+            value.is_archived = self.group_archived;
+            Ok(value)
         }
     }
 
@@ -272,11 +318,15 @@ mod tests {
             })
         }
 
-        async fn set_group_archived(&self, _: EntityId, _: bool) -> Result<(), ApplicationError> {
+        async fn archive_group(&self, _: EntityId) -> Result<(), ApplicationError> {
             Ok(())
         }
 
-        async fn delete_empty_group(&self, _: EntityId) -> Result<(), ApplicationError> {
+        async fn restore_group(&self, _: EntityId) -> Result<(), ApplicationError> {
+            Ok(())
+        }
+
+        async fn delete_empty_group(&self, _: GroupDeleteInput) -> Result<(), ApplicationError> {
             Ok(())
         }
     }
@@ -288,6 +338,7 @@ mod tests {
             created: Mutex::new(Vec::new()),
             updated: Mutex::new(Vec::new()),
             fail_create: false,
+            group_archived: false,
         });
         let service = GroupService::new(fake.clone(), fake.clone());
 
@@ -345,6 +396,7 @@ mod tests {
             created: Mutex::new(Vec::new()),
             updated: Mutex::new(Vec::new()),
             fail_create: true,
+            group_archived: false,
         });
         let error = GroupService::new(failing.clone(), failing)
             .create_group(GroupCreateInput {
@@ -406,5 +458,45 @@ mod tests {
                 field: "currency"
             })
         ));
+    }
+
+    #[tokio::test]
+    async fn lifecycle_intent_rejects_the_wrong_group_state_before_repository_access() {
+        let archived = Arc::new(Fake {
+            listed_archived: Mutex::new(Vec::new()),
+            created: Mutex::new(Vec::new()),
+            updated: Mutex::new(Vec::new()),
+            fail_create: false,
+            group_archived: true,
+        });
+        let archived_service = GroupService::new(archived.clone(), archived.clone());
+        assert!(matches!(
+            archived_service.archive_group(1).await,
+            Err(ApplicationError::Conflict)
+        ));
+        archived_service
+            .restore_group(1)
+            .await
+            .expect("restore archived");
+
+        let active = Arc::new(Fake {
+            listed_archived: Mutex::new(Vec::new()),
+            created: Mutex::new(Vec::new()),
+            updated: Mutex::new(Vec::new()),
+            fail_create: false,
+            group_archived: false,
+        });
+        let active_service = GroupService::new(active.clone(), active.clone());
+        assert!(matches!(
+            active_service.restore_group(1).await,
+            Err(ApplicationError::Conflict)
+        ));
+        active_service
+            .delete_empty(GroupDeleteInput {
+                group_id: 1,
+                participant_ids: Vec::new(),
+            })
+            .await
+            .expect("delete active group");
     }
 }

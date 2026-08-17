@@ -109,7 +109,10 @@ pub fn router_with_sessions<S: SessionStore + Clone>(
             "/groups/{group_id}/spendings/{spending_id}/delete",
             get(handlers::delete_spending_form).post(handlers::delete_spending),
         )
-        .route("/groups/{id}/archive", post(handlers::archive_group))
+        .route(
+            "/groups/{id}/archive",
+            get(handlers::archive_group_form).post(handlers::archive_group),
+        )
         .route("/groups/{id}/restore", post(handlers::restore_group))
         .route("/groups/{id}/debts", get(handlers::debts))
         .layer(middleware::from_fn(app_middleware::security_headers))
@@ -147,7 +150,7 @@ where
 #[allow(clippy::expect_used)]
 mod tests {
     use async_trait::async_trait;
-    use std::sync::Arc;
+    use std::sync::{Arc, atomic::Ordering};
     use tokio::sync::{Barrier, Notify, Semaphore};
 
     use axum::{
@@ -501,14 +504,14 @@ mod tests {
             .expect("groups page");
         assert_eq!(page.status(), StatusCode::OK);
         let body = response_body(page).await;
-        assert_eq!(body.matches("name=\"submission_token\"").count(), 3);
+        assert_eq!(body.matches("name=\"submission_token\"").count(), 2);
         let first_token = submission_token(&body);
         assert_eq!(
             body.matches(&format!(
                 "name=\"submission_token\" value=\"{first_token}\""
             ))
             .count(),
-            3
+            2
         );
         assert_eq!(body.matches("action=\"/logout\"").count(), 1);
         let csrf_token = csrf(&body);
@@ -738,9 +741,9 @@ mod tests {
             .await
             .expect("groups page");
         let body = response_body(response).await;
-        assert!(body.matches("mutation-form").count() >= 2);
-        assert!(body.matches("aria-busy=\"false\"").count() >= 3);
-        assert!(body.matches("role=\"status\"").count() >= 3);
+        assert!(body.matches("mutation-form").count() >= 1);
+        assert!(body.matches("aria-busy=\"false\"").count() >= 2);
+        assert!(body.matches("role=\"status\"").count() >= 2);
         assert!(body.contains("hx-disabled-elt=\"button\""));
     }
 
@@ -800,7 +803,7 @@ mod tests {
             .expect("groups page");
         let body = response_body(response).await;
         let token = submission_token(&body);
-        assert!(body.matches("name=\"submission_token\"").count() >= 3);
+        assert!(body.matches("name=\"submission_token\"").count() >= 2);
         assert_eq!(
             body.matches(&format!("name=\"submission_token\" value=\"{token}\""))
                 .count(),
@@ -1589,6 +1592,154 @@ mod tests {
                 .expect("archived mutation response");
             assert_eq!(response.status(), StatusCode::CONFLICT, "{method} {uri}");
         }
+        let response = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                "/groups/1/archive",
+                &format!(
+                    "csrf={}&submission_token={}",
+                    csrf(&group_page),
+                    submission_token(&group_page)
+                ),
+                Some(&session_cookie),
+            ))
+            .await
+            .expect("archived archive mutation response");
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(test_state.groups.archived.load(Ordering::Relaxed), 0);
+        assert_eq!(test_state.groups.deleted.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn group_lifecycle_uses_confirmations_and_supervised_mutations() {
+        let test_state = state(false);
+        let app = app(&test_state);
+        let cookie = login(&app).await;
+        let manage = app
+            .clone()
+            .oneshot(request(Method::GET, "/groups/1/manage", "", Some(&cookie)))
+            .await
+            .expect("manage response");
+        let manage_body = response_body(manage).await;
+        assert!(manage_body.contains("href=\"/groups/1/archive\""));
+        assert!(manage_body.contains("href=\"/groups/1/delete\""));
+        let css = include_str!("../../static/css/app.css");
+        assert!(css.contains("min-block-size: 48px"));
+        assert!(css.contains("outline: 2px solid"));
+        assert!(css.contains("@media (max-width: 40rem)"));
+        assert!(css.contains("overflow-wrap: anywhere"));
+        let confirmation = app
+            .clone()
+            .oneshot(request(Method::GET, "/groups/1/archive", "", Some(&cookie)))
+            .await
+            .expect("archive confirmation");
+        assert_eq!(confirmation.status(), StatusCode::OK);
+        let confirmation_body = response_body(confirmation).await;
+        assert!(confirmation_body.contains("reversible"));
+        assert!(confirmation_body.contains("/groups/1/manage#group-archive"));
+        assert!(confirmation_body.contains("hx-target-4xx=\"#confirm-status\""));
+        assert!(confirmation_body.contains("aria-busy=\"false\""));
+        assert!(confirmation_body.contains("method=\"post\""));
+        assert!(confirmation_body.contains("hx-post=\"/groups/1/archive\""));
+        let form = format!(
+            "csrf={}&submission_token={}",
+            csrf(&confirmation_body),
+            submission_token(&confirmation_body)
+        );
+        let archived = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                "/groups/1/archive",
+                &form,
+                Some(&cookie),
+            ))
+            .await
+            .expect("archive mutation");
+        assert_eq!(archived.status(), StatusCode::SEE_OTHER);
+        assert_eq!(archived.headers()["location"], "/groups?notice=archived");
+        assert_eq!(test_state.groups.archived.load(Ordering::Relaxed), 1);
+
+        let replay = app
+            .oneshot(request(
+                Method::POST,
+                "/groups/1/archive",
+                &form,
+                Some(&cookie),
+            ))
+            .await
+            .expect("archive replay");
+        assert_eq!(replay.status(), StatusCode::CONFLICT);
+        assert_eq!(test_state.groups.archived.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn archived_group_restore_and_empty_group_delete_are_confirmed_safely() {
+        let restored_state = state(true);
+        let restored_app = app(&restored_state);
+        let cookie = login(&restored_app).await;
+        let groups = restored_app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                "/groups?archived=true",
+                "",
+                Some(&cookie),
+            ))
+            .await
+            .expect("archived groups");
+        let body = response_body(groups).await;
+        let response = restored_app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                "/groups/1/restore",
+                &format!(
+                    "csrf={}&submission_token={}",
+                    csrf(&body),
+                    submission_token(&body)
+                ),
+                Some(&cookie),
+            ))
+            .await
+            .expect("restore mutation");
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(response.headers()["location"], "/groups?notice=restored");
+
+        let delete_state = state(false);
+        let delete_app = app(&delete_state);
+        let delete_cookie = login(&delete_app).await;
+        let confirmation = delete_app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                "/groups/1/delete",
+                "",
+                Some(&delete_cookie),
+            ))
+            .await
+            .expect("delete confirmation");
+        let body = response_body(confirmation).await;
+        assert!(body.contains("Ada"));
+        assert!(body.contains("cannot be undone"));
+        assert!(body.contains("/groups/1/manage#group-delete"));
+        let response = delete_app
+            .oneshot(request(
+                Method::POST,
+                "/groups/1/delete",
+                &format!(
+                    "csrf={}&submission_token={}",
+                    csrf(&body),
+                    submission_token(&body)
+                ),
+                Some(&delete_cookie),
+            ))
+            .await
+            .expect("delete mutation");
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(response.headers()["location"], "/groups?notice=deleted");
+        assert_eq!(delete_state.groups.deleted.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]

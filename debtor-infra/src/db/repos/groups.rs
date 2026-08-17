@@ -1,12 +1,10 @@
 use async_trait::async_trait;
-use debtor_application::{ApplicationError, GroupReader, GroupRepository};
+use debtor_application::{ApplicationError, GroupDeleteInput, GroupReader, GroupRepository};
 use debtor_domain::currency::Currency;
 use debtor_domain::model::{EntityId, Group, Name};
 
 use super::decoding::{DbGroup, group};
-use super::{
-    SqliteLedgerStore, changed, group_write_failure, group_write_failure_in_transaction, storage,
-};
+use super::{SqliteLedgerStore, group_write_failure_in_transaction, storage};
 
 #[async_trait]
 impl GroupReader for SqliteLedgerStore {
@@ -92,31 +90,97 @@ impl GroupRepository for SqliteLedgerStore {
         Ok(updated)
     }
 
-    async fn set_group_archived(
-        &self,
-        id: EntityId,
-        archived: bool,
-    ) -> Result<(), ApplicationError> {
+    async fn archive_group(&self, id: EntityId) -> Result<(), ApplicationError> {
         let _write_guard = self.write_guard().await?;
-        changed(
-            sqlx::query!(
-                "UPDATE groups SET is_archived = ?, updated_at = datetime('now') WHERE id = ?",
-                i64::from(archived),
-                id
-            )
-            .execute(&self.pool)
-            .await
-            .map_err(storage)?,
+        let mut transaction = self.pool.begin().await.map_err(storage)?;
+        let result = sqlx::query!(
+            "UPDATE groups SET is_archived = 1, updated_at = datetime('now') WHERE id = ? AND is_archived = 0",
+            id
         )
+        .execute(&mut *transaction)
+        .await
+        .map_err(storage)?;
+        if result.rows_affected() == 0 {
+            return Err(group_write_failure_in_transaction(
+                &mut transaction,
+                id,
+                ApplicationError::Conflict,
+            )
+            .await);
+        }
+        transaction.commit().await.map_err(storage)
     }
 
-    async fn delete_empty_group(&self, id: EntityId) -> Result<(), ApplicationError> {
+    async fn restore_group(&self, id: EntityId) -> Result<(), ApplicationError> {
         let _write_guard = self.write_guard().await?;
-        let result = sqlx::query!("DELETE FROM groups WHERE id = ? AND is_archived = 0 AND NOT EXISTS (SELECT 1 FROM spendings WHERE group_id = ?)", id, id)
-            .execute(&self.pool).await.map_err(storage)?;
+        let mut transaction = self.pool.begin().await.map_err(storage)?;
+        let result = sqlx::query!(
+            "UPDATE groups SET is_archived = 0, updated_at = datetime('now') WHERE id = ? AND is_archived = 1",
+            id
+        )
+        .execute(&mut *transaction)
+        .await
+        .map_err(storage)?;
         if result.rows_affected() == 0 {
-            return Err(group_write_failure(&self.pool, id, ApplicationError::Conflict).await);
+            return Err(group_write_failure_in_transaction(
+                &mut transaction,
+                id,
+                ApplicationError::Conflict,
+            )
+            .await);
         }
-        Ok(())
+        transaction.commit().await.map_err(storage)
+    }
+
+    async fn delete_empty_group(&self, input: GroupDeleteInput) -> Result<(), ApplicationError> {
+        let _write_guard = self.write_guard().await?;
+        let mut transaction = self.pool.begin().await.map_err(storage)?;
+        let group = sqlx::query_as!(
+            DbGroup,
+            "SELECT id, name, currency, is_archived FROM groups WHERE id = ? AND is_archived = 0 AND NOT EXISTS (SELECT 1 FROM spendings WHERE group_id = ?)",
+            input.group_id,
+            input.group_id
+        )
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(storage)?;
+        if group.is_none() {
+            return Err(group_write_failure_in_transaction(
+                &mut transaction,
+                input.group_id,
+                ApplicationError::Conflict,
+            )
+            .await);
+        }
+        let mut participant_ids = sqlx::query_scalar!(
+            "SELECT id FROM participants WHERE group_id = ? ORDER BY id",
+            input.group_id
+        )
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(storage)?;
+        participant_ids.sort_unstable();
+        let mut expected_ids = input.participant_ids;
+        expected_ids.sort_unstable();
+        if participant_ids != expected_ids {
+            return Err(ApplicationError::Conflict);
+        }
+        let result = sqlx::query!(
+            "DELETE FROM groups WHERE id = ? AND is_archived = 0 AND NOT EXISTS (SELECT 1 FROM spendings WHERE group_id = ?)",
+            input.group_id,
+            input.group_id
+        )
+        .execute(&mut *transaction)
+        .await
+        .map_err(storage)?;
+        if result.rows_affected() == 0 {
+            return Err(group_write_failure_in_transaction(
+                &mut transaction,
+                input.group_id,
+                ApplicationError::Conflict,
+            )
+            .await);
+        }
+        transaction.commit().await.map_err(storage)
     }
 }

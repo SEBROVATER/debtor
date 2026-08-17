@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE groups SET is_archived = 0, updated_at = datetime('now') WHERE id = ? AND is_archived = 1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "62ce033d2dafd7e98e242ced1cafdb538b1c05c6784b6df98b5c8a5937d6c0dc"
+}

@@ -6,6 +6,10 @@ use uuid::Uuid;
 
 pub(crate) const AUTHENTICATED: &str = "authenticated";
 const CSRF: &str = "csrf";
+const GROUP_DELETE_ID: &str = "group_delete_id";
+const GROUP_DELETE_PARTICIPANTS: &str = "group_delete_participants";
+const GROUP_DELETE_TOKEN: &str = "group_delete_token";
+const GROUP_RESTORE_FOCUS: &str = "group_restore_focus";
 
 /// Returns the fixed expiry policy for anonymous sessions.
 pub fn anonymous_expiry() -> Expiry {
@@ -54,6 +58,90 @@ pub(crate) async fn matches_csrf(session: &Session, supplied: &str) -> Result<bo
         .await
         .map_err(|_| SessionError)?
         .is_some_and(|value| value == supplied))
+}
+
+/// Binds the disclosed Group deletion snapshot to the authenticated session.
+pub(crate) async fn set_group_delete_confirmation(
+    session: &Session,
+    group_id: i64,
+    participant_ids: Vec<i64>,
+    submission_token: &str,
+) -> Result<(), SessionError> {
+    session
+        .insert(GROUP_DELETE_ID, group_id)
+        .await
+        .map_err(|_| SessionError)?;
+    session
+        .insert(GROUP_DELETE_PARTICIPANTS, participant_ids)
+        .await
+        .map_err(|_| SessionError)?;
+    session
+        .insert(GROUP_DELETE_TOKEN, submission_token.to_owned())
+        .await
+        .map_err(|_| SessionError)
+}
+
+/// Reads the session-bound Group deletion snapshot.
+pub(crate) async fn group_delete_confirmation(
+    session: &Session,
+) -> Result<Option<(i64, Vec<i64>, String)>, SessionError> {
+    let group_id = session
+        .get::<i64>(GROUP_DELETE_ID)
+        .await
+        .map_err(|_| SessionError)?;
+    let participant_ids = session
+        .get::<Vec<i64>>(GROUP_DELETE_PARTICIPANTS)
+        .await
+        .map_err(|_| SessionError)?;
+    let submission_token = session
+        .get::<String>(GROUP_DELETE_TOKEN)
+        .await
+        .map_err(|_| SessionError)?;
+    Ok(group_id
+        .zip(participant_ids)
+        .zip(submission_token)
+        .map(|((id, participant_ids), token)| (id, participant_ids, token)))
+}
+
+/// Removes the server-owned Group deletion confirmation state.
+pub(crate) async fn clear_group_delete_confirmation(session: &Session) -> Result<(), SessionError> {
+    session
+        .remove::<i64>(GROUP_DELETE_ID)
+        .await
+        .map_err(|_| SessionError)?;
+    session
+        .remove::<Vec<i64>>(GROUP_DELETE_PARTICIPANTS)
+        .await
+        .map_err(|_| SessionError)?;
+    session
+        .remove::<String>(GROUP_DELETE_TOKEN)
+        .await
+        .map_err(|_| SessionError)?;
+    Ok(())
+}
+
+/// Binds the restored Group row focus to the authenticated session.
+pub(crate) async fn set_restore_focus(
+    session: &Session,
+    group_id: i64,
+) -> Result<(), SessionError> {
+    session
+        .insert(GROUP_RESTORE_FOCUS, group_id)
+        .await
+        .map_err(|_| SessionError)
+}
+
+/// Consumes the server-owned restored Group focus target.
+pub(crate) async fn take_restore_focus(session: &Session) -> Result<Option<i64>, SessionError> {
+    let focus = session
+        .get::<i64>(GROUP_RESTORE_FOCUS)
+        .await
+        .map_err(|_| SessionError)?;
+    session
+        .remove::<i64>(GROUP_RESTORE_FOCUS)
+        .await
+        .map_err(|_| SessionError)?;
+    Ok(focus)
 }
 
 /// Rotates and durably establishes an authenticated session.

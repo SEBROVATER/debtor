@@ -4,11 +4,11 @@ use axum::{error_handling::HandleErrorLayer, middleware};
 use axum::{extract::Request, response::Response};
 use debtor_application::{
     AuthenticationService, AuthenticationUseCases, Clock, DebtService, DebtUseCases,
-    GroupCreateInput, GroupInput, GroupMutationExecutor, GroupReader, GroupRepository,
-    GroupService, GroupUseCases, LedgerSnapshotReader, ParticipantCreateInput, ParticipantReader,
-    ParticipantRepository, ParticipantService, ParticipantUpdateInput, ParticipantUseCases,
-    ReadinessService, ReadinessUseCases, SpendingEligibilityReader, SpendingReader,
-    SpendingRepository, SpendingService, SpendingUseCases, UtcClock,
+    GroupCreateInput, GroupDeleteInput, GroupInput, GroupMutationExecutor, GroupReader,
+    GroupRepository, GroupService, GroupUseCases, LedgerSnapshotReader, ParticipantCreateInput,
+    ParticipantReader, ParticipantRepository, ParticipantService, ParticipantUpdateInput,
+    ParticipantUseCases, ReadinessService, ReadinessUseCases, SpendingEligibilityReader,
+    SpendingReader, SpendingRepository, SpendingService, SpendingUseCases, UtcClock,
 };
 use debtor_infra::auth::{ArgonPasswordGate, MemoryLoginAttemptLimiter};
 use debtor_infra::db::repos::SqliteLedgerRuntime;
@@ -179,6 +179,45 @@ impl GroupMutationExecutor for RootGroupMutationExecutor {
             }
         })
     }
+
+    fn archive_group(
+        &self,
+        id: i64,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<(), debtor_application::ApplicationError>>
+                + Send
+                + '_,
+        >,
+    > {
+        self.dispatch_unit(move |groups| async move { groups.archive_group(id).await })
+    }
+
+    fn restore_group(
+        &self,
+        id: i64,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<(), debtor_application::ApplicationError>>
+                + Send
+                + '_,
+        >,
+    > {
+        self.dispatch_unit(move |groups| async move { groups.restore_group(id).await })
+    }
+
+    fn delete_empty_group(
+        &self,
+        input: GroupDeleteInput,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<(), debtor_application::ApplicationError>>
+                + Send
+                + '_,
+        >,
+    > {
+        self.dispatch_unit(move |groups| async move { groups.delete_empty(input).await })
+    }
     fn create_group_participant(
         &self,
         input: ParticipantCreateInput,
@@ -256,6 +295,55 @@ impl GroupMutationExecutor for RootGroupMutationExecutor {
                     Ok(participant) => {
                         guard.committed();
                         Ok(participant)
+                    }
+                    Err(error) => {
+                        guard.rolled_back();
+                        Err(error)
+                    }
+                }
+            });
+            match task.await {
+                Ok(result) => result,
+                Err(_) => Err(debtor_application::ApplicationError::Storage(
+                    debtor_application::StorageReason::Unexpected,
+                )),
+            }
+        })
+    }
+}
+
+impl RootGroupMutationExecutor {
+    fn dispatch_unit<F, Fut>(
+        &self,
+        operation: F,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<(), debtor_application::ApplicationError>>
+                + Send
+                + '_,
+        >,
+    >
+    where
+        F: FnOnce(Arc<dyn GroupUseCases>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<(), debtor_application::ApplicationError>>
+            + Send
+            + 'static,
+    {
+        let groups = self.groups.clone();
+        let mutations_owner = self.mutations.clone();
+        let runtime_owner = self.runtime.clone();
+        Box::pin(async move {
+            let Some(lease) = mutations_owner.try_register() else {
+                return Err(debtor_application::ApplicationError::Storage(
+                    debtor_application::StorageReason::Contention,
+                ));
+            };
+            let task = tokio::spawn(async move {
+                let mut guard = GroupMutationGuard::new(lease, mutations_owner, runtime_owner);
+                match operation(groups).await {
+                    Ok(()) => {
+                        guard.committed();
+                        Ok(())
                     }
                     Err(error) => {
                         guard.rolled_back();

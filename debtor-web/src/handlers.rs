@@ -19,8 +19,8 @@ pub(crate) use crate::forms::ExpenseForm;
 pub(crate) use auth::{login, login_form, logout, root};
 pub(crate) use debts::debts;
 pub(crate) use groups::{
-    archive_group, create_group, delete_group, delete_group_form, group_detail, group_edit_form,
-    group_manage, group_transactions, groups, restore_group, update_group,
+    archive_group, archive_group_form, create_group, delete_group, delete_group_form, group_detail,
+    group_edit_form, group_manage, group_transactions, groups, restore_group, update_group,
 };
 pub(crate) use health::{health, readiness};
 pub(crate) use memberships::{
@@ -34,6 +34,7 @@ pub(crate) use spendings::{
 #[derive(Deserialize)]
 pub(crate) struct GroupsQuery {
     pub(super) archived: Option<bool>,
+    pub(super) notice: Option<String>,
 }
 
 #[derive(Deserialize)]

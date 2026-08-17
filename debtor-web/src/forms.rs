@@ -33,6 +33,11 @@ impl CsrfValidatedForm {
         self.form.clone()
     }
 
+    /// Returns the already validated submission token for confirmation binding.
+    pub(crate) fn submission_token(&self) -> Option<&str> {
+        self.submission_token.as_deref()
+    }
+
     pub(crate) async fn reserve_and_dispatch(
         &self,
         store: &crate::submission_tokens::SubmissionTokenStore,
@@ -66,6 +71,13 @@ impl CsrfValidatedForm {
             .as_ref()
             .map_or(Ok(()), MutationPreflight::dispatch)
     }
+}
+
+/// Validates a lifecycle form containing only the shared security fields.
+pub(crate) fn parse_lifecycle_form(form: &OrderedForm) -> Result<(), FormError> {
+    form.required_fields(&["csrf", "submission_token"])
+        .map(|_| ())
+        .map_err(malformed_form)
 }
 
 impl FromRequest<AppState> for CsrfValidatedForm {

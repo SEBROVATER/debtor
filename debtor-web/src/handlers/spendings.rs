@@ -156,6 +156,8 @@ pub(crate) async fn delete_spending_form(
             Err(response) => return response,
         },
         shell,
+        details: Vec::new(),
+        destructive: true,
     })
 }
 

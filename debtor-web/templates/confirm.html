@@ -19,10 +19,15 @@
       </form>
     </header>
     <main>
-      <h1>{{ heading }}</h1>
+      <h1 id="confirm-heading" tabindex="-1" autofocus>{{ heading }}</h1>
       <p>{{ message }}</p>
-      <form method="post" action="{{ action }}" class="mutation-form" hx-post="{{ action }}" hx-disabled-elt="button" hx-indicator="#confirm-status" aria-busy="false">
-        <input type="hidden" name="csrf" value="{{ csrf }}" /><input type="hidden" name="submission_token" value="{{ shell.submission_token }}" /><button class="danger-button">
+      {% if details.len() > 0 %}
+      <ul aria-label="Participants included in deletion">
+        {% for detail in details %}<li>{{ detail }}</li>{% endfor %}
+      </ul>
+      {% endif %}
+      <form method="post" action="{{ action }}" class="mutation-form" hx-ext="response-targets" hx-post="{{ action }}" hx-target="#confirm-status" hx-target-4xx="#confirm-status" hx-target-5xx="#confirm-status" hx-disabled-elt="button" hx-indicator="#confirm-status" aria-busy="false">
+        <input type="hidden" name="csrf" value="{{ csrf }}" /><input type="hidden" name="submission_token" value="{{ shell.submission_token }}" /><button class="{% if destructive %}danger-button{% endif %}" type="submit">
           Confirm
         </button>
         <a href="{{ cancel }}">Cancel</a><p id="confirm-status" class="mutation-status" role="status" aria-live="polite" aria-atomic="true"> </p>

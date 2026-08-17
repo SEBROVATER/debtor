@@ -53,6 +53,10 @@ pub struct GroupsTemplate {
     pub create_name: String,
     /// Inline validation error.
     pub error: Option<String>,
+    /// Lifecycle completion announcement.
+    pub notice: Option<String>,
+    /// Group row to focus after restore.
+    pub focus_group: Option<i64>,
 }
 
 /// Renderable group row.
@@ -65,6 +69,8 @@ pub struct GroupRow {
     pub currency: String,
     /// Number of active, non-archived participants in the Group.
     pub active_participants: usize,
+    /// Whether this row receives the post-restore focus.
+    pub focused: bool,
 }
 
 /// Debt view page.
@@ -207,6 +213,8 @@ pub struct GroupTemplate {
     pub show_newest_spendings: bool,
     /// Whether mutations are blocked.
     pub archived: bool,
+    /// Whether the loaded history proves this Group is empty.
+    pub can_delete: bool,
     /// Inline error.
     pub error: Option<String>,
     /// Participant field that failed validation.
@@ -385,4 +393,8 @@ pub struct ConfirmTemplate {
     pub csrf: String,
     /// Shared authenticated shell protection values.
     pub shell: AuthenticatedShell,
+    /// Optional disclosed Participant names for Group deletion.
+    pub details: Vec<String>,
+    /// Whether the confirmation is irreversible.
+    pub destructive: bool,
 }

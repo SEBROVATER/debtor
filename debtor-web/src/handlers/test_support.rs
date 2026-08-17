@@ -6,10 +6,10 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use debtor_application::{
     ApplicationError, AuthenticationService, AuthenticationUseCases, Clock, DebtResult,
-    DebtUseCases, GroupCreateInput, GroupInput, GroupMutationExecutor, GroupUseCases,
-    LoginAdmission, LoginAttemptLimiter, ParticipantCreateInput, ParticipantUpdateInput,
-    ParticipantUseCases, PasswordVerifier, RateMode, ReadinessUseCases, SpendingInput,
-    SpendingPage, SpendingUseCases, UtcClock,
+    DebtUseCases, GroupCreateInput, GroupDeleteInput, GroupInput, GroupMutationExecutor,
+    GroupUseCases, LoginAdmission, LoginAttemptLimiter, ParticipantCreateInput,
+    ParticipantUpdateInput, ParticipantUseCases, PasswordVerifier, RateMode, ReadinessUseCases,
+    SpendingInput, SpendingPage, SpendingUseCases, UtcClock,
 };
 use debtor_domain::{
     currency::Currency,
@@ -247,12 +247,17 @@ impl GroupUseCases for FakeGroups {
         Ok(self.group.clone())
     }
 
-    async fn set_archived(&self, _: i64, _: bool) -> Result<(), ApplicationError> {
+    async fn archive_group(&self, _: i64) -> Result<(), ApplicationError> {
         self.archived.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
-    async fn delete_empty(&self, _: i64) -> Result<(), ApplicationError> {
+    async fn restore_group(&self, _: i64) -> Result<(), ApplicationError> {
+        self.archived.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    async fn delete_empty(&self, _: GroupDeleteInput) -> Result<(), ApplicationError> {
         self.deleted.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
@@ -276,6 +281,33 @@ impl GroupMutationExecutor for FakeGroups {
         Box<dyn std::future::Future<Output = Result<Group, ApplicationError>> + Send + '_>,
     > {
         Box::pin(async move { GroupUseCases::update_group(self, id, input).await })
+    }
+
+    fn archive_group(
+        &self,
+        id: i64,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), ApplicationError>> + Send + '_>,
+    > {
+        Box::pin(async move { GroupUseCases::archive_group(self, id).await })
+    }
+
+    fn restore_group(
+        &self,
+        id: i64,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), ApplicationError>> + Send + '_>,
+    > {
+        Box::pin(async move { GroupUseCases::restore_group(self, id).await })
+    }
+
+    fn delete_empty_group(
+        &self,
+        input: GroupDeleteInput,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), ApplicationError>> + Send + '_>,
+    > {
+        Box::pin(async move { GroupUseCases::delete_empty(self, input).await })
     }
 
     fn create_group_participant(
