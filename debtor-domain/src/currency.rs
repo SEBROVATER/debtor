@@ -69,6 +69,20 @@ impl Currency {
         }
     }
 
+    /// Returns the conventional display symbol for this currency.
+    pub const fn symbol(self) -> &'static str {
+        match self {
+            Self::Usd => "$",
+            Self::Eur => "€",
+            Self::Rub => "₽",
+            Self::Kgs | Self::Kzt | Self::Uzs | Self::Tjs => "лв",
+            Self::Try => "₺",
+            Self::Cny | Self::Jpy => "¥",
+            Self::Krw => "₩",
+            Self::Omr => "ر.ع.",
+        }
+    }
+
     /// Returns the number of minor-unit decimal places supported by this currency.
     pub const fn minor_unit_scale(self) -> u32 {
         match self {

@@ -472,27 +472,63 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn empty_history_cursor_links_to_newest_page() {
+    async fn summary_links_to_canonical_transactions_history() {
         let test_state = state(false);
         let app = app(&test_state);
         let session_cookie = login(&app).await;
 
         let response = app
             .clone()
-            .oneshot(request(
-                Method::GET,
-                "/groups/1?cursor=older:2026-01-01:1",
-                "",
-                Some(&session_cookie),
-            ))
+            .oneshot(request(Method::GET, "/groups/1", "", Some(&session_cookie)))
             .await
             .expect("history response");
         assert_eq!(response.status(), StatusCode::OK);
         assert!(
             response_body(response)
                 .await
-                .contains("href=\"/groups/1\">Newest</a>")
+                .contains("href=\"/groups/1/transactions\">Open Transactions</a>")
         );
+    }
+
+    #[tokio::test]
+    async fn transactions_route_renders_native_history_region() {
+        let test_state = state(false);
+        let app = app(&test_state);
+        let session_cookie = login(&app).await;
+
+        let response = app
+            .oneshot(request(
+                Method::GET,
+                "/groups/1/transactions",
+                "",
+                Some(&session_cookie),
+            ))
+            .await
+            .expect("transactions response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        assert!(body.contains("id=\"transactions-region\""));
+        assert!(body.contains("id=\"transactions-status\""));
+        assert!(body.contains("No Spendings recorded."));
+        assert!(!body.contains("<table>"));
+    }
+
+    #[tokio::test]
+    async fn transactions_route_rejects_unknown_query_fields() {
+        let test_state = state(false);
+        let app = app(&test_state);
+        let session_cookie = login(&app).await;
+
+        let response = app
+            .oneshot(request(
+                Method::GET,
+                "/groups/1/transactions?unexpected=value",
+                "",
+                Some(&session_cookie),
+            ))
+            .await
+            .expect("transactions response");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

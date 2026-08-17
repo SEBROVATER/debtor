@@ -436,6 +436,32 @@ impl SpendingUseCases for FakeSpendings {
         })
     }
 
+    async fn spending_detail(
+        &self,
+        _: i64,
+        _: i64,
+    ) -> Result<debtor_application::SpendingDetail, ApplicationError> {
+        Err(ApplicationError::NotFound)
+    }
+
+    async fn spending_history_page(
+        &self,
+        _: i64,
+        _: Option<debtor_application::SpendingCursor>,
+    ) -> Result<debtor_application::SpendingHistoryPage, ApplicationError> {
+        Ok(debtor_application::SpendingHistoryPage {
+            group: Group {
+                id: 1,
+                name: Name::new("Test Group").expect("group name"),
+                currency: Currency::Usd,
+                is_archived: false,
+            },
+            items: Vec::new(),
+            older: None,
+            newer: None,
+        })
+    }
+
     async fn create_input(&self, _: SpendingInput) -> Result<Spending, ApplicationError> {
         Err(validation_error())
     }

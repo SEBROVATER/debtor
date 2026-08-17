@@ -237,6 +237,55 @@ async fn spending_history_is_bounded_and_keyset_stable(pool: SqlitePool) {
 }
 
 #[sqlx::test(migrations = "../migrations")]
+async fn spending_history_projection_resolves_current_identity_and_complete_shares(
+    pool: SqlitePool,
+) {
+    let (store, group_id, participant_id) = active_group_and_participant(&pool).await;
+    store
+        .add_member(group_id, participant_id)
+        .await
+        .expect("add member");
+    let target = store
+        .create_spending(spending(group_id, participant_id))
+        .await
+        .expect("create spending");
+    store
+        .update_group_participant(
+            group_id,
+            participant_id,
+            Name::new("Renamed Ari").expect("name"),
+            Color::new("#112233").expect("color"),
+        )
+        .await
+        .expect("rename participant");
+    sqlx::query("UPDATE participants SET is_archived = 1 WHERE id = ?")
+        .bind(participant_id)
+        .execute(&pool)
+        .await
+        .expect("archive participant");
+
+    let page = store
+        .spending_history_page(group_id, None)
+        .await
+        .expect("history projection");
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].spending.id, target.id);
+    assert_eq!(page.items[0].payer.name.as_str(), "Renamed Ari");
+    assert!(page.items[0].payer.is_archived);
+    assert_eq!(page.items[0].shares.len(), 1);
+    assert_eq!(page.items[0].shares[0].1.amount, Decimal::new(1_000, 2));
+
+    let detail = store
+        .spending_detail(group_id, target.id)
+        .await
+        .expect("complete detail");
+    assert_eq!(detail.group.id, group_id);
+    assert_eq!(detail.payers[0].0.name.as_str(), "Renamed Ari");
+    assert!(detail.payers[0].0.is_archived);
+    assert_eq!(detail.shares[0].1.amount, Decimal::new(1_000, 2));
+}
+
+#[sqlx::test(migrations = "../migrations")]
 async fn spending_detail_does_not_materialize_unrelated_history(pool: SqlitePool) {
     let (store, group_id, participant_id) = active_group_and_participant(&pool).await;
     store

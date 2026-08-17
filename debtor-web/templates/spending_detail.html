@@ -10,7 +10,10 @@
   </head>
   <body>
     <header id="authenticated-header" class="site-header" aria-busy="false">
-      <a href="/groups/{{ group_id }}">Back to group</a>
+      <a href="/groups">debtor</a>
+      <nav aria-label="Group navigation">
+        <a href="/groups">Groups</a><a href="/groups/{{ group_id }}">Summary</a><a href="/groups/{{ group_id }}/transactions" aria-current="page">Transactions</a><a href="/groups/{{ group_id }}/debts">Debts</a><a href="/groups/{{ group_id }}/manage">Manage</a>
+      </nav>
       <form method="post" action="/logout" class="sign-out-form" hx-ext="response-targets" hx-target="#sign-out-status" hx-target-4xx="#sign-out-status" hx-target-5xx="#sign-out-status">
         <input type="hidden" name="csrf" value="{{ shell.csrf }}" />
         <input type="hidden" name="submission_token" value="{{ shell.submission_token }}" />
@@ -19,21 +22,17 @@
       </form>
     </header>
     <main>
-      <h1>{{ description }}</h1>
-      <p>{{ total }} {{ currency }} on {{ spent_date }} ({{ spending_type }})</p>
-      <section class="card">
-        <h2>Who paid</h2>
-        <ul>
-          {% for item in payers %}
-          <li>{{ item.participant }}: {{ item.amount }} {{ currency }}</li>
-          {% endfor %}
-        </ul>
-        <h2>Who owed</h2>
-        <ul>
-          {% for item in shares %}
-          <li>{{ item.participant }}: {{ item.amount }} {{ currency }}</li>
-          {% endfor %}
-        </ul>
+      <h1 id="spending-heading" tabindex="-1">{{ group_name }}: {{ description }}{% if archived %} <span>Archived</span>{% endif %}</h1>
+      <section class="transaction-detail standalone-detail">
+        <dl class="transaction-facts">
+          <div><dt>Description</dt><dd>{{ description }}</dd></div>
+          <div><dt>Total</dt><dd>{{ currency_symbol }}{{ total }} {{ currency }}</dd></div>
+          <div><dt>Source Currency</dt><dd>{{ currency }}</dd></div>
+          <div><dt>Date</dt><dd>{{ spent_date }}</dd></div>
+          <div><dt>Category</dt><dd>{{ spending_type }}</dd></div>
+          <div><dt>Payer</dt><dd>{% for item in payers %}<span class="participant-marker" style="background: {{ item.participant.color }}" aria-hidden="true"></span>{{ item.participant.name }}{% if item.participant.archived %} <span>Archived</span>{% endif %}: {{ currency_symbol }}{{ item.amount }} {{ currency }}{% endfor %}</dd></div>
+          <div><dt>Shares</dt><dd><ul class="transaction-shares">{% for item in shares %}<li><span class="participant-marker" style="background: {{ item.participant.color }}" aria-hidden="true"></span>{{ item.participant.name }}{% if item.participant.archived %} <span>Archived</span>{% endif %}: {{ currency_symbol }}{{ item.amount }} {{ currency }}</li>{% endfor %}</ul></dd></div>
+        </dl>
       </section>
       {% if !archived %}
       <p>

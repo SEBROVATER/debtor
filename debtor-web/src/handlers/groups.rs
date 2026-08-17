@@ -10,7 +10,10 @@ use super::{
     GroupsQuery, ManageQuery,
     auth::{authenticated_shell, require_auth},
     response::{error_response, map_error, render},
-    spending_views::{build_group_manage_template, build_group_template, map_group_template_error},
+    spending_views::{
+        build_group_manage_template, build_group_template, build_transactions_template,
+        map_group_template_error,
+    },
 };
 use crate::{
     forms::{
@@ -148,11 +151,8 @@ pub(crate) async fn group_transactions(
         Ok(cursor) => cursor,
         Err(message) => return error_response(StatusCode::BAD_REQUEST, message),
     };
-    match build_group_template(&state, &session, id, cursor, None, None, None, None).await {
-        Ok(mut template) => {
-            "transactions".clone_into(&mut template.section);
-            render(&template)
-        }
+    match build_transactions_template(&state, &session, id, cursor).await {
+        Ok(template) => render(&template),
         Err(error) => map_group_template_error(error),
     }
 }

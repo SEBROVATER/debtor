@@ -6,7 +6,7 @@ use debtor_application::{SpendingCursor, parse_unsigned_decimal};
 use debtor_domain::{
     currency::Currency,
     expenses::{ShareMode, infer_share_mode, splitting::equal_split},
-    model::{Allocation, Spending, SpendingType, ValidationError},
+    model::{Spending, SpendingType, ValidationError},
 };
 use tower_sessions::Session;
 
@@ -15,14 +15,92 @@ use crate::{
     participant_color::suggested_participant_color,
     state::AppState,
     templates::{
-        AllocationRow, ExpenseFormView, GroupTemplate, MemberRow, SelectOption,
-        SpendingFormTemplate, SpendingRow,
+        ExpenseFormView, GroupTemplate, MemberRow, SelectOption, SpendingFormTemplate, SpendingRow,
+        TransactionAllocationRow, TransactionParticipant, TransactionRow, TransactionsTemplate,
     },
 };
 
 pub(super) struct ParticipantDraft {
     pub(super) name: String,
     pub(super) color: String,
+}
+
+pub(super) async fn build_transactions_template(
+    state: &AppState,
+    session: &Session,
+    id: i64,
+    cursor: Option<SpendingCursor>,
+) -> Result<TransactionsTemplate, GroupTemplateError> {
+    let page = state.spendings.spending_history_page(id, cursor).await?;
+    let group = page.group.clone();
+    let had_cursor = cursor.is_some();
+    let empty = page.items.is_empty();
+    let older = page.older.map(encode_cursor);
+    let newer = page.newer.map(encode_cursor);
+    let shell = authenticated_shell(state, session)
+        .await
+        .map_err(GroupTemplateError::Response)?;
+    let spendings = page
+        .items
+        .into_iter()
+        .map(|row| TransactionRow {
+            id: row.spending.id,
+            description: row.spending.description.as_str().to_owned(),
+            total: row.spending.total.to_string(),
+            currency_symbol: row.spending.currency.symbol().to_owned(),
+            currency: row.spending.currency.to_string(),
+            spent_date: row.spending.spent_date.to_string(),
+            spending_type: row.spending.spending_type.to_string(),
+            payer: transaction_participant(&row.payer),
+            payer_amount: row.payer_amount.to_string(),
+            shares: row
+                .shares
+                .into_iter()
+                .map(|(participant, allocation)| TransactionAllocationRow {
+                    participant: transaction_participant(&participant),
+                    amount: allocation.amount.to_string(),
+                })
+                .collect(),
+            focused: false,
+        })
+        .collect::<Vec<_>>();
+    let page_status = if empty {
+        if had_cursor {
+            "No Spendings on this page.".to_owned()
+        } else {
+            "No Spendings recorded.".to_owned()
+        }
+    } else if had_cursor {
+        "Transactions page loaded.".to_owned()
+    } else {
+        "Showing newest Spendings.".to_owned()
+    };
+    Ok(TransactionsTemplate {
+        group_name: group.name.to_string(),
+        group_id: id,
+        currency: group.currency.to_string(),
+        section: "transactions".to_owned(),
+        archived: group.is_archived,
+        shell,
+        spendings,
+        older_spendings: older,
+        newer_spendings: newer,
+        show_newest_spendings: had_cursor && empty,
+        empty,
+        page_status,
+        focus_heading: had_cursor,
+    })
+}
+
+fn transaction_participant(
+    participant: &debtor_domain::model::Participant,
+) -> TransactionParticipant {
+    TransactionParticipant {
+        id: participant.id,
+        name: participant.name.to_string(),
+        color: participant.color.as_str().to_owned(),
+        archived: participant.is_archived,
+    }
 }
 
 pub(super) enum GroupTemplateError {
@@ -534,22 +612,6 @@ pub(super) fn initialize_exact_defaults(
         );
     }
     Ok(())
-}
-
-pub(super) fn named_allocations(
-    items: &[Allocation],
-    names: &BTreeMap<i64, String>,
-) -> Vec<AllocationRow> {
-    items
-        .iter()
-        .map(|allocation| AllocationRow {
-            participant: names
-                .get(&allocation.participant_id)
-                .cloned()
-                .unwrap_or_else(|| format!("Participant {}", allocation.participant_id)),
-            amount: allocation.amount.to_string(),
-        })
-        .collect()
 }
 
 #[cfg(test)]

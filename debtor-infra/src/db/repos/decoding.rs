@@ -42,6 +42,19 @@ pub(super) struct DbSpendingSummary {
     pub(super) spending_type: String,
     pub(super) spent_date: String,
 }
+pub(super) struct DbSpendingHistory {
+    pub(super) id: i64,
+    pub(super) description: String,
+    pub(super) total_amount: String,
+    pub(super) currency: String,
+    pub(super) spending_type: String,
+    pub(super) spent_date: String,
+    pub(super) payer_id: Option<i64>,
+    pub(super) payer_amount: Option<String>,
+    pub(super) payer_name: Option<String>,
+    pub(super) payer_color: Option<String>,
+    pub(super) payer_archived: Option<i64>,
+}
 pub(super) struct DbSnapshotSpending {
     pub(super) id: i64,
     pub(super) description: String,
@@ -97,7 +110,7 @@ pub(super) fn spending_summary(
     let currency = Currency::from_str(&row.currency).map_err(|_| invalid())?;
     let total = canonical_decimal(&row.total_amount)?;
     validate_amount(total, currency, "total").map_err(|_| invalid())?;
-    SpendingType::from_str(&row.spending_type).map_err(|_| invalid())?;
+    let spending_type = SpendingType::from_str(&row.spending_type).map_err(|_| invalid())?;
     let spent_date =
         chrono::NaiveDate::parse_from_str(&row.spent_date, "%Y-%m-%d").map_err(|_| invalid())?;
     let earliest = chrono::NaiveDate::from_ymd_opt(2025, 1, 1).ok_or_else(invalid)?;
@@ -110,6 +123,7 @@ pub(super) fn spending_summary(
         description: Description::new(row.description).map_err(|_| invalid())?,
         total,
         currency,
+        spending_type,
         spent_date,
     })
 }

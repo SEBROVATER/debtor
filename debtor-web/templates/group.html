@@ -168,51 +168,11 @@
        {% if members.len() > 0 && !archived %}
        <p class="helper">Use Add Spending to open the focused Spending form.</p>
        {% endif %}
-      <section class="card">
-        <h2>Expense history</h2>
-        {% if spendings.len() == 0 %}
-        <p class="empty">No expenses recorded.</p>
-        {% else %}
-        <table>
-          <thead>
-            <tr>
-              <th>Date</th>
-              <th>Description</th>
-              <th>Total</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for spending in spendings %}
-            <tr>
-              <td data-label="Date">{{ spending.spent_date }}</td>
-              <td data-label="Description">
-                <a href="/groups/{{ group_id }}/spendings/{{ spending.id }}"
-                  >{{ spending.description }}</a
-                >
-              </td>
-              <td data-label="Total">{{ spending.total }} {{ spending.currency }}</td>
-              <td data-label="Actions">
-                {% if !archived %}<a href="/groups/{{ group_id }}/spendings/{{ spending.id }}/edit"
-                  >Edit</a
-                >
-                <a class="danger" href="/groups/{{ group_id }}/spendings/{{ spending.id }}/delete"
-                  >Delete</a
-                >{% else %}Read only{% endif %}
-              </td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-        {% endif %}
-        {% if newer_spendings.is_some() || older_spendings.is_some() || show_newest_spendings %}
-        <nav class="pagination" aria-label="Expense history pages">
-          {% if show_newest_spendings %}<a href="/groups/{{ group_id }}">Newest</a>{% endif %}
-          {% if newer_spendings.is_some() %}<a href="/groups/{{ group_id }}?cursor={{ newer_spendings.as_ref().unwrap() }}">Newer</a>{% endif %}
-          {% if older_spendings.is_some() %}<a href="/groups/{{ group_id }}?cursor={{ older_spendings.as_ref().unwrap() }}">Older</a>{% endif %}
-        </nav>
-        {% endif %}
-      </section>
+       <section class="card" aria-labelledby="transactions-link-heading">
+         <h2 id="transactions-link-heading">Expense history</h2>
+         <p>Browse and inspect the complete Spending history in Transactions.</p>
+         <p><a class="button" href="/groups/{{ group_id }}/transactions">Open Transactions</a></p>
+       </section>
       {% endif %}
       {% endif %}
     </main>

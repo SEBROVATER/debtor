@@ -6,7 +6,7 @@ use chrono::NaiveDate;
 use debtor_domain::currency::Currency;
 use debtor_domain::expenses::splitting::proportional_split;
 use debtor_domain::model::{
-    Allocation, Description, EntityId, Spending, SpendingType, ValidationError,
+    Allocation, Description, EntityId, Group, Participant, Spending, SpendingType, ValidationError,
 };
 use rust_decimal::Decimal;
 
@@ -45,6 +45,8 @@ pub struct SpendingSummary {
     pub total: Decimal,
     /// Source currency.
     pub currency: Currency,
+    /// Supported Spending category.
+    pub spending_type: SpendingType,
     /// Spending date.
     pub spent_date: NaiveDate,
 }
@@ -54,6 +56,45 @@ pub struct SpendingSummary {
 pub struct SpendingPage {
     /// Summary rows in display order.
     pub items: Vec<SpendingSummary>,
+    /// Cursor for the next older page, if known.
+    pub older: Option<SpendingCursor>,
+    /// Cursor for the next newer page, if known.
+    pub newer: Option<SpendingCursor>,
+}
+
+/// A history row with the current Payer identity projection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpendingHistoryRow {
+    /// Validated Spending summary.
+    pub spending: SpendingSummary,
+    /// Current Payer identity, including archive state.
+    pub payer: Participant,
+    /// Exact historical Payer amount.
+    pub payer_amount: Decimal,
+    /// Current Share identities paired with historical allocations.
+    pub shares: Vec<(Participant, Allocation)>,
+}
+
+/// Complete read projection for one Spending detail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpendingDetail {
+    /// Owning Group context.
+    pub group: Group,
+    /// Complete Spending aggregate.
+    pub spending: Spending,
+    /// Current Payer identities paired with historical allocations.
+    pub payers: Vec<(Participant, Allocation)>,
+    /// Current Share identities paired with historical allocations.
+    pub shares: Vec<(Participant, Allocation)>,
+}
+
+/// One bounded history page with current identity projections.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpendingHistoryPage {
+    /// Group state captured with the page snapshot.
+    pub group: Group,
+    /// Rows in display order.
+    pub items: Vec<SpendingHistoryRow>,
     /// Cursor for the next older page, if known.
     pub older: Option<SpendingCursor>,
     /// Cursor for the next newer page, if known.
@@ -75,6 +116,18 @@ pub trait SpendingReader: Send + Sync {
         group_id: EntityId,
         cursor: Option<SpendingCursor>,
     ) -> Result<SpendingPage, ApplicationError>;
+    /// Loads one complete detail projection from one persistence snapshot.
+    async fn spending_detail(
+        &self,
+        group_id: EntityId,
+        spending_id: EntityId,
+    ) -> Result<SpendingDetail, ApplicationError>;
+    /// Loads a bounded keyset page with current Payer identity projections.
+    async fn spending_history_page(
+        &self,
+        group_id: EntityId,
+        cursor: Option<SpendingCursor>,
+    ) -> Result<SpendingHistoryPage, ApplicationError>;
 }
 
 /// Writes complete spending aggregates atomically.
@@ -154,6 +207,18 @@ pub trait SpendingUseCases: Send + Sync {
         group_id: EntityId,
         cursor: Option<SpendingCursor>,
     ) -> Result<SpendingPage, ApplicationError>;
+    /// Loads one complete detail projection from one persistence snapshot.
+    async fn spending_detail(
+        &self,
+        group_id: EntityId,
+        spending_id: EntityId,
+    ) -> Result<SpendingDetail, ApplicationError>;
+    /// Loads a bounded keyset page with current Payer identity projections.
+    async fn spending_history_page(
+        &self,
+        group_id: EntityId,
+        cursor: Option<SpendingCursor>,
+    ) -> Result<SpendingHistoryPage, ApplicationError>;
     /// Creates a spending from raw, transport-neutral input.
     async fn create_input(&self, input: SpendingInput) -> Result<Spending, ApplicationError>;
     /// Validates and previews a spending without persistence.
@@ -366,6 +431,22 @@ impl SpendingUseCases for SpendingService {
         self.reader.spending_page(group_id, cursor).await
     }
 
+    async fn spending_detail(
+        &self,
+        group_id: EntityId,
+        spending_id: EntityId,
+    ) -> Result<SpendingDetail, ApplicationError> {
+        self.reader.spending_detail(group_id, spending_id).await
+    }
+
+    async fn spending_history_page(
+        &self,
+        group_id: EntityId,
+        cursor: Option<SpendingCursor>,
+    ) -> Result<SpendingHistoryPage, ApplicationError> {
+        self.reader.spending_history_page(group_id, cursor).await
+    }
+
     async fn create_input(&self, input: SpendingInput) -> Result<Spending, ApplicationError> {
         let spending = self.preview_input(input).await?;
         self.repository.create_spending(spending).await
@@ -405,7 +486,8 @@ mod tests {
 
     use async_trait::async_trait;
     use chrono::NaiveDate;
-    use debtor_domain::model::{Allocation, EntityId, ValidationError};
+    use debtor_domain::currency::Currency;
+    use debtor_domain::model::{Allocation, EntityId, Group, Name, ValidationError};
     use rust_decimal::Decimal;
 
     use super::*;
@@ -453,6 +535,32 @@ mod tests {
             _: Option<SpendingCursor>,
         ) -> Result<SpendingPage, ApplicationError> {
             Ok(SpendingPage {
+                items: Vec::new(),
+                older: None,
+                newer: None,
+            })
+        }
+
+        async fn spending_detail(
+            &self,
+            _: EntityId,
+            _: EntityId,
+        ) -> Result<SpendingDetail, ApplicationError> {
+            Err(ApplicationError::NotFound)
+        }
+
+        async fn spending_history_page(
+            &self,
+            _: EntityId,
+            _: Option<SpendingCursor>,
+        ) -> Result<SpendingHistoryPage, ApplicationError> {
+            Ok(SpendingHistoryPage {
+                group: Group {
+                    id: GROUP_ID,
+                    name: Name::new("Test Group").unwrap(),
+                    currency: Currency::Usd,
+                    is_archived: false,
+                },
                 items: Vec::new(),
                 older: None,
                 newer: None,

@@ -373,6 +373,8 @@ pub struct SpendingRow {
 #[derive(Template)]
 #[template(path = "spending_detail.html")]
 pub struct SpendingDetailTemplate {
+    /// Group name.
+    pub group_name: String,
     /// Group ID.
     pub group_id: i64,
     /// Spending ID.
@@ -383,6 +385,8 @@ pub struct SpendingDetailTemplate {
     pub description: String,
     /// Total.
     pub total: String,
+    /// Currency symbol.
+    pub currency_symbol: String,
     /// Currency.
     pub currency: String,
     /// Category.
@@ -390,13 +394,92 @@ pub struct SpendingDetailTemplate {
     /// Date.
     pub spent_date: String,
     /// Payers.
-    pub payers: Vec<AllocationRow>,
+    pub payers: Vec<TransactionAllocationRow>,
     /// Shares.
-    pub shares: Vec<AllocationRow>,
+    pub shares: Vec<TransactionAllocationRow>,
     /// CSRF.
     pub csrf: String,
     /// Shared authenticated shell protection values.
     pub shell: AuthenticatedShell,
+}
+
+/// Transactions history page.
+#[derive(Template)]
+#[template(path = "transactions.html")]
+#[allow(clippy::struct_excessive_bools)]
+pub struct TransactionsTemplate {
+    /// Group name.
+    pub group_name: String,
+    /// Group identifier.
+    pub group_id: i64,
+    /// Group Currency.
+    pub currency: String,
+    /// Active section.
+    pub section: String,
+    /// Whether this Group is archived.
+    pub archived: bool,
+    /// Shared authenticated shell protection values.
+    pub shell: AuthenticatedShell,
+    /// Bounded transaction rows.
+    pub spendings: Vec<TransactionRow>,
+    /// Cursor link for older rows.
+    pub older_spendings: Option<String>,
+    /// Cursor link for newer rows.
+    pub newer_spendings: Option<String>,
+    /// Whether the requested page should offer a newest link.
+    pub show_newest_spendings: bool,
+    /// Whether the history is empty.
+    pub empty: bool,
+    /// Page context announcement.
+    pub page_status: String,
+    /// Whether the Transactions heading receives forward focus.
+    pub focus_heading: bool,
+}
+
+/// Renderable transaction row and expanded detail.
+pub struct TransactionRow {
+    /// Spending identifier.
+    pub id: i64,
+    /// Description.
+    pub description: String,
+    /// Exact source total.
+    pub total: String,
+    /// Currency symbol.
+    pub currency_symbol: String,
+    /// Source Currency.
+    pub currency: String,
+    /// ISO spending date.
+    pub spent_date: String,
+    /// Category.
+    pub spending_type: String,
+    /// Current Payer.
+    pub payer: TransactionParticipant,
+    /// Historical Payer amount.
+    pub payer_amount: String,
+    /// Current Share identities and exact amounts.
+    pub shares: Vec<TransactionAllocationRow>,
+    /// Whether this row should be expanded/focused.
+    pub focused: bool,
+}
+
+/// Current Participant identity shown in history.
+pub struct TransactionParticipant {
+    /// Participant identifier.
+    pub id: i64,
+    /// Current name.
+    pub name: String,
+    /// Stored marker color.
+    pub color: String,
+    /// Whether the identity is archived.
+    pub archived: bool,
+}
+
+/// Historical allocation with current Participant identity.
+pub struct TransactionAllocationRow {
+    /// Current Participant identity.
+    pub participant: TransactionParticipant,
+    /// Exact historical amount.
+    pub amount: String,
 }
 
 /// Named allocation row.

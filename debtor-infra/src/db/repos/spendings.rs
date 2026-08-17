@@ -3,16 +3,17 @@ use std::str::FromStr;
 
 use async_trait::async_trait;
 use debtor_application::{
-    ApplicationError, GroupReader, SpendingCursor, SpendingEligibilityReader, SpendingPage,
-    SpendingPageDirection, SpendingReader, SpendingRepository, StorageReason,
+    ApplicationError, GroupReader, SpendingCursor, SpendingDetail, SpendingEligibilityReader,
+    SpendingHistoryPage, SpendingHistoryRow, SpendingPage, SpendingPageDirection, SpendingReader,
+    SpendingRepository, SpendingSummary, StorageReason,
 };
 use debtor_domain::currency::Currency;
 use debtor_domain::model::{Allocation, Description, EntityId, Spending, SpendingType};
 use debtor_domain::money::format_decimal;
 
 use super::decoding::{
-    DbAllocation, DbSpending, DbSpendingSummary, allocation, canonical_decimal, invalid,
-    spending_summary,
+    DbAllocation, DbParticipant, DbSpending, DbSpendingHistory, DbSpendingSummary, allocation,
+    canonical_decimal, invalid, participant, spending_summary,
 };
 use super::{SqliteLedgerStore, group_write_failure, group_write_failure_in_transaction, storage};
 
@@ -30,6 +31,123 @@ async fn share_rows(
 ) -> Result<Vec<Allocation>, ApplicationError> {
     sqlx::query_as!(DbAllocation, "SELECT participant_id, share_amount AS amount FROM spending_shares WHERE spending_id = ? ORDER BY participant_id", spending_id)
         .fetch_all(&mut **tx).await.map_err(storage)?.into_iter().map(allocation).collect()
+}
+
+async fn participant_in_group(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    group_id: EntityId,
+    participant_id: EntityId,
+) -> Result<debtor_domain::model::Participant, ApplicationError> {
+    sqlx::query_as!(
+        DbParticipant,
+        "SELECT id, name, color, is_archived FROM participants WHERE id = ? AND group_id = ?",
+        participant_id,
+        group_id
+    )
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(storage)?
+    .ok_or_else(invalid)
+    .and_then(participant)
+}
+
+async fn named_allocations(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    group_id: EntityId,
+    allocations: Vec<Allocation>,
+) -> Result<Vec<(debtor_domain::model::Participant, Allocation)>, ApplicationError> {
+    let mut result = Vec::with_capacity(allocations.len());
+    for allocation in allocations {
+        let participant = participant_in_group(tx, group_id, allocation.participant_id).await?;
+        result.push((participant, allocation));
+    }
+    Ok(result)
+}
+
+async fn load_detail(
+    pool: &sqlx::SqlitePool,
+    group_id: EntityId,
+    id: EntityId,
+) -> Result<SpendingDetail, ApplicationError> {
+    let mut tx = pool.begin().await.map_err(storage)?;
+    let group_row = sqlx::query_as!(
+        super::decoding::DbGroup,
+        "SELECT id, name, currency, is_archived FROM groups WHERE id = ?",
+        group_id
+    )
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(storage)?
+    .ok_or(ApplicationError::NotFound)?;
+    let group = super::decoding::group(group_row)?;
+    let row = sqlx::query_as!(
+        DbSpending,
+        "SELECT description, total_amount, currency, spending_type, spent_date FROM spendings WHERE id = ? AND group_id = ?",
+        id,
+        group_id
+    )
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(storage)?
+    .ok_or(ApplicationError::NotFound)?;
+    let payers = payer_rows(&mut tx, id).await?;
+    let shares = share_rows(&mut tx, id).await?;
+    let spending = Spending {
+        id,
+        group_id,
+        description: debtor_domain::model::Description::new(row.description)
+            .map_err(|_| invalid())?,
+        total: canonical_decimal(&row.total_amount)?,
+        currency: Currency::from_str(&row.currency).map_err(|_| invalid())?,
+        spending_type: SpendingType::from_str(&row.spending_type).map_err(|_| invalid())?,
+        spent_date: chrono::NaiveDate::parse_from_str(&row.spent_date, "%Y-%m-%d")
+            .map_err(|_| invalid())?,
+        payers: payers.clone(),
+        shares: shares.clone(),
+    };
+    spending.validate().map_err(|_| invalid())?;
+    let named_payers = named_allocations(&mut tx, group_id, payers).await?;
+    let named_shares = named_allocations(&mut tx, group_id, shares).await?;
+    tx.commit().await.map_err(storage)?;
+    Ok(SpendingDetail {
+        group,
+        spending,
+        payers: named_payers,
+        shares: named_shares,
+    })
+}
+
+fn history_summary(
+    group_id: EntityId,
+    row: DbSpendingHistory,
+) -> Result<
+    (
+        SpendingSummary,
+        debtor_domain::model::Participant,
+        rust_decimal::Decimal,
+    ),
+    ApplicationError,
+> {
+    let payer_id = row.payer_id.ok_or_else(invalid)?;
+    let payer_amount = canonical_decimal(&row.payer_amount.ok_or_else(invalid)?)?;
+    let summary = spending_summary(
+        group_id,
+        DbSpendingSummary {
+            id: row.id,
+            description: row.description,
+            total_amount: row.total_amount,
+            currency: row.currency,
+            spending_type: row.spending_type,
+            spent_date: row.spent_date,
+        },
+    )?;
+    let payer = participant(DbParticipant {
+        id: payer_id,
+        name: row.payer_name.ok_or_else(invalid)?,
+        color: row.payer_color.ok_or_else(invalid)?,
+        is_archived: row.payer_archived.ok_or_else(invalid)?,
+    })?;
+    Ok((summary, payer, payer_amount))
 }
 
 async fn load_spending(
@@ -257,6 +375,95 @@ impl SpendingReader for SqliteLedgerStore {
             })
             .flatten();
         Ok(SpendingPage {
+            items,
+            older,
+            newer,
+        })
+    }
+
+    async fn spending_detail(
+        &self,
+        group_id: EntityId,
+        spending_id: EntityId,
+    ) -> Result<SpendingDetail, ApplicationError> {
+        load_detail(&self.pool, group_id, spending_id).await
+    }
+
+    async fn spending_history_page(
+        &self,
+        group_id: EntityId,
+        cursor: Option<SpendingCursor>,
+    ) -> Result<SpendingHistoryPage, ApplicationError> {
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        let group = sqlx::query_as!(
+            super::decoding::DbGroup,
+            "SELECT id, name, currency, is_archived FROM groups WHERE id = ?",
+            group_id
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(storage)?
+        .ok_or(ApplicationError::NotFound)
+        .and_then(super::decoding::group)?;
+        let (mut rows, direction) = match cursor {
+            None => (sqlx::query_as!(DbSpendingHistory, "SELECT s.id, s.description, s.total_amount, s.currency, s.spending_type, s.spent_date, p.id AS payer_id, sp.paid_amount AS payer_amount, p.name AS payer_name, p.color AS payer_color, p.is_archived AS payer_archived FROM spendings s LEFT JOIN spending_payers sp ON sp.spending_id = s.id LEFT JOIN participants p ON p.id = sp.participant_id AND p.group_id = ? WHERE s.group_id = ? ORDER BY s.spent_date DESC, s.id DESC LIMIT 26", group_id, group_id).fetch_all(&mut *tx).await.map_err(storage)?, None),
+            Some(cursor) if cursor.direction == SpendingPageDirection::Older => (sqlx::query_as!(DbSpendingHistory, "SELECT s.id, s.description, s.total_amount, s.currency, s.spending_type, s.spent_date, p.id AS payer_id, sp.paid_amount AS payer_amount, p.name AS payer_name, p.color AS payer_color, p.is_archived AS payer_archived FROM spendings s LEFT JOIN spending_payers sp ON sp.spending_id = s.id LEFT JOIN participants p ON p.id = sp.participant_id AND p.group_id = ? WHERE s.group_id = ? AND (s.spent_date < ? OR (s.spent_date = ? AND s.id < ?)) ORDER BY s.spent_date DESC, s.id DESC LIMIT 26", group_id, group_id, cursor.spent_date.to_string(), cursor.spent_date.to_string(), cursor.id).fetch_all(&mut *tx).await.map_err(storage)?, Some(SpendingPageDirection::Older)),
+            Some(cursor) => (sqlx::query_as!(DbSpendingHistory, "SELECT s.id, s.description, s.total_amount, s.currency, s.spending_type, s.spent_date, p.id AS payer_id, sp.paid_amount AS payer_amount, p.name AS payer_name, p.color AS payer_color, p.is_archived AS payer_archived FROM spendings s LEFT JOIN spending_payers sp ON sp.spending_id = s.id LEFT JOIN participants p ON p.id = sp.participant_id AND p.group_id = ? WHERE s.group_id = ? AND (s.spent_date > ? OR (s.spent_date = ? AND s.id > ?)) ORDER BY s.spent_date ASC, s.id ASC LIMIT 26", group_id, group_id, cursor.spent_date.to_string(), cursor.spent_date.to_string(), cursor.id).fetch_all(&mut *tx).await.map_err(storage)?, Some(SpendingPageDirection::Newer)),
+        };
+        let has_more = rows.len() > 25;
+        rows.truncate(25);
+        if direction == Some(SpendingPageDirection::Newer) {
+            rows.reverse();
+        }
+        let mut items = Vec::with_capacity(rows.len());
+        for row in rows {
+            let (spending_summary, payer, payer_amount) = history_summary(group_id, row)?;
+            let payers = payer_rows(&mut tx, spending_summary.id).await?;
+            let shares = share_rows(&mut tx, spending_summary.id).await?;
+            let spending = Spending {
+                id: spending_summary.id,
+                group_id,
+                description: spending_summary.description.clone(),
+                total: spending_summary.total,
+                currency: spending_summary.currency,
+                spending_type: spending_summary.spending_type,
+                spent_date: spending_summary.spent_date,
+                payers,
+                shares: shares.clone(),
+            };
+            spending.validate().map_err(|_| invalid())?;
+            let named_shares = named_allocations(&mut tx, group_id, shares).await?;
+            items.push(SpendingHistoryRow {
+                spending: spending_summary,
+                payer,
+                payer_amount,
+                shares: named_shares,
+            });
+        }
+        let older = matches!(direction, Some(SpendingPageDirection::Newer)) || has_more;
+        let newer = matches!(direction, Some(SpendingPageDirection::Older))
+            || (matches!(direction, Some(SpendingPageDirection::Newer)) && has_more);
+        let older = older
+            .then(|| {
+                items.last().map(|item| SpendingCursor {
+                    direction: SpendingPageDirection::Older,
+                    spent_date: item.spending.spent_date,
+                    id: item.spending.id,
+                })
+            })
+            .flatten();
+        let newer = newer
+            .then(|| {
+                items.first().map(|item| SpendingCursor {
+                    direction: SpendingPageDirection::Newer,
+                    spent_date: item.spending.spent_date,
+                    id: item.spending.id,
+                })
+            })
+            .flatten();
+        tx.commit().await.map_err(storage)?;
+        Ok(SpendingHistoryPage {
+            group,
             items,
             older,
             newer,

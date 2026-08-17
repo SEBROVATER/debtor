@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ group_name }} | Transactions | debtor</title>
+    <link rel="stylesheet" href="/static/css/app.css" />
+    <script src="/static/htmx.min.js" integrity="sha384-H5SrcfygHmAuTDZphMHqBJLc3FhssKjG7w/CeCpFReSfwBWDTKpkzPP8c+cLsK+V" crossorigin="anonymous" defer></script>
+    <script src="/static/response-targets.js" integrity="sha384-NtTh9TBZ2X/pFpfsVvQOjSsYWmjmqG6h5ioQWVAe2/j3AuTHRmfqvoqp+iOed+I0" crossorigin="anonymous" defer></script>
+  </head>
+  <body>
+    <header id="authenticated-header" class="site-header" aria-busy="false">
+      <a href="/groups">debtor</a>
+      <nav aria-label="Group navigation">
+        <a href="/groups">Groups</a>
+        <a href="/groups/{{ group_id }}">Summary</a>
+        <a href="/groups/{{ group_id }}/transactions" aria-current="page">Transactions</a>
+        <a href="/groups/{{ group_id }}/debts">Debts</a>
+        <a href="/groups/{{ group_id }}/manage">Manage</a>
+      </nav>
+      <form method="post" action="/logout" class="sign-out-form" hx-ext="response-targets" hx-target="#sign-out-status" hx-target-4xx="#sign-out-status" hx-target-5xx="#sign-out-status">
+        <input type="hidden" name="csrf" value="{{ shell.csrf }}" />
+        <input type="hidden" name="submission_token" value="{{ shell.submission_token }}" />
+        <button type="submit" class="sign-out-button" hx-post="/logout" hx-disabled-elt="button" hx-indicator="#sign-out-status">Sign out</button>
+        <p id="sign-out-status" class="status" role="status" aria-live="polite" aria-atomic="true"> </p>
+      </form>
+    </header>
+    <main>
+      <div class="page-heading">
+        <div>
+          <h1 id="transactions-heading" class="group-heading" tabindex="-1"><a class="heading-focus-target" href="#transactions-region"{% if focus_heading %} autofocus{% endif %}>{{ group_name }}: Transactions{% if archived %} <span>Archived</span>{% endif %}</a></h1>
+          <p>Group Currency: <strong>{{ currency }}</strong></p>
+        </div>
+        {% if !archived %}<p><a class="button" href="/groups/{{ group_id }}/spendings/new">Add Spending</a></p>{% endif %}
+      </div>
+      <section id="transactions-region" class="transactions-region" aria-labelledby="transactions-heading" aria-busy="false">
+        <p id="transactions-status" class="transactions-status" role="status" aria-live="polite" aria-atomic="true">{{ page_status }}</p>
+        {% if empty %}
+        <p class="empty">{{ page_status }}</p>
+        {% else %}
+        <div class="transaction-list">
+          {% for spending in spendings %}
+          <details id="spending-{{ spending.id }}" class="transaction-row"{% if spending.focused %} open{% endif %}>
+            <summary id="spending-{{ spending.id }}-summary">
+              <span class="transaction-summary-main"><span aria-hidden="true">+</span><span><strong>{{ spending.description }}</strong><small>{{ spending.spent_date }}</small></span></span>
+              <span class="transaction-total">{{ spending.currency_symbol }}{{ spending.total }} {{ spending.currency }}</span>
+            </summary>
+            <div class="transaction-detail">
+              <dl class="transaction-facts">
+                <div><dt>Description</dt><dd>{{ spending.description }}</dd></div>
+                <div><dt>Total</dt><dd>{{ spending.currency_symbol }}{{ spending.total }} {{ spending.currency }}</dd></div>
+                <div><dt>Source Currency</dt><dd>{{ spending.currency }}</dd></div>
+                <div><dt>Date</dt><dd>{{ spending.spent_date }}</dd></div>
+                <div><dt>Category</dt><dd>{{ spending.spending_type }}</dd></div>
+                <div><dt>Payer</dt><dd><span class="participant-marker" style="background: {{ spending.payer.color }}" aria-hidden="true"></span>{{ spending.payer.name }}{% if spending.payer.archived %} <span>Archived</span>{% endif %}: {{ spending.currency_symbol }}{{ spending.payer_amount }} {{ spending.currency }}</dd></div>
+                <div><dt>Shares</dt><dd><ul class="transaction-shares">{% for share in spending.shares %}<li><span class="participant-marker" style="background: {{ share.participant.color }}" aria-hidden="true"></span>{{ share.participant.name }}{% if share.participant.archived %} <span>Archived</span>{% endif %}: {{ spending.currency_symbol }}{{ share.amount }} {{ spending.currency }}</li>{% endfor %}</ul></dd></div>
+              </dl>
+              {% if !archived %}<p class="transaction-actions"><a class="button secondary" href="/groups/{{ group_id }}/spendings/{{ spending.id }}/edit">Edit</a><a class="button danger" href="/groups/{{ group_id }}/spendings/{{ spending.id }}/delete">Delete</a></p>{% endif %}
+            </div>
+          </details>
+          {% endfor %}
+        </div>
+        {% endif %}
+        {% if newer_spendings.is_some() || older_spendings.is_some() || show_newest_spendings %}
+        <nav class="pagination" aria-label="Transactions pages">
+          {% if newer_spendings.is_some() %}<a href="/groups/{{ group_id }}/transactions?cursor={{ newer_spendings.as_ref().unwrap() }}">Previous</a>{% else %}<span class="pagination-disabled" aria-disabled="true">Previous</span>{% endif %}
+          <span class="pagination-context">{{ page_status }}</span>
+          {% if older_spendings.is_some() %}<a href="/groups/{{ group_id }}/transactions?cursor={{ older_spendings.as_ref().unwrap() }}">Next</a>{% else %}<span class="pagination-disabled" aria-disabled="true">Next</span>{% endif %}
+        </nav>
+        {% endif %}
+      </section>
+    </main>
+  </body>
+</html>

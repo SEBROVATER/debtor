@@ -19,14 +19,16 @@ use super::{
     response::{error_response, map_error, render},
     spending_views::{
         build_group_template, build_spending_form_template, initialize_exact_defaults,
-        map_group_template_error, named_allocations,
+        map_group_template_error,
     },
 };
 use crate::{
     forms::{CsrfValidatedForm, OrderedForm, parse_expense_form},
     session,
     state::AppState,
-    templates::{ConfirmTemplate, SpendingDetailTemplate},
+    templates::{
+        ConfirmTemplate, SpendingDetailTemplate, TransactionAllocationRow, TransactionParticipant,
+    },
 };
 
 pub(crate) async fn new_spending_form(
@@ -223,37 +225,48 @@ pub(crate) async fn spending_detail(
     if let Err(response) = require_auth(&session).await {
         return response;
     }
-    let group = match state.groups.group(group_id).await {
+    let detail = match state.spendings.spending_detail(group_id, spending_id).await {
         Ok(value) => value,
         Err(error) => return map_error(error),
     };
-    let spending = match state.spendings.spending(group_id, spending_id).await {
-        Ok(value) => value,
-        Err(error) => return map_error(error),
-    };
-    let members = match state.participants.members(group_id).await {
-        Ok(value) => value,
-        Err(error) => return map_error(error),
-    };
-    let names = members
-        .into_iter()
-        .map(|(participant, _)| (participant.id, participant.name.to_string()))
-        .collect();
     let shell = match authenticated_shell(&state, &session).await {
         Ok(shell) => shell,
         Err(response) => return response,
     };
+    let to_transaction_participant =
+        |participant: debtor_domain::model::Participant| TransactionParticipant {
+            id: participant.id,
+            name: participant.name.to_string(),
+            color: participant.color.as_str().to_owned(),
+            archived: participant.is_archived,
+        };
     render(&SpendingDetailTemplate {
+        group_name: detail.group.name.to_string(),
         group_id,
         spending_id,
-        archived: group.is_archived,
-        description: spending.description.as_str().to_owned(),
-        total: spending.total.to_string(),
-        currency: spending.currency.to_string(),
-        spending_type: spending.spending_type.to_string(),
-        spent_date: spending.spent_date.to_string(),
-        payers: named_allocations(&spending.payers, &names),
-        shares: named_allocations(&spending.shares, &names),
+        archived: detail.group.is_archived,
+        description: detail.spending.description.as_str().to_owned(),
+        total: detail.spending.total.to_string(),
+        currency_symbol: detail.spending.currency.symbol().to_owned(),
+        currency: detail.spending.currency.to_string(),
+        spending_type: detail.spending.spending_type.to_string(),
+        spent_date: detail.spending.spent_date.to_string(),
+        payers: detail
+            .payers
+            .into_iter()
+            .map(|(participant, allocation)| TransactionAllocationRow {
+                participant: to_transaction_participant(participant),
+                amount: allocation.amount.to_string(),
+            })
+            .collect(),
+        shares: detail
+            .shares
+            .into_iter()
+            .map(|(participant, allocation)| TransactionAllocationRow {
+                participant: to_transaction_participant(participant),
+                amount: allocation.amount.to_string(),
+            })
+            .collect(),
         csrf: match csrf(&session).await {
             Ok(token) => token,
             Err(response) => return response,
@@ -567,6 +580,9 @@ pub(super) fn parse_cursor(raw: Option<&str>) -> Result<Option<SpendingCursor>, 
     let Some(raw) = raw else {
         return Ok(None);
     };
+    if raw.len() > 64 {
+        return Err("Invalid spending history cursor.");
+    }
     let mut fields = raw.split(':');
     let direction = match fields.next() {
         Some("older") => SpendingPageDirection::Older,
@@ -577,6 +593,12 @@ pub(super) fn parse_cursor(raw: Option<&str>) -> Result<Option<SpendingCursor>, 
         .next()
         .and_then(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d").ok())
         .ok_or("Invalid spending history cursor.")?;
+    let Some(earliest) = NaiveDate::from_ymd_opt(2025, 1, 1) else {
+        return Err("Invalid spending history cursor.");
+    };
+    if spent_date < earliest {
+        return Err("Invalid spending history cursor.");
+    }
     let id = fields
         .next()
         .and_then(|value| value.parse::<i64>().ok())
@@ -613,6 +635,8 @@ mod tests {
         assert!(parse_cursor(Some("sideways:2026-01-02:7")).is_err());
         assert!(parse_cursor(Some("older:2026-01-02:0")).is_err());
         assert!(parse_cursor(Some("older:2026-01-02:7:extra")).is_err());
+        assert!(parse_cursor(Some("older:2024-12-31:7")).is_err());
+        assert!(parse_cursor(Some(&format!("older:2026-01-02:{}", "7".repeat(64)))).is_err());
     }
 
     #[test]

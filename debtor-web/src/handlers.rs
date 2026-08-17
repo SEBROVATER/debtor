@@ -38,6 +38,7 @@ pub(crate) struct GroupsQuery {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct SpendingQuery {
     pub(super) cursor: Option<String>,
 }

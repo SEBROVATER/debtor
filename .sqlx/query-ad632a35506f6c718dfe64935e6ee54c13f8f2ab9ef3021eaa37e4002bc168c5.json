@@ -1,0 +1,146 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT s.id, s.description, s.total_amount, s.currency, s.spending_type, s.spent_date, p.id AS payer_id, sp.paid_amount AS payer_amount, p.name AS payer_name, p.color AS payer_color, p.is_archived AS payer_archived FROM spendings s LEFT JOIN spending_payers sp ON sp.spending_id = s.id LEFT JOIN participants p ON p.id = sp.participant_id AND p.group_id = ? WHERE s.group_id = ? AND (s.spent_date < ? OR (s.spent_date = ? AND s.id < ?)) ORDER BY s.spent_date DESC, s.id DESC LIMIT 26",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "spendings",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "description",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "spendings",
+            "name": "description"
+          }
+        }
+      },
+      {
+        "name": "total_amount",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "spendings",
+            "name": "total_amount"
+          }
+        }
+      },
+      {
+        "name": "currency",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "spendings",
+            "name": "currency"
+          }
+        }
+      },
+      {
+        "name": "spending_type",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "spendings",
+            "name": "spending_type"
+          }
+        }
+      },
+      {
+        "name": "spent_date",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "spendings",
+            "name": "spent_date"
+          }
+        }
+      },
+      {
+        "name": "payer_id",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "participants",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "payer_amount",
+        "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "spending_payers",
+            "name": "paid_amount"
+          }
+        }
+      },
+      {
+        "name": "payer_name",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "participants",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "payer_color",
+        "ordinal": 9,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "participants",
+            "name": "color"
+          }
+        }
+      },
+      {
+        "name": "payer_archived",
+        "ordinal": 10,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "participants",
+            "name": "is_archived"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "ad632a35506f6c718dfe64935e6ee54c13f8f2ab9ef3021eaa37e4002bc168c5"
+}
