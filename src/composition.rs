@@ -5,10 +5,10 @@ use axum::{extract::Request, response::Response};
 use debtor_application::{
     AuthenticationService, AuthenticationUseCases, Clock, DebtService, DebtUseCases,
     GroupCreateInput, GroupInput, GroupMutationExecutor, GroupReader, GroupRepository,
-    GroupService, GroupUseCases, LedgerSnapshotReader, ParticipantReader, ParticipantRepository,
-    ParticipantService, ParticipantUseCases, ReadinessService, ReadinessUseCases,
-    SpendingEligibilityReader, SpendingReader, SpendingRepository, SpendingService,
-    SpendingUseCases, UtcClock,
+    GroupService, GroupUseCases, LedgerSnapshotReader, ParticipantCreateInput, ParticipantReader,
+    ParticipantRepository, ParticipantService, ParticipantUseCases, ReadinessService,
+    ReadinessUseCases, SpendingEligibilityReader, SpendingReader, SpendingRepository,
+    SpendingService, SpendingUseCases, UtcClock,
 };
 use debtor_infra::auth::{ArgonPasswordGate, MemoryLoginAttemptLimiter};
 use debtor_infra::db::repos::SqliteLedgerRuntime;
@@ -43,6 +43,7 @@ pub(crate) struct BuiltApp {
 
 struct RootGroupMutationExecutor {
     groups: Arc<dyn GroupUseCases>,
+    participants: Arc<dyn ParticipantUseCases>,
     mutations: DispatchedMutationRegistry,
     runtime: RuntimeControl,
 }
@@ -178,6 +179,53 @@ impl GroupMutationExecutor for RootGroupMutationExecutor {
             }
         })
     }
+    fn create_group_participant(
+        &self,
+        input: ParticipantCreateInput,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        debtor_application::Participant,
+                        debtor_application::ApplicationError,
+                    >,
+                > + Send
+                + '_,
+        >,
+    > {
+        Box::pin(async move {
+            let Some(lease) = self.mutations.try_register() else {
+                return Err(debtor_application::ApplicationError::Storage(
+                    debtor_application::StorageReason::Contention,
+                ));
+            };
+            let participants = self.participants.clone();
+            let mutations = self.mutations.clone();
+            let runtime = self.runtime.clone();
+            let task = tokio::spawn(async move {
+                let mut guard = GroupMutationGuard::new(lease, mutations, runtime);
+                match participants
+                    .create_group_participant(input.group_id, input.name, input.color)
+                    .await
+                {
+                    Ok(participant) => {
+                        guard.committed();
+                        Ok(participant)
+                    }
+                    Err(error) => {
+                        guard.rolled_back();
+                        Err(error)
+                    }
+                }
+            });
+            match task.await {
+                Ok(result) => result,
+                Err(_) => Err(debtor_application::ApplicationError::Storage(
+                    debtor_application::StorageReason::Unexpected,
+                )),
+            }
+        })
+    }
 }
 
 async fn static_headers(request: Request, next: axum::middleware::Next) -> Response {
@@ -249,16 +297,17 @@ pub(crate) async fn build_app_with_control(
     let spending_repository: Arc<dyn SpendingRepository> = store;
     let groups: Arc<dyn GroupUseCases> =
         Arc::new(GroupService::new(group_reader.clone(), group_repository));
-    let group_mutations: Arc<dyn GroupMutationExecutor> = Arc::new(RootGroupMutationExecutor {
-        groups: groups.clone(),
-        mutations: mutations.clone(),
-        runtime: runtime_control.clone(),
-    });
     let participants: Arc<dyn ParticipantUseCases> = Arc::new(ParticipantService::new(
         participant_reader,
         participant_repository,
         group_reader.clone(),
     ));
+    let group_mutations: Arc<dyn GroupMutationExecutor> = Arc::new(RootGroupMutationExecutor {
+        groups: groups.clone(),
+        participants: participants.clone(),
+        mutations: mutations.clone(),
+        runtime: runtime_control.clone(),
+    });
     let spendings: Arc<dyn SpendingUseCases> = Arc::new(SpendingService::new(
         spending_reader.clone(),
         spending_repository,

@@ -5,7 +5,6 @@ mod debts;
 mod groups;
 mod health;
 mod memberships;
-mod participants;
 pub(crate) mod response;
 mod spending_views;
 mod spendings;
@@ -24,11 +23,7 @@ pub(crate) use groups::{
     group_manage, group_transactions, groups, restore_group, update_group,
 };
 pub(crate) use health::{health, readiness};
-pub(crate) use memberships::{add_member, create_group_participant, deactivate_member};
-pub(crate) use participants::{
-    archive_participant, create_participant, participant_edit_form, participants,
-    restore_participant, update_participant,
-};
+pub(crate) use memberships::create_group_participant;
 pub(crate) use spendings::{
     create_spending, delete_spending, delete_spending_form, edit_spending_form, spending_detail,
     update_spending,
@@ -47,6 +42,7 @@ pub(crate) struct SpendingQuery {
 #[derive(Deserialize, Default)]
 pub(crate) struct ManageQuery {
     pub(super) saved: Option<String>,
+    pub(super) participant: Option<i64>,
 }
 
 #[derive(Deserialize)]

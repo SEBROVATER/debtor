@@ -9,3 +9,7 @@
 ## Deferred from: code review of 2-1-create-and-select-a-group (2026-08-14)
 
 - Add contextual Group navigation to the existing Debts page [debtor-web/templates/debts.html:12-20] — pre-existing separate Debts template remains outside the Story 2.1 Group shell change; address it with the broader debts/context-shell work.
+
+## Deferred from: code review of 2-3-add-group-owned-participants (2026-08-17)
+
+- Unsupported Group Currency is not represented in the submitted option list [debtor-web/src/handlers/spending_views.rs:175-178; debtor-web/templates/group.html:73-78] — pre-existing behavior, not introduced by the Story 2.3 diff.

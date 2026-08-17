@@ -5,8 +5,6 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use uuid::Uuid;
-
 const COLORS: [&str; 12] = [
     "#16697A", "#C44536", "#6A4C93", "#2A9D8F", "#D97706", "#3A5A40", "#B23A48", "#2563EB",
     "#7C3AED", "#0F766E", "#BE123C", "#4D7C0F",
@@ -15,7 +13,7 @@ const COLORS: [&str; 12] = [
 /// Returns a varied valid color for a fresh participant form.
 pub(crate) fn suggested_participant_color() -> &'static str {
     static NEXT: OnceLock<AtomicUsize> = OnceLock::new();
-    let next = NEXT.get_or_init(|| AtomicUsize::new(usize::from(Uuid::new_v4().as_bytes()[0])));
+    let next = NEXT.get_or_init(|| AtomicUsize::new(0));
     COLORS[next.fetch_add(1, Ordering::Relaxed) % COLORS.len()]
 }
 

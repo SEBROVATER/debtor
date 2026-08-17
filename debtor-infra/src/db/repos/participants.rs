@@ -26,15 +26,6 @@ async fn participant_by_id(
 
 #[async_trait]
 impl ParticipantReader for SqliteLedgerStore {
-    async fn list_participants(
-        &self,
-        archived: bool,
-    ) -> Result<Vec<Participant>, ApplicationError> {
-        let archived = i64::from(archived);
-        sqlx::query_as!(DbParticipant, "SELECT id, name, color, is_archived FROM participants WHERE is_archived = ? ORDER BY name, id", archived)
-            .fetch_all(&self.pool).await.map_err(storage)?.into_iter().map(participant).collect()
-    }
-
     async fn participant(&self, id: EntityId) -> Result<Participant, ApplicationError> {
         participant_by_id(&self.pool, id).await
     }
@@ -54,24 +45,6 @@ impl ParticipantReader for SqliteLedgerStore {
 
 #[async_trait]
 impl ParticipantRepository for SqliteLedgerStore {
-    async fn create_participant(
-        &self,
-        name: Name,
-        color: Color,
-    ) -> Result<Participant, ApplicationError> {
-        let _write_guard = self.write_guard().await?;
-        let id = sqlx::query!(
-            "INSERT INTO participants (name, color) VALUES (?, ?)",
-            name.as_str(),
-            color.as_str()
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(storage)?
-        .last_insert_rowid();
-        participant_by_id(&self.pool, id).await
-    }
-
     async fn create_group_participant(
         &self,
         group_id: EntityId,
@@ -81,7 +54,8 @@ impl ParticipantRepository for SqliteLedgerStore {
         let _write_guard = self.write_guard().await?;
         let mut tx = self.pool.begin().await.map_err(storage)?;
         let id = sqlx::query!(
-            "INSERT INTO participants (name, color) VALUES (?, ?)",
+            "INSERT INTO participants (group_id, name, color) VALUES (?, ?, ?)",
+            group_id,
             name.as_str(),
             color.as_str()
         )
@@ -100,7 +74,12 @@ impl ParticipantRepository for SqliteLedgerStore {
             .await);
         }
         tx.commit().await.map_err(storage)?;
-        participant_by_id(&self.pool, id).await
+        Ok(Participant {
+            id,
+            name,
+            color,
+            is_archived: false,
+        })
     }
 
     async fn update_participant(
@@ -139,7 +118,7 @@ impl ParticipantRepository for SqliteLedgerStore {
         participant_id: EntityId,
     ) -> Result<(), ApplicationError> {
         let _write_guard = self.write_guard().await?;
-        let result = sqlx::query!("INSERT INTO group_members (group_id, participant_id) SELECT ?, ? WHERE EXISTS (SELECT 1 FROM groups WHERE id = ? AND is_archived = 0) AND EXISTS (SELECT 1 FROM participants WHERE id = ? AND is_archived = 0) ON CONFLICT(group_id, participant_id) DO UPDATE SET is_active = 1", group_id, participant_id, group_id, participant_id)
+        let result = sqlx::query!("INSERT INTO group_members (group_id, participant_id) SELECT ?, ? WHERE EXISTS (SELECT 1 FROM groups WHERE id = ? AND is_archived = 0) AND EXISTS (SELECT 1 FROM participants WHERE id = ? AND group_id = ? AND is_archived = 0) ON CONFLICT(group_id, participant_id) DO UPDATE SET is_active = 1", group_id, participant_id, group_id, participant_id, group_id)
             .execute(&self.pool).await.map_err(storage)?;
         if result.rows_affected() == 0 {
             group_mutable(&self.pool, group_id).await?;

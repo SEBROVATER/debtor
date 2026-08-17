@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO participants (group_id, name, color) VALUES (?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "beac35ae5f5631d42b3d74816008c8602e5302d39428d5b71d5fa2ef3e0f5e00"
+}

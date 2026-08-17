@@ -43,7 +43,7 @@
       </p>
       {% endif %}
        {% match error %}{% when Some with (message) %}
-       <p id="group-error" class="error" role="alert">{{ message }}</p>
+       <p id="group-error" class="error" role="alert" tabindex="-1">{{ message }}</p>
        {% when None %}{% endmatch %} {% if archived %}
        <p class="warning">
          This group is archived and read-only. Historical participants and expense details remain
@@ -83,62 +83,56 @@
            <p id="group-settings-status" class="mutation-status" role="status" aria-live="polite" aria-atomic="true"> </p>
          </form>
        </section>
-       <section id="participants" class="card">
-        <h2>Manage participants</h2>
-        <p class="helper">Add an active Participant before recording a Spending.</p>
-        <a class="button secondary" href="/groups/{{ group_id }}/manage#participants">Add Participant</a>
-      </section>
-      {% else %}
-       <section id="transactions" class="card">
-        <h2>Members</h2>
-        {% if members.len() == 0 %}
-        <p class="warning">Add active members before recording expenses.</p>
-        {% else %}
-        <ul class="member-list">
-          {% for member in members %}
-          <li>
-            <span class="swatch" style="background: {{ member.color }}"></span>{{ member.name }}
-             <form method="post" action="/groups/{{ group_id }}/members/{{ member.id }}/deactivate" class="mutation-form" hx-post="/groups/{{ group_id }}/members/{{ member.id }}/deactivate" hx-disabled-elt="button" hx-indicator="#member-{{ member.id }}-status" aria-busy="false">
-              <input type="hidden" name="csrf" value="{{ csrf }}" /><input type="hidden" name="submission_token" value="{{ shell.submission_token }}" /><button
-                class="link-button"
-                type="submit"
-              >
-                Remove
-               </button><p id="member-{{ member.id }}-status" class="mutation-status" role="status" aria-live="polite" aria-atomic="true"> </p>
-            </form>
-          </li>
-          {% endfor %}
-        </ul>
-        {% endif %} {% if inactive_members.len() > 0 %}
-        <p class="helper">Previously used members can be reactivated.</p>
-        {% endif %}
-        <div class="member-actions">
-          {% if available_participants.len() > 0 || inactive_members.len() > 0 %}
-           <form method="post" action="/groups/{{ group_id }}/members" class="compact-form mutation-form" hx-post="/groups/{{ group_id }}/members" hx-disabled-elt="button" hx-indicator="#member-add-status" aria-busy="false">
-            <input type="hidden" name="csrf" value="{{ csrf }}" /><input type="hidden" name="submission_token" value="{{ shell.submission_token }}" /><label
-              >Add existing participant
-              <select name="participant_id" required>
-                {% for participant in available_participants %}
-                <option value="{{ participant.id }}">{{ participant.name }}</option>
-                {% endfor %}{% for participant in inactive_members %}
-                <option value="{{ participant.id }}">{{ participant.name }} (reactivate)</option>
-                {% endfor %}
-              </select></label
-            ><button type="submit">Add member</button><p id="member-add-status" class="mutation-status" role="status" aria-live="polite" aria-atomic="true"> </p>
-          </form>
-          {% else %}
-          <p class="helper">All active participants already belong to this group.</p>
-          {% endif %}
-          <form method="post" action="/groups/{{ group_id }}/participants" class="compact-form mutation-form" hx-post="/groups/{{ group_id }}/participants" hx-disabled-elt="button" hx-indicator="#participant-add-status" aria-busy="false">
-            <input type="hidden" name="csrf" value="{{ csrf }}" /><input type="hidden" name="submission_token" value="{{ shell.submission_token }}" /><label
-              >Create and add participant
-              <input name="name" value="{{ create_name }}" required /></label
-            ><label
-              >Color <input type="color" name="color" value="{{ create_color }}" required /></label
-            ><button type="submit">Create and add</button><p id="participant-add-status" class="mutation-status" role="status" aria-live="polite" aria-atomic="true"> </p>
-          </form>
-        </div>
-      </section>
+        <section id="participants" class="manage-section" aria-labelledby="participants-heading">
+          <h2 id="participants-heading" tabindex="-1">Participants</h2>
+         <p id="participant-guidance" class="helper">Participants are accounting identities owned by this Group. Add one before recording a Spending.</p>
+         {% if members.len() == 0 %}
+         <p class="empty">No active Participants in this Group.</p>
+         {% else %}
+         <ul class="participant-list" aria-label="Active Participants">
+           {% for member in members %}
+           <li id="participant-{{ member.id }}" class="participant-row" tabindex="-1"{% if focus_participant.as_ref() == Some(&member.id) %} autofocus{% endif %}>
+             <span class="swatch" style="background: {{ member.color }}" aria-hidden="true"></span>
+             <span><strong>{{ member.name }}</strong><small>{{ member.color }}</small></span>
+           </li>
+           {% endfor %}
+         </ul>
+         {% endif %}
+         <form method="post" action="/groups/{{ group_id }}/participants" class="mutation-form participant-form" aria-describedby="participant-guidance{% if error.is_some() %} group-error{% endif %}" hx-post="/groups/{{ group_id }}/participants" hx-disabled-elt="button" hx-indicator="#participant-add-status" aria-busy="false">
+           <input type="hidden" name="csrf" value="{{ csrf }}" /><input type="hidden" name="submission_token" value="{{ shell.submission_token }}" />
+           <div class="participant-form-grid">
+             <label for="participant-name">Participant name
+                <input id="participant-name" name="name" value="{{ create_name }}" required{% match participant_invalid_field %}{% when Some with (field) %}{% if field == "name" %} aria-invalid="true" aria-describedby="participant-name-guidance group-error" autofocus{% endif %}{% when None %}{% endmatch %} />
+             </label>
+             <label for="participant-color">Color
+                <input id="participant-color" name="color" value="{{ create_color }}" required pattern="#[0-9A-Fa-f]{6}"{% match participant_invalid_field %}{% when Some with (field) %}{% if field == "color" %} aria-invalid="true" aria-describedby="participant-color-guidance group-error" autofocus{% endif %}{% when None %}{% endmatch %} />
+               <span id="participant-color-swatch" class="swatch named-swatch" style="background: {{ create_color }}" role="img" aria-label="Selected Participant color"></span>
+             </label>
+           </div>
+           <p id="participant-name-guidance" class="helper">Use up to 100 characters.</p>
+           <p id="participant-color-guidance" class="helper">Use normalized #RRGGBB notation.</p>
+           <button type="submit">Add Participant</button>
+           <p id="participant-add-status" class="mutation-status" role="status" aria-live="polite" aria-atomic="true"> </p>
+         </form>
+       </section>
+       {% else %}
+        <section id="participants-summary" class="card">
+         <h2>Participants</h2>
+         {% if members.len() == 0 %}
+         <p class="warning">Add an active Participant in Manage before recording Spendings.</p>
+         {% else %}
+         <ul class="participant-list">
+           {% for member in members %}
+           <li class="participant-row">
+             <span class="swatch" style="background: {{ member.color }}" aria-hidden="true"></span>
+             <span><strong>{{ member.name }}</strong><small>{{ member.color }}</small></span>
+           </li>
+           {% endfor %}
+         </ul>
+         {% endif %} {% if inactive_members.len() > 0 %}
+         <p class="helper">Archived or inactive identities are managed by their owning lifecycle stories.</p>
+         {% endif %}
+       </section>
       {% if members.len() > 0 %}
       <section class="card">
         <form method="post" action="{{ expense.action }}" class="mutation-form" aria-describedby="group-error" hx-post="{{ expense.action }}" hx-disabled-elt="button" hx-indicator="#expense-status" aria-busy="false">

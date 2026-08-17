@@ -207,10 +207,6 @@ pub(crate) struct ParticipantForm {
     pub(crate) color: String,
 }
 
-pub(crate) struct MemberForm {
-    pub(crate) participant_id: i64,
-}
-
 /// Expense form values after strict field-name and duplicate validation.
 pub(crate) struct ExpenseForm {
     pub(crate) description: String,
@@ -291,20 +287,6 @@ pub(crate) fn parse_participant_form(form: OrderedForm) -> Result<ParticipantFor
         name: value(&fields, "name"),
         color: value(&fields, "color"),
     })
-}
-
-#[allow(clippy::needless_pass_by_value)]
-pub(crate) fn parse_member_form(form: OrderedForm) -> Result<MemberForm, FormError> {
-    let fields = form
-        .required_fields(&["participant_id", "csrf", "submission_token"])
-        .map_err(malformed_form)?;
-    let participant_id = value(&fields, "participant_id")
-        .parse()
-        .map_err(|_| FormError {
-            status: StatusCode::UNPROCESSABLE_ENTITY,
-            message: "Invalid participant.",
-        })?;
-    Ok(MemberForm { participant_id })
 }
 
 /// Parses expense field structure without applying financial eligibility policy.
@@ -437,7 +419,7 @@ mod tests {
 
     use super::{
         OrderedForm, parse_expense_form, parse_group_create_form, parse_group_form,
-        parse_member_form, validate_percent_encoding,
+        validate_percent_encoding,
     };
 
     #[test]
@@ -496,20 +478,6 @@ mod tests {
                 .expect_err("currency must not be accepted")
                 .status,
             StatusCode::BAD_REQUEST
-        );
-    }
-
-    #[test]
-    fn member_parser_reports_invalid_ids_as_validation_errors() {
-        let form = OrderedForm(vec![
-            ("participant_id".into(), "not-an-id".into()),
-            ("csrf".into(), "token".into()),
-            ("submission_token".into(), "submission".into()),
-        ]);
-
-        assert_eq!(
-            parse_member_form(form).err().map(|error| error.status),
-            Some(StatusCode::UNPROCESSABLE_ENTITY)
         );
     }
 

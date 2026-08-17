@@ -7,8 +7,9 @@ use async_trait::async_trait;
 use debtor_application::{
     ApplicationError, AuthenticationService, AuthenticationUseCases, Clock, DebtResult,
     DebtUseCases, GroupCreateInput, GroupInput, GroupMutationExecutor, GroupUseCases,
-    LoginAdmission, LoginAttemptLimiter, ParticipantUseCases, PasswordVerifier, RateMode,
-    ReadinessUseCases, SpendingInput, SpendingPage, SpendingUseCases, UtcClock,
+    LoginAdmission, LoginAttemptLimiter, ParticipantCreateInput, ParticipantUseCases,
+    PasswordVerifier, RateMode, ReadinessUseCases, SpendingInput, SpendingPage, SpendingUseCases,
+    UtcClock,
 };
 use debtor_domain::{
     currency::Currency,
@@ -29,8 +30,10 @@ pub(crate) struct TestState {
 
 pub(crate) struct FakeGroups {
     pub(crate) group: Group,
+    #[allow(dead_code)]
     pub(crate) create_validation_error: bool,
     pub(crate) update_validation_error: bool,
+    pub(crate) participant_create_validation_error: bool,
     pub(crate) created: Mutex<Vec<(String, Currency)>>,
     pub(crate) updated: Mutex<Vec<(i64, String, Currency)>>,
     pub(crate) archived: AtomicUsize,
@@ -39,9 +42,9 @@ pub(crate) struct FakeGroups {
 
 pub(crate) struct FakeParticipants {
     pub(crate) participant: Participant,
+    #[allow(dead_code)]
     pub(crate) create_validation_error: bool,
     pub(crate) update_validation_error: bool,
-    pub(crate) group_create_validation_error: bool,
     pub(crate) created: Mutex<Vec<(String, String)>>,
     pub(crate) updated: Mutex<Vec<(i64, String, String)>>,
     pub(crate) group_created: Mutex<Vec<(i64, String, String)>>,
@@ -119,6 +122,7 @@ fn state_with_errors_and_password(
         },
         create_validation_error: group_create_validation_error,
         update_validation_error: group_update_validation_error,
+        participant_create_validation_error: group_create_participant_validation_error,
         created: Mutex::new(Vec::new()),
         updated: Mutex::new(Vec::new()),
         archived: AtomicUsize::new(0),
@@ -133,7 +137,6 @@ fn state_with_errors_and_password(
         },
         create_validation_error: participant_create_validation_error,
         update_validation_error: participant_update_validation_error,
-        group_create_validation_error: group_create_participant_validation_error,
         created: Mutex::new(Vec::new()),
         updated: Mutex::new(Vec::new()),
         group_created: Mutex::new(Vec::new()),
@@ -214,7 +217,10 @@ impl GroupUseCases for FakeGroups {
         Ok(vec![self.group.clone()])
     }
 
-    async fn group(&self, _: i64) -> Result<Group, ApplicationError> {
+    async fn group(&self, id: i64) -> Result<Group, ApplicationError> {
+        if id != self.group.id {
+            return Err(ApplicationError::NotFound);
+        }
         Ok(self.group.clone())
     }
 
@@ -271,29 +277,29 @@ impl GroupMutationExecutor for FakeGroups {
     > {
         Box::pin(async move { GroupUseCases::update_group(self, id, input).await })
     }
+
+    fn create_group_participant(
+        &self,
+        input: ParticipantCreateInput,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Participant, ApplicationError>> + Send + '_>,
+    > {
+        Box::pin(async move {
+            if self.participant_create_validation_error {
+                return Err(validation_error());
+            }
+            Ok(Participant {
+                id: 1,
+                name: debtor_domain::model::Name::new(input.name)?,
+                color: debtor_domain::model::Color::new(input.color)?,
+                is_archived: false,
+            })
+        })
+    }
 }
 
 #[async_trait]
 impl ParticipantUseCases for FakeParticipants {
-    async fn list_participants(&self, _: bool) -> Result<Vec<Participant>, ApplicationError> {
-        Ok(vec![self.participant.clone()])
-    }
-
-    async fn create_participant(
-        &self,
-        name: String,
-        color: String,
-    ) -> Result<Participant, ApplicationError> {
-        if self.create_validation_error {
-            return Err(validation_error());
-        }
-        self.created
-            .lock()
-            .expect("participant calls lock")
-            .push((name, color));
-        Ok(self.participant.clone())
-    }
-
     async fn participant(&self, _: i64) -> Result<Participant, ApplicationError> {
         Ok(self.participant.clone())
     }
@@ -320,9 +326,6 @@ impl ParticipantUseCases for FakeParticipants {
         name: String,
         color: String,
     ) -> Result<Participant, ApplicationError> {
-        if self.group_create_validation_error {
-            return Err(validation_error());
-        }
         self.group_created
             .lock()
             .expect("participant calls lock")

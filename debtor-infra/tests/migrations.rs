@@ -27,6 +27,7 @@ const TABLES: &[&str] = &[
 const INDEXES: &[&str] = &[
     "idx_group_members_group",
     "idx_group_members_participant",
+    "idx_group_members_participant_owner",
     "idx_spendings_group",
     "idx_spendings_spent_date",
     "idx_spendings_type",
@@ -183,6 +184,7 @@ async fn participants_table_has_expected_columns(pool: SqlitePool) {
 
     let expected = [
         "id",
+        "group_id",
         "name",
         "color",
         "is_archived",
@@ -347,26 +349,37 @@ async fn structural_checks_reject_invalid_values(pool: SqlitePool) {
     );
 
     assert!(
-        sqlx::query("INSERT INTO participants (name, color) VALUES ('Alice', '#12345')")
-            .execute(&pool)
-            .await
-            .is_err()
-    );
-    assert!(
-        sqlx::query("INSERT INTO participants (name, color) VALUES ('Alice', '1234567')")
-            .execute(&pool)
-            .await
-            .is_err()
-    );
-    assert!(
         sqlx::query(
-            "INSERT INTO participants (name, color, is_archived) VALUES ('Alice', '#123456', 2)"
+            "INSERT INTO participants (group_id, name, color) VALUES (1, 'Alice', '#12345')"
         )
         .execute(&pool)
         .await
         .is_err()
     );
-    sqlx::query("INSERT INTO participants (name, color) VALUES ('Alice', '#123456')")
+    assert!(
+        sqlx::query("INSERT INTO participants (name, color) VALUES ('Alice', '#123456')")
+            .execute(&pool)
+            .await
+            .is_err(),
+        "Participant ownership must be required"
+    );
+    assert!(
+        sqlx::query(
+            "INSERT INTO participants (group_id, name, color) VALUES (1, 'Alice', '1234567')"
+        )
+        .execute(&pool)
+        .await
+        .is_err()
+    );
+    assert!(
+        sqlx::query(
+            "INSERT INTO participants (group_id, name, color, is_archived) VALUES (1, 'Alice', '#123456', 2)"
+        )
+        .execute(&pool)
+        .await
+        .is_err()
+    );
+    sqlx::query("INSERT INTO participants (group_id, name, color) VALUES (1, 'Alice', '#123456')")
         .execute(&pool)
         .await
         .expect("insert participant");
@@ -424,7 +437,7 @@ async fn group_members_cascade_on_group_delete(pool: SqlitePool) {
         .await
         .expect("insert group");
 
-    sqlx::query("INSERT INTO participants (name, color) VALUES ('Alice', '#FF0000')")
+    sqlx::query("INSERT INTO participants (group_id, name, color) VALUES (1, 'Alice', '#FF0000')")
         .execute(&pool)
         .await
         .expect("insert participant");
@@ -450,6 +463,11 @@ async fn group_members_cascade_on_group_delete(pool: SqlitePool) {
         .await
         .expect("count after delete");
     assert_eq!(count, 0);
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM participants")
+        .fetch_one(&pool)
+        .await
+        .expect("participant count after delete");
+    assert_eq!(count, 0);
 }
 
 #[sqlx::test(migrations = "../migrations")]
@@ -464,7 +482,7 @@ async fn spendings_restrict_group_delete_and_preserve_history(pool: SqlitePool) 
         .await
         .expect("insert group");
 
-    sqlx::query("INSERT INTO participants (name, color) VALUES ('Alice', '#FF0000')")
+    sqlx::query("INSERT INTO participants (group_id, name, color) VALUES (1, 'Alice', '#FF0000')")
         .execute(&pool)
         .await
         .expect("insert participant");
@@ -530,7 +548,7 @@ async fn spending_payers_cascade_on_spending_delete(pool: SqlitePool) {
         .await
         .expect("insert group");
 
-    sqlx::query("INSERT INTO participants (name, color) VALUES ('Alice', '#FF0000')")
+    sqlx::query("INSERT INTO participants (group_id, name, color) VALUES (1, 'Alice', '#FF0000')")
         .execute(&pool)
         .await
         .expect("insert participant");
@@ -569,7 +587,7 @@ async fn spending_shares_cascade_on_spending_delete(pool: SqlitePool) {
         .await
         .expect("insert group");
 
-    sqlx::query("INSERT INTO participants (name, color) VALUES ('Alice', '#FF0000')")
+    sqlx::query("INSERT INTO participants (group_id, name, color) VALUES (1, 'Alice', '#FF0000')")
         .execute(&pool)
         .await
         .expect("insert participant");
@@ -603,7 +621,7 @@ async fn group_members_prevents_duplicates(pool: SqlitePool) {
         .await
         .expect("insert group");
 
-    sqlx::query("INSERT INTO participants (name, color) VALUES ('Alice', '#FF0000')")
+    sqlx::query("INSERT INTO participants (group_id, name, color) VALUES (1, 'Alice', '#FF0000')")
         .execute(&pool)
         .await
         .expect("insert participant");
@@ -618,6 +636,22 @@ async fn group_members_prevents_duplicates(pool: SqlitePool) {
         .await;
 
     assert!(result.is_err(), "expected duplicate composite PK violation");
+
+    sqlx::query("INSERT INTO groups (name, currency) VALUES ('Other', 'USD')")
+        .execute(&pool)
+        .await
+        .expect("second group");
+    let result = sqlx::query("UPDATE participants SET group_id = 2 WHERE id = 1")
+        .execute(&pool)
+        .await;
+    assert!(
+        result.is_err(),
+        "participant ownership cannot be reassigned"
+    );
+    let result = sqlx::query("INSERT INTO group_members (group_id, participant_id) VALUES (2, 1)")
+        .execute(&pool)
+        .await;
+    assert!(result.is_err(), "a participant cannot have a second owner");
 }
 
 #[sqlx::test(migrations = "../migrations")]
@@ -672,7 +706,7 @@ async fn group_members_is_active_defaults_to_true(pool: SqlitePool) {
         .await
         .expect("insert group");
 
-    sqlx::query("INSERT INTO participants (name, color) VALUES ('Alice', '#FF0000')")
+    sqlx::query("INSERT INTO participants (group_id, name, color) VALUES (1, 'Alice', '#FF0000')")
         .execute(&pool)
         .await
         .expect("insert participant");

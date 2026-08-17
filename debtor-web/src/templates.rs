@@ -115,6 +115,7 @@ pub struct RateRow {
     pub provisional: bool,
 }
 
+/*
 /// Participant list page.
 #[derive(Template)]
 #[template(path = "participants.html")]
@@ -163,6 +164,7 @@ pub struct ParticipantRow {
     pub color: String,
 }
 
+*/
 /// Group spending page.
 #[derive(Template)]
 #[template(path = "group.html")]
@@ -195,8 +197,6 @@ pub struct GroupTemplate {
     pub members: Vec<MemberRow>,
     /// Inactive memberships available for reactivation.
     pub inactive_members: Vec<MemberRow>,
-    /// Globally active participants not currently active in the group.
-    pub available_participants: Vec<MemberRow>,
     /// Spending rows.
     pub spendings: Vec<SpendingRow>,
     /// Cursor link for older spending rows.
@@ -209,6 +209,10 @@ pub struct GroupTemplate {
     pub archived: bool,
     /// Inline error.
     pub error: Option<String>,
+    /// Participant field that failed validation.
+    pub participant_invalid_field: Option<String>,
+    /// Participant row to focus after a committed add.
+    pub focus_participant: Option<i64>,
     /// Participant name draft.
     pub create_name: String,
     /// Participant color draft.

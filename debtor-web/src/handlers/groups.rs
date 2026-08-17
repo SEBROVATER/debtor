@@ -106,7 +106,10 @@ pub(crate) async fn group_manage(
     }
     let notice = (query.saved.as_deref() == Some("1")).then(|| "Group settings saved.".to_owned());
     match build_group_manage_template(&state, &session, id, None, None, None, notice).await {
-        Ok(template) => render(&template),
+        Ok(mut template) => {
+            template.focus_participant = query.participant;
+            render(&template)
+        }
         Err(error) => map_group_template_error(error),
     }
 }

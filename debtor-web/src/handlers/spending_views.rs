@@ -54,17 +54,6 @@ pub(super) async fn build_group_template(
 ) -> Result<GroupTemplate, GroupTemplateError> {
     let group = state.groups.group(id).await?;
     let members = state.participants.members(id).await?;
-    let all_participants = state.participants.list_participants(false).await?;
-    let active_ids: BTreeSet<_> = members
-        .iter()
-        .filter(|(_, member)| member.is_active)
-        .map(|(participant, _)| participant.id)
-        .collect();
-    let inactive_ids: BTreeSet<_> = members
-        .iter()
-        .filter(|(_, member)| !member.is_active)
-        .map(|(participant, _)| participant.id)
-        .collect();
     let active_members = members
         .iter()
         .filter(|(participant, member)| member.is_active && !participant.is_archived)
@@ -74,13 +63,6 @@ pub(super) async fn build_group_template(
         .iter()
         .filter(|(participant, member)| !member.is_active && !participant.is_archived)
         .map(|(participant, _)| member_row(participant, false, false))
-        .collect();
-    let available = all_participants
-        .into_iter()
-        .filter(|participant| {
-            !active_ids.contains(&participant.id) && !inactive_ids.contains(&participant.id)
-        })
-        .map(|participant| member_row(&participant, false, false))
         .collect();
     let had_cursor = cursor.is_some();
     let spending_page = state.spendings.spending_page(id, cursor).await?;
@@ -129,7 +111,6 @@ pub(super) async fn build_group_template(
         shell,
         members: active_members,
         inactive_members,
-        available_participants: available,
         spendings: spending_page
             .items
             .into_iter()
@@ -146,6 +127,8 @@ pub(super) async fn build_group_template(
         show_newest_spendings,
         archived: group.is_archived,
         error,
+        participant_invalid_field: None,
+        focus_participant: None,
         create_name,
         create_color,
         expense,
@@ -206,13 +189,14 @@ async fn build_group_settings_fallback(
         shell,
         members: Vec::new(),
         inactive_members: Vec::new(),
-        available_participants: Vec::new(),
         spendings: Vec::new(),
         older_spendings: None,
         newer_spendings: None,
         show_newest_spendings: false,
         archived: group.is_archived,
         error: None,
+        participant_invalid_field: None,
+        focus_participant: None,
         create_name: String::new(),
         create_color: String::new(),
         expense: ExpenseFormView {

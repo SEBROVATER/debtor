@@ -6,5 +6,7 @@ CREATE TABLE group_members (
     PRIMARY KEY (group_id, participant_id)
 );
 
+CREATE UNIQUE INDEX idx_group_members_participant_owner ON group_members(participant_id);
+
 CREATE INDEX idx_group_members_group ON group_members(group_id);
 CREATE INDEX idx_group_members_participant ON group_members(participant_id);

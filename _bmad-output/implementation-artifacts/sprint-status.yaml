@@ -1,5 +1,5 @@
 # generated: 2026-08-12T12:16:16+06:00
-# last_updated: 2026-08-15T17:01:02+06:00
+# last_updated: 2026-08-17T11:13:48+06:00
 # project: debtor
 # project_key: NOKEY
 # tracking_system: file-system
@@ -41,7 +41,7 @@
 # - Retrospective appends its action items to action_items; sprint-status surfaces open ones
 
 generated: 2026-08-12T12:16:16+06:00
-last_updated: 2026-08-15T17:01:02+06:00
+last_updated: 2026-08-17T11:13:48+06:00
 project: debtor
 project_key: NOKEY
 tracking_system: file-system
@@ -63,7 +63,7 @@ development_status:
   epic-2: in-progress
   2-1-create-and-select-a-group: done
   2-2-configure-group-settings: done
-  2-3-add-group-owned-participants: backlog
+  2-3-add-group-owned-participants: done
   2-4-edit-active-participants-without-deleting-identity: backlog
   2-5-archive-restore-or-delete-a-history-free-group: backlog
   epic-2-retrospective: optional

@@ -5,12 +5,36 @@ use debtor_domain::model::{Color, EntityId, GroupMember, Name, Participant};
 
 use crate::{ApplicationError, GroupReader};
 
+/// Transport-neutral raw input for creating a Group-owned Participant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParticipantCreateInput {
+    /// Owning Group identifier.
+    pub group_id: EntityId,
+    /// Participant name before domain normalization.
+    pub name: String,
+    /// Participant color before domain normalization.
+    pub color: String,
+}
+
+/// Validates Participant fields without performing I/O or a mutation.
+///
+/// # Errors
+///
+/// Returns the domain validation error for an invalid name or color.
+pub fn validate_participant_create(input: &ParticipantCreateInput) -> Result<(), ApplicationError> {
+    Name::new(input.name.clone())?;
+    Color::new(input.color.clone())?;
+    if input.group_id <= 0 {
+        return Err(
+            debtor_domain::model::ValidationError::InvalidField { field: "group_id" }.into(),
+        );
+    }
+    Ok(())
+}
+
 /// Reads participant identities and group memberships.
 #[async_trait]
 pub trait ParticipantReader: Send + Sync {
-    /// Lists participants by archive state.
-    async fn list_participants(&self, archived: bool)
-    -> Result<Vec<Participant>, ApplicationError>;
     /// Loads one participant.
     async fn participant(&self, id: EntityId) -> Result<Participant, ApplicationError>;
     /// Lists group memberships with participant data.
@@ -23,12 +47,6 @@ pub trait ParticipantReader: Send + Sync {
 /// Writes participant identities and memberships.
 #[async_trait]
 pub trait ParticipantRepository: Send + Sync {
-    /// Creates a participant.
-    async fn create_participant(
-        &self,
-        name: Name,
-        color: Color,
-    ) -> Result<Participant, ApplicationError>;
     /// Creates a participant and active membership atomically.
     async fn create_group_participant(
         &self,
@@ -69,15 +87,6 @@ pub trait ParticipantRepository: Send + Sync {
 /// Inbound participant and membership operations.
 #[async_trait]
 pub trait ParticipantUseCases: Send + Sync {
-    /// Lists globally active or archived participants.
-    async fn list_participants(&self, archived: bool)
-    -> Result<Vec<Participant>, ApplicationError>;
-    /// Creates a reusable participant.
-    async fn create_participant(
-        &self,
-        name: String,
-        color: String,
-    ) -> Result<Participant, ApplicationError>;
     /// Loads one participant.
     async fn participant(&self, id: EntityId) -> Result<Participant, ApplicationError>;
     /// Updates an active reusable participant.
@@ -141,23 +150,6 @@ impl ParticipantService {
 
 #[async_trait]
 impl ParticipantUseCases for ParticipantService {
-    async fn list_participants(
-        &self,
-        archived: bool,
-    ) -> Result<Vec<Participant>, ApplicationError> {
-        self.reader.list_participants(archived).await
-    }
-
-    async fn create_participant(
-        &self,
-        name: String,
-        color: String,
-    ) -> Result<Participant, ApplicationError> {
-        self.repository
-            .create_participant(Name::new(name)?, Color::new(color)?)
-            .await
-    }
-
     async fn participant(&self, id: EntityId) -> Result<Participant, ApplicationError> {
         self.reader.participant(id).await
     }
@@ -185,6 +177,11 @@ impl ParticipantUseCases for ParticipantService {
         if self.groups.group(group_id).await?.is_archived {
             return Err(ApplicationError::Conflict);
         }
+        validate_participant_create(&ParticipantCreateInput {
+            group_id,
+            name: name.clone(),
+            color: color.clone(),
+        })?;
         self.repository
             .create_group_participant(group_id, Name::new(name)?, Color::new(color)?)
             .await
@@ -278,10 +275,6 @@ mod tests {
 
     #[async_trait]
     impl ParticipantReader for Fake {
-        async fn list_participants(&self, _: bool) -> Result<Vec<Participant>, ApplicationError> {
-            Ok(Vec::new())
-        }
-
         async fn participant(&self, id: EntityId) -> Result<Participant, ApplicationError> {
             Ok(participant(id))
         }
@@ -300,8 +293,9 @@ mod tests {
 
     #[async_trait]
     impl ParticipantRepository for Fake {
-        async fn create_participant(
+        async fn create_group_participant(
             &self,
+            _: EntityId,
             name: Name,
             color: Color,
         ) -> Result<Participant, ApplicationError> {
@@ -309,20 +303,6 @@ mod tests {
                 .lock()
                 .expect("created participants lock")
                 .push((name.clone(), color.clone()));
-            Ok(Participant {
-                id: 1,
-                name,
-                color,
-                is_archived: false,
-            })
-        }
-
-        async fn create_group_participant(
-            &self,
-            _: EntityId,
-            name: Name,
-            color: Color,
-        ) -> Result<Participant, ApplicationError> {
             Ok(Participant {
                 id: 1,
                 name,
@@ -386,9 +366,9 @@ mod tests {
         let service = ParticipantService::new(fake.clone(), fake.clone(), fake.clone());
 
         service
-            .create_participant("  Ada  ".into(), "#aabbcc".into())
+            .create_group_participant(GROUP_ID, "  Ada  ".into(), "#aabbcc".into())
             .await
-            .expect("create participant");
+            .expect("create group participant");
         service
             .update_participant(3, "  Grace  ".into(), "#abcdef".into())
             .await
@@ -422,5 +402,46 @@ mod tests {
                 .expect("deactivated memberships lock"),
             vec![(GROUP_ID, PARTICIPANT_ONE, false)]
         );
+    }
+
+    #[test]
+    fn validates_group_participant_input_without_side_effects() {
+        validate_participant_create(&ParticipantCreateInput {
+            group_id: GROUP_ID,
+            name: "  Ada  ".into(),
+            color: "#aabbcc".into(),
+        })
+        .expect("valid participant input");
+
+        assert!(matches!(
+            validate_participant_create(&ParticipantCreateInput {
+                group_id: GROUP_ID,
+                name: "  ".into(),
+                color: "#aabbcc".into(),
+            }),
+            Err(ApplicationError::Validation(
+                debtor_domain::model::ValidationError::Empty { field: "name" }
+            ))
+        ));
+        assert!(matches!(
+            validate_participant_create(&ParticipantCreateInput {
+                group_id: GROUP_ID,
+                name: "x".repeat(101),
+                color: "#aabbcc".into(),
+            }),
+            Err(ApplicationError::Validation(
+                debtor_domain::model::ValidationError::TooLong { field: "name", .. }
+            ))
+        ));
+        assert!(matches!(
+            validate_participant_create(&ParticipantCreateInput {
+                group_id: GROUP_ID,
+                name: "Ada".into(),
+                color: "#abc".into(),
+            }),
+            Err(ApplicationError::Validation(
+                debtor_domain::model::ValidationError::InvalidColor
+            ))
+        ));
     }
 }

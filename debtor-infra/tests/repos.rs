@@ -20,7 +20,8 @@ async fn active_group_and_participant(pool: &SqlitePool) -> (SqliteLedgerStore, 
         .await
         .expect("create group");
     let participant = store
-        .create_participant(
+        .create_group_participant(
+            group.id,
             Name::new("Ari").expect("valid name"),
             Color::new("#112233").expect("valid color"),
         )
@@ -163,7 +164,7 @@ async fn spending_detail_does_not_materialize_unrelated_history(pool: SqlitePool
 }
 
 #[sqlx::test(migrations = "../migrations")]
-async fn archived_group_rejects_member_add_without_creating_membership(pool: SqlitePool) {
+async fn archived_group_rejects_member_add_without_changing_membership(pool: SqlitePool) {
     let (store, group_id, participant_id) = active_group_and_participant(&pool).await;
     store
         .set_group_archived(group_id, true)
@@ -182,7 +183,7 @@ async fn archived_group_rejects_member_add_without_creating_membership(pool: Sql
     .fetch_one(&pool)
     .await
     .expect("count memberships");
-    assert_eq!(count, 0);
+    assert_eq!(count, 1);
 }
 
 #[sqlx::test(migrations = "../migrations")]

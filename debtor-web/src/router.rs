@@ -88,11 +88,6 @@ pub fn router_with_sessions<S: SessionStore + Clone>(
             "/groups/{id}/delete",
             get(handlers::delete_group_form).post(handlers::delete_group),
         )
-        .route("/groups/{id}/members", post(handlers::add_member))
-        .route(
-            "/groups/{group_id}/members/{participant_id}/deactivate",
-            post(handlers::deactivate_member),
-        )
         .route(
             "/groups/{id}/participants",
             post(handlers::create_group_participant),
@@ -113,23 +108,6 @@ pub fn router_with_sessions<S: SessionStore + Clone>(
         .route("/groups/{id}/archive", post(handlers::archive_group))
         .route("/groups/{id}/restore", post(handlers::restore_group))
         .route("/groups/{id}/debts", get(handlers::debts))
-        .route(
-            "/participants",
-            get(handlers::participants).post(handlers::create_participant),
-        )
-        .route(
-            "/participants/{id}/archive",
-            post(handlers::archive_participant),
-        )
-        .route(
-            "/participants/{id}/restore",
-            post(handlers::restore_participant),
-        )
-        .route(
-            "/participants/{id}/edit",
-            get(handlers::participant_edit_form),
-        )
-        .route("/participants/{id}", post(handlers::update_participant))
         .layer(middleware::from_fn(app_middleware::security_headers))
         .layer(middleware::from_fn(app_middleware::require_authenticated))
         .layer(sessions)
@@ -1074,36 +1052,6 @@ mod tests {
 
         let response = app
             .clone()
-            .oneshot(request(
-                Method::GET,
-                "/participants",
-                "",
-                Some(&session_cookie),
-            ))
-            .await
-            .expect("participants response");
-        let participants_page = response_body(response).await;
-        let response = app
-            .clone()
-            .oneshot(request(
-                Method::POST,
-                "/participants",
-                &format!(
-                    "csrf={}&submission_token={}&name=New+person&color=%23abcdef",
-                    csrf(&participants_page),
-                    submission_token(&participants_page)
-                ),
-                Some(&session_cookie),
-            ))
-            .await
-            .expect("participant create validation response");
-        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let body = response_body(response).await;
-        assert!(body.contains("value=\"New person\""));
-        assert!(body.contains("value=\"#abcdef\""));
-
-        let response = app
-            .clone()
             .oneshot(request(Method::GET, "/groups/1", "", Some(&session_cookie)))
             .await
             .expect("group response");
@@ -1126,36 +1074,6 @@ mod tests {
         let body = response_body(response).await;
         assert!(body.contains("value=\"Joined person\""));
         assert!(body.contains("value=\"#fedcba\""));
-
-        let response = app
-            .clone()
-            .oneshot(request(
-                Method::GET,
-                "/participants/1/edit",
-                "",
-                Some(&session_cookie),
-            ))
-            .await
-            .expect("participant edit response");
-        let participant_edit_page = response_body(response).await;
-        let response = app
-            .clone()
-            .oneshot(request(
-                Method::POST,
-                "/participants/1",
-                &format!(
-                    "csrf={}&submission_token={}&name=Edited+person&color=%23aabbcc",
-                    csrf(&participant_edit_page),
-                    submission_token(&participant_edit_page)
-                ),
-                Some(&session_cookie),
-            ))
-            .await
-            .expect("participant edit validation response");
-        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let body = response_body(response).await;
-        assert!(body.contains("value=\"Edited person\""));
-        assert!(body.contains("value=\"#aabbcc\""));
     }
 
     #[tokio::test]
@@ -1358,8 +1276,135 @@ mod tests {
         let manage_body = response_body(manage).await;
         assert!(manage_body.contains("aria-current=\"page\">Manage</a>"));
         assert!(manage_body.contains("id=\"participants\""));
-        assert!(!manage_body.contains("action=\"/groups/1/participants\""));
+        assert!(manage_body.contains("action=\"/groups/1/participants\""));
+        assert!(manage_body.contains("id=\"participant-name\""));
+        assert!(manage_body.contains("id=\"participant-color\""));
         assert!(manage_body.contains("/groups/1/transactions"));
+    }
+
+    #[tokio::test]
+    async fn group_participant_form_validates_before_dispatch_and_redirects_to_manage() {
+        let test_state = state(false);
+        let app = app(&test_state);
+        let session_cookie = login(&app).await;
+        let response = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                "/groups/1/manage",
+                "",
+                Some(&session_cookie),
+            ))
+            .await
+            .expect("manage response");
+        let manage = response_body(response).await;
+        let csrf_token = csrf(&manage);
+        let submission = submission_token(&manage);
+        assert!(manage.contains("name=\"name\"") || manage.contains("name=\"participant-name\""));
+        assert!(manage.contains("name=\"color\""));
+        assert!(!manage.contains("action=\"/participants\""));
+        assert!(manage.contains("action=\"/groups/1/participants\""));
+        assert!(manage.contains("hx-post=\"/groups/1/participants\""));
+        assert!(manage.contains("id=\"participant-add-status\""));
+        assert!(manage.contains("aria-busy=\"false\""));
+
+        let invalid = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                "/groups/1/participants",
+                &format!("csrf={csrf_token}&submission_token={submission}&name=+&color=%23abc"),
+                Some(&session_cookie),
+            ))
+            .await
+            .expect("invalid participant response");
+        assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let invalid_body = response_body(invalid).await;
+        assert!(invalid_body.contains("value=\" \""));
+        assert!(invalid_body.contains("value=\"#abc\""));
+        assert!(invalid_body.contains("aria-invalid=\"true\""));
+        assert!(
+            invalid_body.contains("aria-describedby=\"participant-name-guidance group-error\"")
+        );
+        assert!(invalid_body.contains("autofocus"));
+        assert!(
+            test_state
+                .participants
+                .group_created
+                .lock()
+                .expect("participant calls")
+                .is_empty()
+        );
+
+        let committed = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                "/groups/1/participants",
+                &format!(
+                    "csrf={csrf_token}&submission_token={submission}&name=Bea&color=%23aabbcc"
+                ),
+                Some(&session_cookie),
+            ))
+            .await
+            .expect("participant create response");
+        assert_eq!(committed.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            committed.headers()["location"],
+            "/groups/1/manage?participant=1"
+        );
+        let manage = app
+            .oneshot(request(
+                Method::GET,
+                "/groups/1/manage?participant=1",
+                "",
+                Some(&session_cookie),
+            ))
+            .await
+            .expect("committed manage response");
+        let body = response_body(manage).await;
+        assert!(body.contains("id=\"participant-1\""));
+        assert!(body.contains("autofocus"));
+    }
+
+    #[tokio::test]
+    async fn participant_creation_rejects_missing_group_before_form_parsing() {
+        let test_state = state(false);
+        let app = app(&test_state);
+        let session_cookie = login(&app).await;
+        let response = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                "/groups/1/manage",
+                "",
+                Some(&session_cookie),
+            ))
+            .await
+            .expect("manage response");
+        let manage = response_body(response).await;
+        let response = app
+            .oneshot(request(
+                Method::POST,
+                "/groups/999/participants",
+                &format!(
+                    "csrf={}&submission_token={}&name=A&color=%23aabbcc",
+                    csrf(&manage),
+                    submission_token(&manage)
+                ),
+                Some(&session_cookie),
+            ))
+            .await
+            .expect("missing group response");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert!(
+            test_state
+                .participants
+                .group_created
+                .lock()
+                .expect("participant calls")
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -1442,13 +1487,11 @@ mod tests {
             (Method::POST, "/groups/1/edit", "name=Nope&currency=USD"),
             (Method::GET, "/groups/1/delete", ""),
             (Method::POST, "/groups/1/delete", ""),
-            (Method::POST, "/groups/1/members", "participant_id=1"),
             (
                 Method::POST,
                 "/groups/1/participants",
                 "name=New&color=%23abcdef",
             ),
-            (Method::POST, "/groups/1/members/1/deactivate", ""),
             (Method::POST, "/groups/1/spendings", ""),
             (Method::GET, "/groups/1/spendings/1/edit", ""),
             (Method::GET, "/groups/1/spendings/1/delete", ""),
@@ -1575,18 +1618,12 @@ mod tests {
             (Method::POST, "/groups"),
             (Method::POST, "/groups/1/edit"),
             (Method::POST, "/groups/1/delete"),
-            (Method::POST, "/groups/1/members"),
-            (Method::POST, "/groups/1/members/1/deactivate"),
             (Method::POST, "/groups/1/participants"),
             (Method::POST, "/groups/1/spendings"),
             (Method::POST, "/groups/1/spendings/1"),
             (Method::POST, "/groups/1/spendings/1/delete"),
             (Method::POST, "/groups/1/archive"),
             (Method::POST, "/groups/1/restore"),
-            (Method::POST, "/participants"),
-            (Method::POST, "/participants/1"),
-            (Method::POST, "/participants/1/archive"),
-            (Method::POST, "/participants/1/restore"),
         ];
         for (method, uri) in routes {
             for body in ["", "csrf=wrong", "csrf=wrong&csrf=another"] {

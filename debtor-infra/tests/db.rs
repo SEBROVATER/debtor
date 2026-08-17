@@ -125,8 +125,13 @@ async fn spending_eligibility_failure_rolls_back_without_parent_or_allocations()
         .create_group(Name::new("Trip").expect("name"), Currency::Usd)
         .await
         .expect("group");
+    let other_group = store
+        .create_group(Name::new("Other").expect("name"), Currency::Usd)
+        .await
+        .expect("other group");
     let participant = store
-        .create_participant(
+        .create_group_participant(
+            other_group.id,
             Name::new("Ada").expect("name"),
             Color::new("#123456").expect("color"),
         )
@@ -176,7 +181,8 @@ async fn snapshot_never_mixes_uncommitted_group_parent_or_allocations() {
         .await
         .expect("group");
     let participant = store
-        .create_participant(
+        .create_group_participant(
+            group.id,
             Name::new("Ada").expect("name"),
             Color::new("#123456").expect("color"),
         )
