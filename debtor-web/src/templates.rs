@@ -77,6 +77,10 @@ pub struct GroupRow {
 #[derive(Template)]
 #[template(path = "debts.html")]
 pub struct DebtsTemplate {
+    /// Group identifier.
+    pub group_id: i64,
+    /// Whether mutations are blocked for this Group.
+    pub archived: bool,
     /// Currency.
     pub currency: String,
     /// Transfers.
@@ -231,6 +235,28 @@ pub struct GroupTemplate {
     pub expense: ExpenseFormView,
 }
 
+/// Focused full-page Spending create/preview form.
+#[derive(Template)]
+#[template(path = "spending_form.html")]
+pub struct SpendingFormTemplate {
+    /// Group name.
+    pub group_name: String,
+    /// Group identifier.
+    pub group_id: i64,
+    /// Shared authenticated shell protection values.
+    pub shell: AuthenticatedShell,
+    /// Form projection.
+    pub expense: ExpenseFormView,
+    /// Form action for create preview/approval or existing Spending update.
+    pub action: String,
+    /// Whether the current page is a reviewed non-editable preview.
+    pub reviewed: bool,
+    /// Form-level error or status text.
+    pub status: Option<String>,
+    /// Whether the heading should receive forward focus.
+    pub focus_heading: bool,
+}
+
 /// Renderable Group-scoped Participant edit row for enhanced requests.
 #[derive(Template)]
 #[template(path = "participant_edit_row.html")]
@@ -313,6 +339,8 @@ pub struct MemberRow {
     pub selected: bool,
     /// Draft amount.
     pub amount: String,
+    /// Derived exact Share amount for a Proportional preview.
+    pub derived_amount: String,
     /// Whether this row currently renders its edit form.
     pub editing: bool,
     /// Edit name draft.

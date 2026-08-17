@@ -4,7 +4,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::NaiveDate;
 use debtor_domain::currency::Currency;
-use debtor_domain::expenses::splitting::equal_split;
+use debtor_domain::expenses::splitting::proportional_split;
 use debtor_domain::model::{
     Allocation, Description, EntityId, Spending, SpendingType, ValidationError,
 };
@@ -107,15 +107,13 @@ pub trait SpendingEligibilityReader: Send + Sync {
 pub enum PayerInput {
     /// One participant paid the full raw total.
     Single(EntityId),
-    /// Raw exact amounts keyed by participant identity.
-    Exact(Vec<(EntityId, String)>),
 }
 
 /// Raw share selection decoded from a transport adapter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShareInput {
-    /// Participant identities receiving an equal split.
-    Equal(Vec<EntityId>),
+    /// Raw proportional weights keyed by participant identity.
+    Proportional(Vec<(EntityId, String)>),
     /// Raw exact amounts keyed by participant identity.
     Exact(Vec<(EntityId, String)>),
 }
@@ -158,6 +156,8 @@ pub trait SpendingUseCases: Send + Sync {
     ) -> Result<SpendingPage, ApplicationError>;
     /// Creates a spending from raw, transport-neutral input.
     async fn create_input(&self, input: SpendingInput) -> Result<Spending, ApplicationError>;
+    /// Validates and previews a spending without persistence.
+    async fn preview_input(&self, input: SpendingInput) -> Result<Spending, ApplicationError>;
     /// Updates a spending from raw, transport-neutral input.
     async fn update_input(
         &self,
@@ -170,6 +170,17 @@ pub trait SpendingUseCases: Send + Sync {
         group_id: EntityId,
         spending_id: EntityId,
     ) -> Result<(), ApplicationError>;
+}
+
+/// Executes a Spending mutation under root-owned lifecycle supervision.
+pub trait SpendingMutationExecutor: Send + Sync {
+    /// Creates a Spending and returns after a definitive outcome.
+    fn create_spending(
+        &self,
+        input: SpendingInput,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Spending, ApplicationError>> + Send + '_>,
+    >;
 }
 
 /// Spending workflow implementation.
@@ -194,11 +205,23 @@ impl SpendingService {
     }
 }
 
-fn parse_input(input: SpendingInput, spending_id: EntityId) -> Result<Spending, ApplicationError> {
-    let total = input
-        .total
+fn parse_unsigned_decimal(value: &str, field: &'static str) -> Result<Decimal, ApplicationError> {
+    if value.is_empty()
+        || value.starts_with(['+', '-'])
+        || value
+            .chars()
+            .any(|character| !character.is_ascii_digit() && character != '.')
+        || value.matches('.').count() > 1
+    {
+        return Err(ValidationError::InvalidField { field }.into());
+    }
+    value
         .parse::<Decimal>()
-        .map_err(|_| ValidationError::InvalidField { field: "total" })?;
+        .map_err(|_| ValidationError::InvalidField { field }.into())
+}
+
+fn parse_input(input: SpendingInput, spending_id: EntityId) -> Result<Spending, ApplicationError> {
+    let total = parse_unsigned_decimal(&input.total, "total")?;
     let currency = input
         .currency
         .parse::<Currency>()
@@ -224,9 +247,7 @@ fn parse_input(input: SpendingInput, spending_id: EntityId) -> Result<Spending, 
                 }
                 Ok(Allocation {
                     participant_id,
-                    amount: amount
-                        .parse::<Decimal>()
-                        .map_err(|_| ValidationError::InvalidField { field })?,
+                    amount: parse_unsigned_decimal(&amount, field)?,
                 })
             })
             .collect::<Result<Vec<_>, ApplicationError>>()
@@ -237,10 +258,20 @@ fn parse_input(input: SpendingInput, spending_id: EntityId) -> Result<Spending, 
             amount: total,
         }],
         PayerInput::Single(_) => return Err(ValidationError::InvalidParticipantId.into()),
-        PayerInput::Exact(values) => parse_allocations(values, "paid amount")?,
     };
     let shares = match input.shares {
-        ShareInput::Equal(ids) => equal_split(total, currency, &ids)?,
+        ShareInput::Proportional(values) => {
+            let values = values
+                .into_iter()
+                .map(|(participant_id, weight)| {
+                    if participant_id <= 0 {
+                        return Err(ValidationError::InvalidParticipantId.into());
+                    }
+                    Ok((participant_id, parse_unsigned_decimal(&weight, "weight")?))
+                })
+                .collect::<Result<Vec<_>, ApplicationError>>()?;
+            proportional_split(total, currency, &values)?
+        }
         ShareInput::Exact(values) => parse_allocations(values, "owed amount")?,
     };
     let spending = Spending {
@@ -324,9 +355,14 @@ impl SpendingUseCases for SpendingService {
     }
 
     async fn create_input(&self, input: SpendingInput) -> Result<Spending, ApplicationError> {
+        let spending = self.preview_input(input).await?;
+        self.repository.create_spending(spending).await
+    }
+
+    async fn preview_input(&self, input: SpendingInput) -> Result<Spending, ApplicationError> {
         let spending = parse_input(input, 0)?;
         validate_eligible(self.eligibility.as_ref(), spending.group_id, &spending).await?;
-        self.repository.create_spending(spending).await
+        Ok(spending)
     }
 
     async fn update_input(
@@ -449,7 +485,10 @@ mod tests {
             spending_type: "food".into(),
             spent_date: date(5).to_string(),
             payers: PayerInput::Single(PARTICIPANT_ONE),
-            shares: ShareInput::Equal(vec![PARTICIPANT_TWO, PARTICIPANT_ONE]),
+            shares: ShareInput::Proportional(vec![
+                (PARTICIPANT_TWO, "1".into()),
+                (PARTICIPANT_ONE, "1".into()),
+            ]),
         }
     }
 
@@ -461,10 +500,7 @@ mod tests {
             currency: "USD".into(),
             spending_type: "transport".into(),
             spent_date: date(6).to_string(),
-            payers: PayerInput::Exact(vec![
-                (PARTICIPANT_ONE, "4.00".into()),
-                (PARTICIPANT_TWO, "6.00".into()),
-            ]),
+            payers: PayerInput::Single(PARTICIPANT_ONE),
             shares: ShareInput::Exact(vec![
                 (PARTICIPANT_ONE, "4.00".into()),
                 (PARTICIPANT_TWO, "6.00".into()),
@@ -525,21 +561,13 @@ mod tests {
         });
         let service = SpendingService::new(fake.clone(), fake.clone(), fake);
 
-        let mut equal_multiple_payers = equal_input();
-        equal_multiple_payers.payers = PayerInput::Exact(vec![(PARTICIPANT_ONE, "10.01".into())]);
-        service.create_input(equal_multiple_payers).await.unwrap();
-
-        let mut exact_single_payer = exact_input();
-        exact_single_payer.payers = PayerInput::Single(PARTICIPANT_ONE);
-        service.create_input(exact_single_payer).await.unwrap();
-
         let mut duplicate_payers = equal_input();
-        duplicate_payers.payers = PayerInput::Exact(vec![
-            (PARTICIPANT_ONE, "5.00".into()),
-            (PARTICIPANT_ONE, "5.01".into()),
+        duplicate_payers.shares = ShareInput::Proportional(vec![
+            (PARTICIPANT_ONE, "1".into()),
+            (PARTICIPANT_ONE, "1".into()),
         ]);
         assert!(matches!(
-            service.create_input(duplicate_payers).await,
+            service.preview_input(duplicate_payers).await,
             Err(ApplicationError::Validation(
                 ValidationError::DuplicateParticipant { .. }
             ))
@@ -548,16 +576,16 @@ mod tests {
         let mut empty_shares = exact_input();
         empty_shares.shares = ShareInput::Exact(Vec::new());
         assert!(matches!(
-            service.create_input(empty_shares).await,
+            service.preview_input(empty_shares).await,
             Err(ApplicationError::Validation(
                 ValidationError::EmptyAllocations { field: "share" }
             ))
         ));
 
         let mut invalid_id = equal_input();
-        invalid_id.shares = ShareInput::Equal(vec![-1]);
+        invalid_id.shares = ShareInput::Proportional(vec![(-1, "1".into())]);
         assert!(matches!(
-            service.create_input(invalid_id).await,
+            service.preview_input(invalid_id).await,
             Err(ApplicationError::Validation(
                 ValidationError::InvalidParticipantId
             ))
@@ -581,6 +609,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn spending_preview_rejects_non_plain_decimal_input_before_repository_access() {
+        let fake = Arc::new(SpendingFake {
+            read_requests: Mutex::new(Vec::new()),
+            created: Mutex::new(Vec::new()),
+            updated: Mutex::new(Vec::new()),
+            fail_update: false,
+            eligible: [PARTICIPANT_ONE, PARTICIPANT_TWO].into_iter().collect(),
+        });
+        let service = SpendingService::new(fake.clone(), fake.clone(), fake.clone());
+        for value in ["+1.00", "-1.00", "1e2", " 1.00", "1..0"] {
+            let mut input = equal_input();
+            input.total = value.into();
+            assert!(matches!(
+                service.preview_input(input).await,
+                Err(ApplicationError::Validation(
+                    ValidationError::InvalidField { field: "total" }
+                ))
+            ));
+        }
+        assert!(fake.created.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn spending_update_grandfathers_only_existing_inactive_roles() {
         let fake = Arc::new(SpendingFake {
             read_requests: Mutex::new(Vec::new()),
@@ -594,7 +645,8 @@ mod tests {
         service.update_input(9, equal_input()).await.unwrap();
 
         let mut introduces_inactive_participant = equal_input();
-        introduces_inactive_participant.shares = ShareInput::Equal(vec![PARTICIPANT_ONE, 3]);
+        introduces_inactive_participant.shares =
+            ShareInput::Proportional(vec![(PARTICIPANT_ONE, "1".into()), (3, "1".into())]);
         assert!(matches!(
             service
                 .update_input(9, introduces_inactive_participant)

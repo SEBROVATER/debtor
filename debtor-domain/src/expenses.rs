@@ -9,42 +9,25 @@ pub mod splitting;
 pub enum PayerMode {
     /// One payer covers the full total.
     Single,
-    /// Multiple exact payer allocations are stored.
-    Multiple,
 }
 
 /// Persisted share mode inferred for an edit form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShareMode {
-    /// Shares match the deterministic equal split.
-    Equal,
     /// Shares are explicit exact allocations.
     Exact,
 }
 
 /// Infers whether a spending has the single-payer representation.
 pub fn infer_payer_mode(spending: &Spending) -> PayerMode {
-    if spending.payers.len() == 1 && spending.payers[0].amount == spending.total {
-        PayerMode::Single
-    } else {
-        PayerMode::Multiple
-    }
+    let _ = spending;
+    PayerMode::Single
 }
 
 /// Infers whether a spending has the deterministic equal-share representation.
 pub fn infer_share_mode(spending: &Spending) -> ShareMode {
-    let ids = spending
-        .shares
-        .iter()
-        .map(|allocation| allocation.participant_id)
-        .collect::<Vec<_>>();
-    if splitting::equal_split(spending.total, spending.currency, &ids)
-        .is_ok_and(|equal| equal == spending.shares)
-    {
-        ShareMode::Equal
-    } else {
-        ShareMode::Exact
-    }
+    let _ = spending;
+    ShareMode::Exact
 }
 
 #[cfg(test)]
@@ -84,7 +67,7 @@ mod tests {
             }],
         );
         assert_eq!(infer_payer_mode(&equal), PayerMode::Single);
-        assert_eq!(infer_share_mode(&equal), ShareMode::Equal);
+        assert_eq!(infer_share_mode(&equal), ShareMode::Exact);
 
         let exact = spending(
             vec![
@@ -108,7 +91,7 @@ mod tests {
                 },
             ],
         );
-        assert_eq!(infer_payer_mode(&exact), PayerMode::Multiple);
+        assert_eq!(infer_payer_mode(&exact), PayerMode::Single);
         assert_eq!(infer_share_mode(&exact), ShareMode::Exact);
     }
 }

@@ -1,5 +1,6 @@
 //! Fallible session operations for authentication and CSRF state.
 
+use std::sync::OnceLock;
 use time::Duration;
 use tower_sessions::{Expiry, Session};
 use uuid::Uuid;
@@ -10,6 +11,8 @@ const GROUP_DELETE_ID: &str = "group_delete_id";
 const GROUP_DELETE_PARTICIPANTS: &str = "group_delete_participants";
 const GROUP_DELETE_TOKEN: &str = "group_delete_token";
 const GROUP_RESTORE_FOCUS: &str = "group_restore_focus";
+const SPENDING_PREVIEW_GROUP: &str = "spending_preview_group";
+const SPENDING_PREVIEW_FIELDS: &str = "spending_preview_fields";
 
 /// Returns the fixed expiry policy for anonymous sessions.
 pub fn anonymous_expiry() -> Expiry {
@@ -23,6 +26,55 @@ pub(crate) fn authenticated_expiry() -> Expiry {
 /// A session store operation failed.
 #[derive(Debug)]
 pub(crate) struct SessionError;
+
+static SPENDING_APPROVAL_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+pub(crate) fn spending_approval_lock() -> &'static tokio::sync::Mutex<()> {
+    SPENDING_APPROVAL_LOCK.get_or_init(tokio::sync::Mutex::default)
+}
+
+pub(crate) async fn set_spending_preview(
+    session: &Session,
+    group_id: i64,
+    fields: Vec<(String, String)>,
+) -> Result<(), SessionError> {
+    session
+        .insert(SPENDING_PREVIEW_GROUP, group_id)
+        .await
+        .map_err(|_| SessionError)?;
+    session
+        .insert(SPENDING_PREVIEW_FIELDS, fields)
+        .await
+        .map_err(|_| SessionError)
+}
+
+pub(crate) async fn take_matching_spending_preview(
+    session: &Session,
+    group_id: i64,
+    fields: &[(String, String)],
+) -> Result<bool, SessionError> {
+    let matches = session
+        .get::<i64>(SPENDING_PREVIEW_GROUP)
+        .await
+        .map_err(|_| SessionError)?
+        .is_some_and(|stored_group| stored_group == group_id)
+        && session
+            .get::<Vec<(String, String)>>(SPENDING_PREVIEW_FIELDS)
+            .await
+            .map_err(|_| SessionError)?
+            .is_some_and(|stored_fields| stored_fields == fields);
+    if matches {
+        session
+            .remove::<i64>(SPENDING_PREVIEW_GROUP)
+            .await
+            .map_err(|_| SessionError)?;
+        session
+            .remove::<Vec<(String, String)>>(SPENDING_PREVIEW_FIELDS)
+            .await
+            .map_err(|_| SessionError)?;
+    }
+    Ok(matches)
+}
 
 /// Returns whether this session is authenticated.
 pub(crate) async fn authenticated(session: &Session) -> Result<bool, SessionError> {

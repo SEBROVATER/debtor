@@ -353,7 +353,7 @@ pub(crate) fn parse_expense_form(form: OrderedForm) -> Result<ExpenseForm, FormE
 }
 
 fn dynamic_expense_field(key: &str) -> Option<(&str, i64)> {
-    ["payer_", "share_", "exact_"]
+    ["included_", "weight_", "exact_"]
         .into_iter()
         .find_map(|prefix| {
             key.strip_prefix(prefix)
@@ -511,24 +511,24 @@ mod tests {
     #[test]
     fn expense_parser_accepts_structural_dynamic_fields_without_eligibility_policy() {
         let mut form = expense_fields();
-        form.0.push(("payer_1".into(), "12.00".into()));
-        form.0.push(("share_2".into(), "on".into()));
+        form.0.push(("weight_1".into(), "1".into()));
+        form.0.push(("included_1".into(), "on".into()));
 
         let parsed = parse_expense_form(form).expect("valid expense form");
+        assert_eq!(parsed.extra.get("weight_1").map(String::as_str), Some("1"));
         assert_eq!(
-            parsed.extra.get("payer_1").map(String::as_str),
-            Some("12.00")
+            parsed.extra.get("included_1").map(String::as_str),
+            Some("on")
         );
-        assert_eq!(parsed.extra.get("share_2").map(String::as_str), Some("on"));
     }
 
     #[test]
     fn expense_parser_rejects_duplicate_unknown_and_malformed_dynamic_fields() {
-        for field in ["payer_1", "payer_not-an-id", "unexpected"] {
+        for field in ["weight_1", "weight_not-an-id", "unexpected"] {
             let mut form = expense_fields();
-            form.0.push((field.into(), "12.00".into()));
-            if field == "payer_1" {
-                form.0.push((field.into(), "13.00".into()));
+            form.0.push((field.into(), "1".into()));
+            if field == "weight_1" {
+                form.0.push((field.into(), "2".into()));
             }
             assert_eq!(
                 parse_expense_form(form).err().map(|error| error.status),

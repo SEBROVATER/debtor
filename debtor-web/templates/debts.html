@@ -20,6 +20,7 @@
     </header>
     <main>
       <h1>Advisory transfers</h1>
+      {% if !archived %}<p id="add-spending-action"><a class="button" href="/groups/{{ group_id }}/spendings/new">Add Spending</a></p>{% endif %}
       <p>
         Target currency: <strong>{{ currency }}</strong>.
         <a href="?rate_mode=historical">Historical rates</a> |

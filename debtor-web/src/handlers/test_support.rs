@@ -9,7 +9,7 @@ use debtor_application::{
     DebtUseCases, GroupCreateInput, GroupDeleteInput, GroupInput, GroupMutationExecutor,
     GroupUseCases, LoginAdmission, LoginAttemptLimiter, ParticipantCreateInput,
     ParticipantUpdateInput, ParticipantUseCases, PasswordVerifier, RateMode, ReadinessUseCases,
-    SpendingInput, SpendingPage, SpendingUseCases, UtcClock,
+    SpendingInput, SpendingMutationExecutor, SpendingPage, SpendingUseCases, UtcClock,
 };
 use debtor_domain::{
     currency::Currency,
@@ -143,7 +143,9 @@ fn state_with_errors_and_password(
         archived: AtomicUsize::new(0),
         memberships: AtomicUsize::new(0),
     });
-    let spendings: Arc<dyn SpendingUseCases> = Arc::new(FakeSpendings);
+    let fake_spendings = Arc::new(FakeSpendings);
+    let spendings: Arc<dyn SpendingUseCases> = fake_spendings.clone();
+    let spending_mutations: Arc<dyn SpendingMutationExecutor> = fake_spendings;
     let debts: Arc<dyn DebtUseCases> = Arc::new(FakeDebts);
     let auth_attempts = Arc::new(AtomicUsize::new(0));
     let password_verifications = Arc::new(AtomicUsize::new(0));
@@ -168,6 +170,7 @@ fn state_with_errors_and_password(
             group_mutations: groups.clone(),
             participants: participants_use_cases,
             spendings,
+            spending_mutations,
             debts,
             authentication,
             clock,
@@ -437,12 +440,27 @@ impl SpendingUseCases for FakeSpendings {
         Err(validation_error())
     }
 
+    async fn preview_input(&self, _: SpendingInput) -> Result<Spending, ApplicationError> {
+        Err(validation_error())
+    }
+
     async fn update_input(&self, _: i64, _: SpendingInput) -> Result<Spending, ApplicationError> {
         Err(validation_error())
     }
 
     async fn delete(&self, _: i64, _: i64) -> Result<(), ApplicationError> {
         Ok(())
+    }
+}
+
+impl SpendingMutationExecutor for FakeSpendings {
+    fn create_spending(
+        &self,
+        _: SpendingInput,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Spending, ApplicationError>> + Send + '_>,
+    > {
+        Box::pin(async { Err(validation_error()) })
     }
 }
 

@@ -40,8 +40,11 @@
         <button type="button" disabled>Add Spending</button>
         <span>Add Spending is unavailable until this Group has an active Participant.</span>
         <a href="/groups/{{ group_id }}/manage#participants">Manage Participants</a>
-      </p>
-      {% endif %}
+       </p>
+       {% endif %}
+       {% if members.len() > 0 && !archived %}
+       <p id="add-spending-action"><a class="button" href="/groups/{{ group_id }}/spendings/new">Add Spending</a></p>
+       {% endif %}
        {% match error %}{% when Some with (message) %}
        <p id="group-error" class="error" role="alert" tabindex="-1">{{ message }}</p>
        {% when None %}{% endmatch %} {% if archived %}
@@ -162,149 +165,9 @@
          <p class="helper">Archived or inactive identities are managed by their owning lifecycle stories.</p>
          {% endif %}
        </section>
-      {% if members.len() > 0 %}
-      <section class="card">
-        <form method="post" action="{{ expense.action }}" class="mutation-form" aria-describedby="group-error" hx-post="{{ expense.action }}" hx-disabled-elt="button" hx-indicator="#expense-status" aria-busy="false">
-          <input type="hidden" name="csrf" value="{{ csrf }}" /><input type="hidden" name="submission_token" value="{{ shell.submission_token }}" />
-          <h2>{{ expense.heading }}</h2>
-          {% match expense.error %}{% when Some with (message) %}
-          <p class="error" role="alert">{{ message }}</p>
-          {% when None %}{% endmatch %}
-          <div class="form-grid">
-            <label
-              >Description
-              <input name="description" value="{{ expense.description }}" required /></label
-            ><label
-              >Total
-              <input name="total" value="{{ expense.total }}" inputmode="decimal" required /></label
-            ><label
-              >Currency
-              <select name="currency">
-                {% for option in expense.currencies %}
-                <option value="{{ option.value }}" {% if option.selected %} selected{% endif %}>
-                  {{ option.label }}
-                </option>
-                {% endfor %}
-              </select></label
-            ><label
-              >Category
-              <select name="spending_type">
-                {% for option in expense.categories %}
-                <option value="{{ option.value }}" {% if option.selected %} selected{% endif %}>
-                  {{ option.label }}
-                </option>
-                {% endfor %}
-              </select></label
-            ><label
-              >Date <input type="date" name="spent_date" value="{{ expense.spent_date }}" required
-            /></label>
-          </div>
-          <fieldset>
-            <legend>Who paid?</legend>
-            <div class="choice-row">
-              <label
-                ><input
-                  type="radio"
-                  name="payer_mode"
-                  value="single"
-                  {% if expense.payer_mode == "single" %} checked{% endif %}
-                />
-                One person paid</label
-              ><label
-                ><input
-                  type="radio"
-                  name="payer_mode"
-                  value="multiple"
-                  {% if expense.payer_mode == "multiple" %} checked{% endif %}
-                />
-                Several people paid</label
-              >
-            </div>
-            <p class="helper">The amount paid must equal the expense total.</p>
-            <div class="mode-panel single-payer">
-              <label
-                >Paid by
-                <select name="single_payer_id">
-                  <option value="0" {% if expense.single_payer_id == 0 %} selected{% endif %}>
-                    Choose a participant
-                  </option>
-                  {% for member in expense.payer_rows %}
-                  <option
-                    value="{{ member.id }}"
-                    {% if member.id == expense.single_payer_id %} selected{% endif %}
-                  >
-                    {{ member.name }}
-                  </option>
-                  {% endfor %}
-                </select></label
-              >
-            </div>
-            <div class="mode-panel multiple-payers">
-              {% for member in expense.payer_rows %}<label
-                >{{ member.name }}<input
-                  name="payer_{{ member.id }}"
-                  value="{{ member.amount }}"
-                  inputmode="decimal"
-                  placeholder="0.00" /></label
-              >{% endfor %}
-            </div>
-          </fieldset>
-          <fieldset>
-            <legend>How should this expense be split?</legend>
-            <div class="choice-row">
-              <label
-                ><input
-                  type="radio"
-                  name="split_mode"
-                  value="equal"
-                  {% if expense.split_mode == "equal" %} checked{% endif %}
-                />
-                Split equally</label
-              ><label
-                ><input
-                  type="radio"
-                  name="split_mode"
-                  value="exact"
-                  {% if expense.split_mode == "exact" %} checked{% endif %}
-                />
-                Enter exact amounts</label
-              >
-            </div>
-            <div class="mode-panel equal-split">
-              <p class="helper">Who shares this expense? The total is divided equally.</p>
-              {% for member in expense.share_rows %}<label class="check-row"
-                ><input
-                  type="checkbox"
-                  name="share_{{ member.id }}"
-                  value="on"
-                  {%
-                  if
-                  member.selected
-                  %}
-                  checked{%
-                  endif
-                  %}
-                />
-                {{ member.name }}</label
-              >{% endfor %}
-            </div>
-            <div class="mode-panel exact-split">
-              <p class="helper">
-                How much does each person owe? Owed amounts must add up to the total.
-              </p>
-              {% for member in expense.exact_rows %}<label
-                >{{ member.name }}<input
-                  name="exact_{{ member.id }}"
-                  value="{{ member.amount }}"
-                  inputmode="decimal"
-                  placeholder="0.00" /></label
-              >{% endfor %}
-            </div>
-          </fieldset>
-          <button type="submit">{{ expense.submit_label }}</button><p id="expense-status" class="mutation-status" role="status" aria-live="polite" aria-atomic="true"> </p>
-        </form>
-      </section>
-      {% endif %}
+       {% if members.len() > 0 && !archived %}
+       <p class="helper">Use Add Spending to open the focused Spending form.</p>
+       {% endif %}
       <section class="card">
         <h2>Expense history</h2>
         {% if spendings.len() == 0 %}

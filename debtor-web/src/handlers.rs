@@ -27,8 +27,8 @@ pub(crate) use memberships::{
     create_group_participant, edit_group_participant_form, update_group_participant,
 };
 pub(crate) use spendings::{
-    create_spending, delete_spending, delete_spending_form, edit_spending_form, spending_detail,
-    update_spending,
+    create_spending, delete_spending, delete_spending_form, edit_spending_form, new_spending_form,
+    preview_spending, spending_detail, update_spending,
 };
 
 #[derive(Deserialize)]

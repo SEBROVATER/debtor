@@ -17,13 +17,131 @@ use super::{
     auth::{authenticated_shell, csrf, require_auth},
     groups::require_writable_group,
     response::{error_response, map_error, render},
-    spending_views::{build_group_template, map_group_template_error, named_allocations},
+    spending_views::{
+        build_group_template, build_spending_form_template, map_group_template_error,
+        named_allocations,
+    },
 };
 use crate::{
     forms::{CsrfValidatedForm, parse_expense_form},
+    session,
     state::AppState,
     templates::{ConfirmTemplate, SpendingDetailTemplate},
 };
+
+pub(crate) async fn new_spending_form(
+    State(state): State<AppState>,
+    session: Session,
+    Path(group_id): Path<i64>,
+) -> Response {
+    if let Err(response) = require_auth(&session).await {
+        return response;
+    }
+    if let Err(response) = require_writable_group(&state, group_id).await {
+        return response;
+    }
+    match build_spending_form_template(&state, &session, group_id, None, None, None, false).await {
+        Ok(template) => render(&template),
+        Err(error) => map_group_template_error(error),
+    }
+}
+
+pub(crate) async fn preview_spending(
+    State(state): State<AppState>,
+    session: Session,
+    Path(group_id): Path<i64>,
+    form: CsrfValidatedForm,
+) -> Response {
+    if let Err(response) = require_auth(&session).await {
+        return response;
+    }
+    if let Err(response) = require_writable_group(&state, group_id).await {
+        return response;
+    }
+    let ordered = form.ordered();
+    let parsed = match parse_expense_form(ordered.clone()) {
+        Ok(value) => value,
+        Err(error) => return error_response(error.status, error.message),
+    };
+    let input = match parse_expense(group_id, &parsed) {
+        Ok(value) => value,
+        Err(message) => {
+            return match build_spending_form_template(
+                &state,
+                &session,
+                group_id,
+                Some(&parsed),
+                None,
+                Some(message),
+                false,
+            )
+            .await
+            {
+                Ok(template) => {
+                    (StatusCode::UNPROCESSABLE_ENTITY, render(&template)).into_response()
+                }
+                Err(error) => map_group_template_error(error),
+            };
+        }
+    };
+    match state.spendings.preview_input(input).await {
+        Ok(preview) => {
+            let review_fields = ordered
+                .0
+                .iter()
+                .filter(|(key, _)| key != "csrf" && key != "submission_token")
+                .cloned()
+                .collect();
+            if session::set_spending_preview(&session, group_id, review_fields)
+                .await
+                .is_err()
+            {
+                return super::response::session_error();
+            }
+            let mut template = match build_spending_form_template(
+                &state,
+                &session,
+                group_id,
+                Some(&parsed),
+                None,
+                Some("Preview ready. Review the exact Shares before approving.".into()),
+                true,
+            )
+            .await
+            {
+                Ok(template) => template,
+                Err(error) => return map_group_template_error(error),
+            };
+            for row in &mut template.expense.share_rows {
+                row.derived_amount = preview
+                    .shares
+                    .iter()
+                    .find(|allocation| allocation.participant_id == row.id)
+                    .map_or_else(String::new, |allocation| allocation.amount.to_string());
+            }
+            render(&template)
+        }
+        Err(debtor_application::ApplicationError::Validation(error)) => {
+            match build_spending_form_template(
+                &state,
+                &session,
+                group_id,
+                Some(&parsed),
+                None,
+                Some(error.to_string()),
+                false,
+            )
+            .await
+            {
+                Ok(template) => {
+                    (StatusCode::UNPROCESSABLE_ENTITY, render(&template)).into_response()
+                }
+                Err(error) => map_group_template_error(error),
+            }
+        }
+        Err(error) => map_error(error),
+    }
+}
 
 pub(crate) async fn create_spending(
     State(state): State<AppState>,
@@ -58,15 +176,14 @@ pub(crate) async fn edit_spending_form(
         Ok(value) => value,
         Err(error) => return map_error(error),
     };
-    match build_group_template(
+    match build_spending_form_template(
         &state,
         &session,
         group_id,
         None,
         Some(&spending),
         None,
-        None,
-        None,
+        false,
     )
     .await
     {
@@ -199,7 +316,14 @@ async fn save_spending(
         return response;
     }
     let csrf_form = form;
-    let form = csrf_form.ordered();
+    let ordered = csrf_form.ordered();
+    let review_fields = ordered
+        .0
+        .iter()
+        .filter(|(key, _)| key != "csrf" && key != "submission_token")
+        .cloned()
+        .collect::<Vec<_>>();
+    let form = ordered;
     if let Err(response) = require_writable_group(&state, group_id).await {
         return response;
     }
@@ -230,22 +354,41 @@ async fn save_spending(
             .await;
         }
     };
-    let Some(session_id) = session.id() else {
-        return super::response::session_error();
-    };
-    if let Err(response) = csrf_form
-        .reserve_and_dispatch(&state.submission_tokens, session_id)
-        .await
+    let _approval_guard = session::spending_approval_lock().lock().await;
+    if spending_id.is_none() {
+        if let Err(response) = reserve_submission_token(&state, &session, &csrf_form).await {
+            return response;
+        }
+        match session::take_matching_spending_preview(&session, group_id, &review_fields).await {
+            Ok(true) => {}
+            Ok(false) => {
+                return crate::handlers::response::submission_token_conflict_for(
+                    &format!("/groups/{group_id}/spendings"),
+                    false,
+                );
+            }
+            Err(_) => return super::response::session_error(),
+        }
+    }
+    if spending_id.is_some()
+        && let Err(response) = reserve_submission_token(&state, &session, &csrf_form).await
     {
         return response;
     }
     let result = if let Some(id) = spending_id {
         state.spendings.update_input(id, input).await
     } else {
-        state.spendings.create_input(input).await
+        state.spending_mutations.create_spending(input).await
     };
     match result {
-        Ok(_) => Redirect::to(&format!("/groups/{group_id}")).into_response(),
+        Ok(_) => {
+            let destination = if spending_id.is_some() {
+                format!("/groups/{group_id}")
+            } else {
+                format!("/groups/{group_id}/transactions")
+            };
+            Redirect::to(&destination).into_response()
+        }
         Err(debtor_application::ApplicationError::Validation(error)) => {
             form_error(
                 &state,
@@ -260,6 +403,18 @@ async fn save_spending(
         }
         Err(error) => map_error(error),
     }
+}
+
+async fn reserve_submission_token(
+    state: &AppState,
+    session: &Session,
+    form: &CsrfValidatedForm,
+) -> Result<(), Response> {
+    let Some(session_id) = session.id() else {
+        return Err(super::response::session_error());
+    };
+    form.reserve_and_dispatch(&state.submission_tokens, session_id)
+        .await
 }
 
 async fn form_error(
@@ -291,11 +446,10 @@ async fn form_error(
 fn parse_expense(group_id: i64, form: &ExpenseForm) -> Result<SpendingInput, String> {
     let payers = match form.payer_mode.as_str() {
         "single" => PayerInput::Single(form.single_payer_id.unwrap_or_default()),
-        "multiple" => PayerInput::Exact(raw_allocations(&form.extra, "payer_")),
-        _ => return Err("Choose how many people paid.".into()),
+        _ => return Err("Choose one Payer.".into()),
     };
     let shares = match form.split_mode.as_str() {
-        "equal" => ShareInput::Equal(raw_ids(&form.extra, "share_")),
+        "proportional" => ShareInput::Proportional(raw_proportional_allocations(&form.extra)?),
         "exact" => ShareInput::Exact(raw_allocations(&form.extra, "exact_")),
         _ => return Err("Choose how the expense is split.".into()),
     };
@@ -311,15 +465,6 @@ fn parse_expense(group_id: i64, form: &ExpenseForm) -> Result<SpendingInput, Str
     })
 }
 
-fn raw_ids(fields: &HashMap<String, String>, prefix: &str) -> Vec<i64> {
-    let mut ids = fields
-        .keys()
-        .filter_map(|key| key.strip_prefix(prefix).and_then(|id| id.parse().ok()))
-        .collect::<Vec<_>>();
-    ids.sort_unstable();
-    ids
-}
-
 fn raw_allocations(fields: &HashMap<String, String>, prefix: &str) -> Vec<(i64, String)> {
     let mut values = fields
         .iter()
@@ -332,6 +477,28 @@ fn raw_allocations(fields: &HashMap<String, String>, prefix: &str) -> Vec<(i64, 
         .collect::<Vec<_>>();
     values.sort_unstable_by_key(|(id, _)| *id);
     values
+}
+
+fn raw_proportional_allocations(
+    fields: &HashMap<String, String>,
+) -> Result<Vec<(i64, String)>, String> {
+    let mut included = fields
+        .keys()
+        .filter_map(|key| key.strip_prefix("included_")?.parse::<i64>().ok())
+        .collect::<Vec<_>>();
+    included.sort_unstable();
+    included.dedup();
+    let mut allocations = Vec::with_capacity(included.len());
+    for participant_id in included {
+        let Some(weight) = fields.get(&format!("weight_{participant_id}")) else {
+            return Err("Each included Participant needs a weight.".into());
+        };
+        if weight.trim().is_empty() {
+            return Err("Each included Participant needs a weight.".into());
+        }
+        allocations.push((participant_id, weight.clone()));
+    }
+    Ok(allocations)
 }
 
 pub(super) fn parse_cursor(raw: Option<&str>) -> Result<Option<SpendingCursor>, &'static str> {

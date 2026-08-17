@@ -36,6 +36,10 @@ pub(crate) async fn debts(
         Ok(value) => value,
         Err(error) => return map_error(error),
     };
+    let group = match state.groups.group(id).await {
+        Ok(value) => value,
+        Err(error) => return map_error(error),
+    };
     let members = match state.participants.members(id).await {
         Ok(value) => value,
         Err(error) => return map_error(error),
@@ -54,6 +58,8 @@ pub(crate) async fn debts(
         Err(response) => return response,
     };
     render(&DebtsTemplate {
+        group_id: id,
+        archived: group.is_archived,
         currency: result.currency.to_string(),
         transfers: result
             .transfers

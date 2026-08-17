@@ -95,6 +95,27 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .error-page section { max-inline-size: 40rem; }
 .error-page h1:focus { outline: 2px solid var(--focus); outline-offset: 2px; }
 .error-page a { display: inline-block; min-block-size: 48px; min-inline-size: 48px; padding-block: .75rem; }
+.spending-form-page { min-block-size: 100dvh; padding-block-end: calc(2rem + env(safe-area-inset-bottom)); }
+.spending-form-page > h1 { border-block-start: 5px solid var(--accent); font-family: Georgia, "Times New Roman", serif; font-weight: 500; padding-block-start: 1rem; }
+.spending-form-page > h1:focus { outline: 2px solid var(--focus); outline-offset: 2px; }
+.spending-entry-form { display: grid; gap: 1rem; }
+.allocation-fieldset { border: 1px solid var(--line); border-radius: 0; min-inline-size: 0; }
+.allocation-scroll { border: 1px solid var(--line); max-inline-size: 100%; overflow-x: auto; }
+.allocation-table { background: transparent; color: var(--ink); inline-size: 520px; min-inline-size: 520px; table-layout: fixed; }
+.allocation-table th, .allocation-table td { border-color: var(--line); min-block-size: 48px; padding: .35rem; }
+.allocation-table th:first-child { inline-size: 116px; }
+.allocation-table th:nth-child(2), .allocation-table td:nth-child(2), .allocation-table th:nth-child(3), .allocation-table td:nth-child(3) { inline-size: 76px; }
+.allocation-table th:nth-child(4), .allocation-table td:nth-child(4) { inline-size: 92px; }
+.allocation-table th:nth-child(5), .allocation-table td:nth-child(5) { inline-size: 160px; }
+.allocation-table tbody th { background: var(--paper); overflow-wrap: anywhere; position: sticky; inset-inline-start: 0; z-index: 1; }
+.allocation-table input { max-inline-size: 100%; }
+.allocation-table input[type="checkbox"] { block-size: 48px; inline-size: 48px; }
+.allocation-payer-label, .derived-share { overflow-wrap: anywhere; }
+.spending-action-bar { background: var(--card); border-block: 1px solid var(--line); inset-block-end: 0; padding: .75rem; position: sticky; z-index: 2; }
+.spending-total-status { margin: 0 0 .75rem; min-block-size: 48px; overflow-wrap: anywhere; }
+.spending-actions { display: grid; gap: .5rem; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.spending-actions > * { align-items: center; display: flex; justify-content: center; min-block-size: 48px; min-inline-size: 48px; text-align: center; }
+.spending-page .status:not(:empty) { border-block: 1px solid var(--warn); color: var(--warn); min-block-size: 48px; padding: .75rem; }
 @media (max-width: 40rem) {
   header { align-items: start; flex-direction: column; }
   .page-heading, .member-actions { display: block; }
@@ -112,4 +133,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .compact-form { margin-block: 1rem; }
   .sign-out-form { align-items: start; width: 100%; }
   .sign-out-button { width: 100%; }
+}
+@media (max-width: 350px) {
+  .spending-fields { grid-template-columns: 1fr; }
 }

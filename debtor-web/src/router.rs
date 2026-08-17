@@ -96,6 +96,14 @@ pub fn router_with_sessions<S: SessionStore + Clone>(
             "/groups/{group_id}/participants/{participant_id}/edit",
             get(handlers::edit_group_participant_form).post(handlers::update_group_participant),
         )
+        .route(
+            "/groups/{id}/spendings/new",
+            get(handlers::new_spending_form),
+        )
+        .route(
+            "/groups/{id}/spendings/preview",
+            post(handlers::preview_spending),
+        )
         .route("/groups/{id}/spendings", post(handlers::create_spending))
         .route(
             "/groups/{group_id}/spendings/{spending_id}",
@@ -1497,9 +1505,9 @@ mod tests {
         let response = app
             .oneshot(request(
                 Method::POST,
-                "/groups/1/spendings",
+                "/groups/1/spendings/preview",
                 &format!(
-                    "description=Lunch&total=12.00&currency=USD&spending_type=food&spent_date=2026-08-04&payer_mode=single&single_payer_id=1&split_mode=equal&csrf={}&submission_token={}&share_1=on",
+                    "description=Lunch&total=12.00&currency=USD&spending_type=food&spent_date=2026-08-04&payer_mode=single&single_payer_id=1&split_mode=proportional&csrf={}&submission_token={}&included_1=on&weight_1=1",
                     csrf(&group_page),
                     submission_token(&group_page)
                 ),
@@ -1514,6 +1522,30 @@ mod tests {
         assert!(body.contains("value=\"12.00\""));
         assert!(body.contains("value=\"2026-08-04\""));
         assert!(body.contains("value=\"1\""));
+    }
+
+    #[tokio::test]
+    async fn new_spending_form_uses_proportional_defaults_and_focused_route() {
+        let test_state = state(false);
+        let app = app(&test_state);
+        let session_cookie = login(&app).await;
+        let response = app
+            .oneshot(request(
+                Method::GET,
+                "/groups/1/spendings/new",
+                "",
+                Some(&session_cookie),
+            ))
+            .await
+            .expect("new spending form response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        assert!(body.contains("id=\"spending-heading\""));
+        assert!(body.contains("name=\"split_mode\" value=\"proportional\""));
+        assert!(body.contains("name=\"weight_1\" value=\"1\""));
+        assert!(body.contains("Choose a category"));
+        assert!(!body.contains("Several people paid"));
+        assert!(!body.contains("Split equally"));
     }
 
     #[tokio::test]

@@ -8,7 +8,8 @@ use debtor_application::{
     GroupRepository, GroupService, GroupUseCases, LedgerSnapshotReader, ParticipantCreateInput,
     ParticipantReader, ParticipantRepository, ParticipantService, ParticipantUpdateInput,
     ParticipantUseCases, ReadinessService, ReadinessUseCases, SpendingEligibilityReader,
-    SpendingReader, SpendingRepository, SpendingService, SpendingUseCases, UtcClock,
+    SpendingInput, SpendingMutationExecutor, SpendingReader, SpendingRepository, SpendingService,
+    SpendingUseCases, UtcClock,
 };
 use debtor_infra::auth::{ArgonPasswordGate, MemoryLoginAttemptLimiter};
 use debtor_infra::db::repos::SqliteLedgerRuntime;
@@ -44,8 +45,56 @@ pub(crate) struct BuiltApp {
 struct RootGroupMutationExecutor {
     groups: Arc<dyn GroupUseCases>,
     participants: Arc<dyn ParticipantUseCases>,
+    spendings: Arc<dyn SpendingUseCases>,
     mutations: DispatchedMutationRegistry,
     runtime: RuntimeControl,
+}
+
+impl SpendingMutationExecutor for RootGroupMutationExecutor {
+    fn create_spending(
+        &self,
+        input: SpendingInput,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        debtor_application::Spending,
+                        debtor_application::ApplicationError,
+                    >,
+                > + Send
+                + '_,
+        >,
+    > {
+        let spendings = self.spendings.clone();
+        let mutations = self.mutations.clone();
+        let runtime = self.runtime.clone();
+        Box::pin(async move {
+            let Some(lease) = mutations.try_register() else {
+                return Err(debtor_application::ApplicationError::Storage(
+                    debtor_application::StorageReason::Contention,
+                ));
+            };
+            let task = tokio::spawn(async move {
+                let mut guard = GroupMutationGuard::new(lease, mutations, runtime);
+                match spendings.create_input(input).await {
+                    Ok(spending) => {
+                        guard.committed();
+                        Ok(spending)
+                    }
+                    Err(error) => {
+                        guard.rolled_back();
+                        Err(error)
+                    }
+                }
+            });
+            match task.await {
+                Ok(result) => result,
+                Err(_) => Err(debtor_application::ApplicationError::Storage(
+                    debtor_application::StorageReason::Unexpected,
+                )),
+            }
+        })
+    }
 }
 
 struct GroupMutationGuard {
@@ -435,17 +484,20 @@ pub(crate) async fn build_app_with_control(
         participant_repository,
         group_reader.clone(),
     ));
-    let group_mutations: Arc<dyn GroupMutationExecutor> = Arc::new(RootGroupMutationExecutor {
-        groups: groups.clone(),
-        participants: participants.clone(),
-        mutations: mutations.clone(),
-        runtime: runtime_control.clone(),
-    });
     let spendings: Arc<dyn SpendingUseCases> = Arc::new(SpendingService::new(
-        spending_reader.clone(),
+        spending_reader,
         spending_repository,
         spending_eligibility,
     ));
+    let mutation_executor = Arc::new(RootGroupMutationExecutor {
+        groups: groups.clone(),
+        participants: participants.clone(),
+        spendings: spendings.clone(),
+        mutations: mutations.clone(),
+        runtime: runtime_control.clone(),
+    });
+    let group_mutations: Arc<dyn GroupMutationExecutor> = mutation_executor.clone();
+    let spending_mutations: Arc<dyn SpendingMutationExecutor> = mutation_executor;
     let clock: Arc<dyn Clock> = Arc::new(UtcClock);
     let debts: Arc<dyn DebtUseCases> =
         Arc::new(DebtService::new(snapshot_reader, rates, clock.clone()));
@@ -457,6 +509,7 @@ pub(crate) async fn build_app_with_control(
         group_mutations,
         participants,
         spendings,
+        spending_mutations,
         debts,
         authentication,
         clock,

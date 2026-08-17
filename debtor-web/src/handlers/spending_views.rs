@@ -4,7 +4,7 @@ use axum::response::Response;
 use debtor_application::SpendingCursor;
 use debtor_domain::{
     currency::Currency,
-    expenses::{PayerMode, ShareMode, infer_payer_mode, infer_share_mode},
+    expenses::{ShareMode, infer_share_mode},
     model::{Allocation, Spending, SpendingType},
 };
 use tower_sessions::Session;
@@ -14,7 +14,8 @@ use crate::{
     participant_color::suggested_participant_color,
     state::AppState,
     templates::{
-        AllocationRow, ExpenseFormView, GroupTemplate, MemberRow, SelectOption, SpendingRow,
+        AllocationRow, ExpenseFormView, GroupTemplate, MemberRow, SelectOption,
+        SpendingFormTemplate, SpendingRow,
     },
 };
 
@@ -167,6 +168,41 @@ pub(super) async fn build_group_manage_template(
     Ok(template)
 }
 
+pub(super) async fn build_spending_form_template(
+    state: &AppState,
+    session: &Session,
+    id: i64,
+    submitted: Option<&ExpenseForm>,
+    spending: Option<&Spending>,
+    status: Option<String>,
+    reviewed: bool,
+) -> Result<SpendingFormTemplate, GroupTemplateError> {
+    let group = state.groups.group(id).await?;
+    let mut page =
+        build_group_template(state, session, id, None, spending, None, submitted, None).await?;
+    let action = spending.map_or_else(
+        || {
+            if reviewed {
+                format!("/groups/{id}/spendings")
+            } else {
+                format!("/groups/{id}/spendings/preview")
+            }
+        },
+        |value| format!("/groups/{id}/spendings/{}", value.id),
+    );
+    page.expense.action.clone_from(&action);
+    Ok(SpendingFormTemplate {
+        group_name: group.name.to_string(),
+        group_id: id,
+        shell: page.shell,
+        expense: page.expense,
+        action,
+        reviewed,
+        status,
+        focus_heading: true,
+    })
+}
+
 async fn build_group_settings_fallback(
     state: &AppState,
     session: &Session,
@@ -247,6 +283,7 @@ fn member_row(
         archived: participant.is_archived,
         selected,
         amount: String::new(),
+        derived_amount: String::new(),
         editing: false,
         edit_name: participant.name.to_string(),
         edit_color: participant.color.as_str().to_owned(),
@@ -288,25 +325,26 @@ fn expense_view(
                 selected: *option == currency,
             })
             .collect(),
-        spending_type: "other".into(),
+        spending_type: String::new(),
         categories: SpendingType::ALL
             .iter()
             .map(|category| SelectOption {
                 value: category.code().into(),
                 label: category.code().to_string(),
-                selected: *category == SpendingType::Other,
+                selected: false,
             })
             .collect(),
         spent_date: state.clock.now().date_naive().to_string(),
         payer_mode: "single".into(),
-        split_mode: "equal".into(),
-        single_payer_id: if members.len() == 1 { members[0].id } else { 0 },
+        split_mode: "proportional".into(),
+        single_payer_id: 0,
         payer_rows: members.to_vec(),
         share_rows: members
             .iter()
             .map(|member| {
                 let mut row = member.clone();
                 row.selected = true;
+                row.amount = "1".into();
                 row
             })
             .collect(),
@@ -323,13 +361,8 @@ fn expense_view(
         view.spending_type = spending.spending_type.to_string();
         view.spent_date = spending.spent_date.to_string();
         view.action = format!("/groups/{}/spendings/{}", spending.group_id, spending.id);
-        if infer_payer_mode(spending) == PayerMode::Single {
-            view.single_payer_id = spending.payers[0].participant_id;
-        } else {
-            view.payer_mode = "multiple".into();
-        }
+        view.single_payer_id = spending.payers[0].participant_id;
         view.split_mode = match infer_share_mode(spending) {
-            ShareMode::Equal => "equal",
             ShareMode::Exact => "exact",
         }
         .into();
@@ -355,6 +388,9 @@ fn expense_view(
             .map(|allocation| (allocation.participant_id, allocation.amount.to_string()))
             .collect();
         view.exact_rows.iter_mut().for_each(|member| {
+            member.amount = exact_map.get(&member.id).cloned().unwrap_or_default();
+        });
+        view.share_rows.iter_mut().for_each(|member| {
             member.amount = exact_map.get(&member.id).cloned().unwrap_or_default();
         });
     }
@@ -386,9 +422,14 @@ fn apply_submitted_expense(view: &mut ExpenseFormView, form: &ExpenseForm) {
             .cloned()
             .unwrap_or_default();
     });
-    view.share_rows
-        .iter_mut()
-        .for_each(|row| row.selected = form.extra.contains_key(&format!("share_{}", row.id)));
+    view.share_rows.iter_mut().for_each(|row| {
+        row.selected = form.extra.contains_key(&format!("weight_{}", row.id));
+        row.amount = form
+            .extra
+            .get(&format!("weight_{}", row.id))
+            .cloned()
+            .unwrap_or_default();
+    });
     view.exact_rows.iter_mut().for_each(|row| {
         row.amount = form
             .extra
@@ -396,6 +437,15 @@ fn apply_submitted_expense(view: &mut ExpenseFormView, form: &ExpenseForm) {
             .cloned()
             .unwrap_or_default();
     });
+    if form.split_mode == "exact" {
+        view.share_rows.iter_mut().for_each(|row| {
+            row.amount = form
+                .extra
+                .get(&format!("exact_{}", row.id))
+                .cloned()
+                .unwrap_or_default();
+        });
+    }
 }
 
 pub(super) fn named_allocations(

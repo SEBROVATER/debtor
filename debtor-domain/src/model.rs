@@ -84,6 +84,12 @@ pub enum ValidationError {
         /// Allocation type whose sum differs.
         field: &'static str,
     },
+    /// A proportional weight contains more than six fractional digits.
+    #[error("weight has too many decimal places")]
+    WeightPrecision,
+    /// A proportional weight exceeds its maximum value.
+    #[error("weight exceeds the maximum supported value")]
+    WeightTooLarge,
     /// A decimal aggregation exceeded the representable range.
     #[error("decimal aggregation overflowed")]
     ArithmeticOverflow,
@@ -349,6 +355,9 @@ impl Spending {
             return Err(ValidationError::DateTooEarly);
         }
         validate_allocations(&self.payers, self.total, self.currency, "payer")?;
+        if self.payers.len() != 1 {
+            return Err(ValidationError::AllocationTotalMismatch { field: "payer" });
+        }
         validate_allocations(&self.shares, self.total, self.currency, "share")
     }
 

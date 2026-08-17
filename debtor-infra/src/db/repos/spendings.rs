@@ -190,7 +190,9 @@ async fn save_spending(
         insert_share(&mut tx, id, allocation).await?;
     }
     tx.commit().await.map_err(storage)?;
-    load_spending(pool, spending.group_id, id).await
+    let mut committed = spending;
+    committed.id = id;
+    Ok(committed)
 }
 
 #[async_trait]
