@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use debtor_domain::currency::Currency;
 use debtor_domain::model::{EntityId, Group, Name, Participant};
 
-use crate::{ApplicationError, ParticipantCreateInput};
+use crate::{ApplicationError, ParticipantCreateInput, ParticipantUpdateInput};
 
 /// Transport-neutral raw input for creating a Group.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,6 +121,14 @@ pub trait GroupMutationExecutor: Send + Sync {
     fn create_group_participant(
         &self,
         input: ParticipantCreateInput,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Participant, ApplicationError>> + Send + '_>,
+    >;
+
+    /// Updates a Group-owned active Participant under the same mutation owner.
+    fn update_group_participant(
+        &self,
+        input: ParticipantUpdateInput,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<Participant, ApplicationError>> + Send + '_>,
     >;

@@ -82,24 +82,34 @@ impl ParticipantRepository for SqliteLedgerStore {
         })
     }
 
-    async fn update_participant(
+    async fn update_group_participant(
         &self,
+        group_id: EntityId,
         id: EntityId,
         name: Name,
         color: Color,
     ) -> Result<Participant, ApplicationError> {
         let _write_guard = self.write_guard().await?;
-        let result = sqlx::query!("UPDATE participants SET name = ?, color = ?, updated_at = datetime('now') WHERE id = ? AND is_archived = 0", name.as_str(), color.as_str(), id)
-            .execute(&self.pool).await.map_err(storage)?;
-        if result.rows_affected() == 0 {
-            return Err(participant_write_failure(
-                &self.pool,
-                id,
-                ApplicationError::Storage(debtor_application::StorageReason::Unexpected),
-            )
-            .await);
-        }
-        participant_by_id(&self.pool, id).await
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        let row = sqlx::query_as!(
+            DbParticipant,
+            "UPDATE participants SET name = ?, color = ?, updated_at = datetime('now') WHERE group_id = ? AND id = ? AND is_archived = 0 AND EXISTS (SELECT 1 FROM groups WHERE groups.id = participants.group_id AND groups.is_archived = 0) AND EXISTS (SELECT 1 FROM group_members WHERE group_members.group_id = participants.group_id AND group_members.participant_id = participants.id AND group_members.is_active = 1) RETURNING id, name, color, is_archived",
+            name.as_str(),
+            color.as_str(),
+            group_id,
+            id
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(storage)?;
+        let Some(row) = row else {
+            tx.rollback().await.map_err(storage)?;
+            return Err(
+                participant_write_failure(&self.pool, id, ApplicationError::NotFound).await,
+            );
+        };
+        tx.commit().await.map_err(storage)?;
+        participant(row)
     }
 
     async fn set_participant_archived(

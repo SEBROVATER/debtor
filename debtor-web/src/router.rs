@@ -92,6 +92,10 @@ pub fn router_with_sessions<S: SessionStore + Clone>(
             "/groups/{id}/participants",
             post(handlers::create_group_participant),
         )
+        .route(
+            "/groups/{group_id}/participants/{participant_id}/edit",
+            get(handlers::edit_group_participant_form).post(handlers::update_group_participant),
+        )
         .route("/groups/{id}/spendings", post(handlers::create_spending))
         .route(
             "/groups/{group_id}/spendings/{spending_id}",
@@ -1368,6 +1372,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn group_participant_edit_is_scoped_and_redirects_with_saved_focus() {
+        let test_state = state(false);
+        let app = app(&test_state);
+        let session_cookie = login(&app).await;
+        let response = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                "/groups/1/participants/1/edit",
+                "",
+                Some(&session_cookie),
+            ))
+            .await
+            .expect("participant edit response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let form = response_body(response).await;
+        assert!(form.contains("action=\"/groups/1/participants/1/edit\""));
+        assert!(form.contains("value=\"Ada\""));
+        assert!(form.contains("value=\"#123456\""));
+        assert!(!form.contains("name=\"group_id\""));
+
+        let mut enhanced_request = request(
+            Method::POST,
+            "/groups/1/participants/1/edit",
+            &format!(
+                "csrf={}&submission_token={}&name=+&color=%23abc",
+                csrf(&form),
+                submission_token(&form)
+            ),
+            Some(&session_cookie),
+        );
+        enhanced_request
+            .headers_mut()
+            .insert("hx-request", HeaderValue::from_static("true"));
+        let response = app
+            .clone()
+            .oneshot(enhanced_request)
+            .await
+            .expect("participant validation response");
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let invalid = response_body(response).await;
+        assert!(invalid.starts_with("<li id=\"participant-1\""));
+        assert!(!invalid.contains("<!doctype html"));
+        assert!(invalid.contains("value=\" \""));
+        assert!(invalid.contains("value=\"#abc\""));
+        assert!(invalid.contains("aria-invalid=\"true\""));
+        assert!(invalid.contains("participant-1-error"));
+
+        let response = app
+            .oneshot(request(
+                Method::POST,
+                "/groups/1/participants/1/edit",
+                &format!(
+                    "csrf={}&submission_token={}&name=Grace&color=%23abcdef",
+                    csrf(&form),
+                    submission_token(&form)
+                ),
+                Some(&session_cookie),
+            ))
+            .await
+            .expect("participant update response");
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            response.headers()["location"],
+            "/groups/1/manage?participant=1&participant_saved=1"
+        );
+    }
+
+    #[tokio::test]
     async fn participant_creation_rejects_missing_group_before_form_parsing() {
         let test_state = state(false);
         let app = app(&test_state);
@@ -1492,6 +1565,12 @@ mod tests {
                 "/groups/1/participants",
                 "name=New&color=%23abcdef",
             ),
+            (Method::GET, "/groups/1/participants/1/edit", ""),
+            (
+                Method::POST,
+                "/groups/1/participants/1/edit",
+                "name=Nope&color=%23abcdef",
+            ),
             (Method::POST, "/groups/1/spendings", ""),
             (Method::GET, "/groups/1/spendings/1/edit", ""),
             (Method::GET, "/groups/1/spendings/1/delete", ""),
@@ -1522,6 +1601,7 @@ mod tests {
             "/groups/1",
             "/groups/1/edit",
             "/groups/1/delete",
+            "/groups/1/participants/1/edit",
             "/groups/1/spendings/1",
             "/groups/1/spendings/1/edit",
             "/groups/1/spendings/1/delete",

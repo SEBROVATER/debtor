@@ -7,9 +7,9 @@ use async_trait::async_trait;
 use debtor_application::{
     ApplicationError, AuthenticationService, AuthenticationUseCases, Clock, DebtResult,
     DebtUseCases, GroupCreateInput, GroupInput, GroupMutationExecutor, GroupUseCases,
-    LoginAdmission, LoginAttemptLimiter, ParticipantCreateInput, ParticipantUseCases,
-    PasswordVerifier, RateMode, ReadinessUseCases, SpendingInput, SpendingPage, SpendingUseCases,
-    UtcClock,
+    LoginAdmission, LoginAttemptLimiter, ParticipantCreateInput, ParticipantUpdateInput,
+    ParticipantUseCases, PasswordVerifier, RateMode, ReadinessUseCases, SpendingInput,
+    SpendingPage, SpendingUseCases, UtcClock,
 };
 use debtor_domain::{
     currency::Currency,
@@ -296,6 +296,25 @@ impl GroupMutationExecutor for FakeGroups {
             })
         })
     }
+
+    fn update_group_participant(
+        &self,
+        input: ParticipantUpdateInput,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Participant, ApplicationError>> + Send + '_>,
+    > {
+        Box::pin(async move {
+            if self.participant_create_validation_error {
+                return Err(validation_error());
+            }
+            Ok(Participant {
+                id: input.participant_id,
+                name: Name::new(input.name)?,
+                color: Color::new(input.color)?,
+                is_archived: false,
+            })
+        })
+    }
 }
 
 #[async_trait]
@@ -304,19 +323,18 @@ impl ParticipantUseCases for FakeParticipants {
         Ok(self.participant.clone())
     }
 
-    async fn update_participant(
+    async fn update_group_participant(
         &self,
-        id: i64,
-        name: String,
-        color: String,
+        input: ParticipantUpdateInput,
     ) -> Result<Participant, ApplicationError> {
         if self.update_validation_error {
             return Err(validation_error());
         }
-        self.updated
-            .lock()
-            .expect("participant calls lock")
-            .push((id, name, color));
+        self.updated.lock().expect("participant calls lock").push((
+            input.participant_id,
+            input.name,
+            input.color,
+        ));
         Ok(self.participant.clone())
     }
 

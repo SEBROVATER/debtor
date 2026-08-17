@@ -213,12 +213,30 @@ pub struct GroupTemplate {
     pub participant_invalid_field: Option<String>,
     /// Participant row to focus after a committed add.
     pub focus_participant: Option<i64>,
+    /// Participant row to announce after a committed edit.
+    pub participant_notice: Option<i64>,
     /// Participant name draft.
     pub create_name: String,
     /// Participant color draft.
     pub create_color: String,
     /// Expense form state.
     pub expense: ExpenseFormView,
+}
+
+/// Renderable Group-scoped Participant edit row for enhanced requests.
+#[derive(Template)]
+#[template(path = "participant_edit_row.html")]
+pub struct ParticipantEditRowTemplate {
+    /// Owning Group identifier.
+    pub group_id: i64,
+    /// CSRF token.
+    pub csrf: String,
+    /// Shared authenticated submission token.
+    pub submission_token: String,
+    /// Participant edit row projection.
+    pub member: MemberRow,
+    /// Whether the row itself should receive focus.
+    pub focus_row: bool,
 }
 
 /// Renderable shared expense form state.
@@ -271,6 +289,7 @@ pub struct SelectOption {
 
 /// Renderable active member.
 #[derive(Clone)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct MemberRow {
     /// Participant identifier.
     pub id: i64,
@@ -286,6 +305,16 @@ pub struct MemberRow {
     pub selected: bool,
     /// Draft amount.
     pub amount: String,
+    /// Whether this row currently renders its edit form.
+    pub editing: bool,
+    /// Edit name draft.
+    pub edit_name: String,
+    /// Edit color draft.
+    pub edit_color: String,
+    /// Edit validation error.
+    pub edit_error: Option<String>,
+    /// Edit field with invalid guidance.
+    pub edit_invalid_field: Option<String>,
 }
 
 /// Renderable spending row.

@@ -129,6 +129,7 @@ pub(super) async fn build_group_template(
         error,
         participant_invalid_field: None,
         focus_participant: None,
+        participant_notice: None,
         create_name,
         create_color,
         expense,
@@ -197,6 +198,7 @@ async fn build_group_settings_fallback(
         error: None,
         participant_invalid_field: None,
         focus_participant: None,
+        participant_notice: None,
         create_name: String::new(),
         create_color: String::new(),
         expense: ExpenseFormView {
@@ -242,6 +244,11 @@ fn member_row(
         archived: participant.is_archived,
         selected,
         amount: String::new(),
+        editing: false,
+        edit_name: participant.name.to_string(),
+        edit_color: participant.color.as_str().to_owned(),
+        edit_error: None,
+        edit_invalid_field: None,
     }
 }
 

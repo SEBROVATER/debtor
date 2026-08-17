@@ -1,0 +1,21 @@
+<li id="participant-{{ member.id }}" class="participant-row" tabindex="-1"{% if focus_row %} autofocus{% endif %}>
+  <span class="swatch" style="background: {{ member.edit_color }}" aria-hidden="true"></span>
+  <span class="participant-identity"><strong>{{ member.edit_name }}</strong><small>{{ member.edit_color }}</small></span>
+  <form method="post" action="/groups/{{ group_id }}/participants/{{ member.id }}/edit" class="mutation-form participant-edit-form" aria-busy="false" aria-describedby="participant-{{ member.id }}-name-guidance participant-{{ member.id }}-color-guidance{% if member.edit_error.is_some() %} participant-{{ member.id }}-error{% endif %}" hx-post="/groups/{{ group_id }}/participants/{{ member.id }}/edit" hx-target="#participant-{{ member.id }}" hx-swap="outerHTML" hx-disabled-elt="button" hx-indicator="#participant-{{ member.id }}-status">
+    <input type="hidden" name="csrf" value="{{ csrf }}" /><input type="hidden" name="submission_token" value="{{ submission_token }}" />
+    <div class="participant-form-grid">
+      <label for="participant-{{ member.id }}-name">Participant name
+        <input id="participant-{{ member.id }}-name" name="name" value="{{ member.edit_name }}" required{% if member.edit_invalid_field.as_deref() == Some("name") %} aria-invalid="true" aria-describedby="participant-{{ member.id }}-name-guidance participant-{{ member.id }}-error" autofocus{% endif %} />
+      </label>
+      <label for="participant-{{ member.id }}-color">Color
+        <input id="participant-{{ member.id }}-color" name="color" value="{{ member.edit_color }}" required pattern="#[0-9A-Fa-f]{6}"{% if member.edit_invalid_field.as_deref() == Some("color") %} aria-invalid="true" aria-describedby="participant-{{ member.id }}-color-guidance participant-{{ member.id }}-error" autofocus{% endif %} />
+        <span class="swatch named-swatch" style="background: {{ member.edit_color }}" role="img" aria-label="Selected Participant color"></span>
+      </label>
+    </div>
+    <p id="participant-{{ member.id }}-name-guidance" class="helper">Use up to 100 Unicode characters.</p>
+    <p id="participant-{{ member.id }}-color-guidance" class="helper">Use normalized #RRGGBB notation.</p>
+    {% match member.edit_error %}{% when Some with (message) %}<p id="participant-{{ member.id }}-error" class="error" role="alert" tabindex="-1">{{ message }}</p>{% when None %}{% endmatch %}
+    <button type="submit">Save</button><p id="participant-{{ member.id }}-status" class="mutation-status" role="status" aria-live="polite" aria-atomic="true"> </p>
+  </form>
+  {% if member.edit_error.is_none() %}<p id="participant-{{ member.id }}-status" class="mutation-status" role="status" aria-live="polite" aria-atomic="true"> </p>{% endif %}
+</li>

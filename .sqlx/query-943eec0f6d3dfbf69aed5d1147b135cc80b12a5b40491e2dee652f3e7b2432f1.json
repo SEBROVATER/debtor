@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE participants SET name = ?, color = ?, updated_at = datetime('now') WHERE group_id = ? AND id = ? AND is_archived = 0 AND EXISTS (SELECT 1 FROM groups WHERE groups.id = participants.group_id AND groups.is_archived = 0) AND EXISTS (SELECT 1 FROM group_members WHERE group_members.group_id = participants.group_id AND group_members.participant_id = participants.id AND group_members.is_active = 1) RETURNING id, name, color, is_archived",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "participants",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "name",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "participants",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "color",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "participants",
+            "name": "color"
+          }
+        }
+      },
+      {
+        "name": "is_archived",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "participants",
+            "name": "is_archived"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "943eec0f6d3dfbf69aed5d1147b135cc80b12a5b40491e2dee652f3e7b2432f1"
+}

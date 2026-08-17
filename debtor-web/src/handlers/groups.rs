@@ -108,6 +108,9 @@ pub(crate) async fn group_manage(
     match build_group_manage_template(&state, &session, id, None, None, None, notice).await {
         Ok(mut template) => {
             template.focus_participant = query.participant;
+            template.participant_notice = (query.participant_saved.as_deref() == Some("1"))
+                .then_some(query.participant)
+                .flatten();
             render(&template)
         }
         Err(error) => map_group_template_error(error),

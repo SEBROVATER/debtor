@@ -16,6 +16,19 @@ pub struct ParticipantCreateInput {
     pub color: String,
 }
 
+/// Transport-neutral raw input for editing an active Group-owned Participant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParticipantUpdateInput {
+    /// Owning Group identifier.
+    pub group_id: EntityId,
+    /// Stable Participant identifier.
+    pub participant_id: EntityId,
+    /// Participant name before normalization.
+    pub name: String,
+    /// Participant color before normalization.
+    pub color: String,
+}
+
 /// Validates Participant fields without performing I/O or a mutation.
 ///
 /// # Errors
@@ -28,6 +41,23 @@ pub fn validate_participant_create(input: &ParticipantCreateInput) -> Result<(),
         return Err(
             debtor_domain::model::ValidationError::InvalidField { field: "group_id" }.into(),
         );
+    }
+    Ok(())
+}
+
+/// Validates a raw Group-scoped Participant edit without performing I/O.
+///
+/// # Errors
+///
+/// Returns a domain validation error when an identifier, name, or color is invalid.
+pub fn validate_participant_update(input: &ParticipantUpdateInput) -> Result<(), ApplicationError> {
+    Name::new(input.name.clone())?;
+    Color::new(input.color.clone())?;
+    if input.group_id <= 0 || input.participant_id <= 0 {
+        return Err(debtor_domain::model::ValidationError::InvalidField {
+            field: "participant_id",
+        }
+        .into());
     }
     Ok(())
 }
@@ -57,8 +87,9 @@ pub trait ParticipantRepository: Send + Sync {
     /// Updates one active participant.
     ///
     /// Archived identities are retained for history and reject direct updates.
-    async fn update_participant(
+    async fn update_group_participant(
         &self,
+        group_id: EntityId,
         id: EntityId,
         name: Name,
         color: Color,
@@ -92,11 +123,9 @@ pub trait ParticipantUseCases: Send + Sync {
     /// Updates an active reusable participant.
     ///
     /// Archived identities are retained for history and reject direct updates.
-    async fn update_participant(
+    async fn update_group_participant(
         &self,
-        id: EntityId,
-        name: String,
-        color: String,
+        input: ParticipantUpdateInput,
     ) -> Result<Participant, ApplicationError>;
     /// Creates and joins a participant in one transaction.
     async fn create_group_participant(
@@ -154,17 +183,32 @@ impl ParticipantUseCases for ParticipantService {
         self.reader.participant(id).await
     }
 
-    async fn update_participant(
+    async fn update_group_participant(
         &self,
-        id: EntityId,
-        name: String,
-        color: String,
+        input: ParticipantUpdateInput,
     ) -> Result<Participant, ApplicationError> {
-        if self.reader.participant(id).await?.is_archived {
+        validate_participant_update(&input)?;
+        if self.groups.group(input.group_id).await?.is_archived {
             return Err(ApplicationError::Conflict);
         }
+        let member = self
+            .reader
+            .group_members(input.group_id)
+            .await?
+            .into_iter()
+            .find(|(participant, membership)| {
+                participant.id == input.participant_id
+                    && membership.is_active
+                    && !participant.is_archived
+            })
+            .ok_or(ApplicationError::NotFound)?;
         self.repository
-            .update_participant(id, Name::new(name)?, Color::new(color)?)
+            .update_group_participant(
+                input.group_id,
+                member.0.id,
+                Name::new(input.name)?,
+                Color::new(input.color)?,
+            )
             .await
     }
 
@@ -287,7 +331,14 @@ mod tests {
                 .lock()
                 .expect("member requests lock")
                 .push(group_id);
-            Ok(Vec::new())
+            Ok(vec![(
+                participant(PARTICIPANT_ONE),
+                GroupMember {
+                    group_id,
+                    participant_id: PARTICIPANT_ONE,
+                    is_active: true,
+                },
+            )])
         }
     }
 
@@ -311,8 +362,9 @@ mod tests {
             })
         }
 
-        async fn update_participant(
+        async fn update_group_participant(
             &self,
+            _group_id: EntityId,
             id: EntityId,
             name: Name,
             color: Color,
@@ -370,7 +422,12 @@ mod tests {
             .await
             .expect("create group participant");
         service
-            .update_participant(3, "  Grace  ".into(), "#abcdef".into())
+            .update_group_participant(ParticipantUpdateInput {
+                group_id: GROUP_ID,
+                participant_id: PARTICIPANT_ONE,
+                name: "  Grace  ".into(),
+                color: "#abcdef".into(),
+            })
             .await
             .expect("update participant");
         service.members(GROUP_ID).await.expect("list members");
@@ -393,7 +450,7 @@ mod tests {
         );
         assert_eq!(
             *fake.member_requests.lock().expect("member requests lock"),
-            vec![GROUP_ID]
+            vec![GROUP_ID, GROUP_ID]
         );
         assert_eq!(
             *fake
@@ -443,5 +500,36 @@ mod tests {
                 debtor_domain::model::ValidationError::InvalidColor
             ))
         ));
+    }
+
+    #[test]
+    fn validates_group_scoped_edit_before_any_io() {
+        let valid = ParticipantUpdateInput {
+            group_id: GROUP_ID,
+            participant_id: PARTICIPANT_ONE,
+            name: "  Grace  ".into(),
+            color: "#abcdef".into(),
+        };
+        validate_participant_update(&valid).expect("valid edit");
+        for input in [
+            ParticipantUpdateInput {
+                name: "  ".into(),
+                ..valid.clone()
+            },
+            ParticipantUpdateInput {
+                name: "x".repeat(101),
+                ..valid.clone()
+            },
+            ParticipantUpdateInput {
+                color: "#abc".into(),
+                ..valid.clone()
+            },
+            ParticipantUpdateInput {
+                participant_id: 0,
+                ..valid.clone()
+            },
+        ] {
+            assert!(validate_participant_update(&input).is_err());
+        }
     }
 }

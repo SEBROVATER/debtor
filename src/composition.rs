@@ -6,9 +6,9 @@ use debtor_application::{
     AuthenticationService, AuthenticationUseCases, Clock, DebtService, DebtUseCases,
     GroupCreateInput, GroupInput, GroupMutationExecutor, GroupReader, GroupRepository,
     GroupService, GroupUseCases, LedgerSnapshotReader, ParticipantCreateInput, ParticipantReader,
-    ParticipantRepository, ParticipantService, ParticipantUseCases, ReadinessService,
-    ReadinessUseCases, SpendingEligibilityReader, SpendingReader, SpendingRepository,
-    SpendingService, SpendingUseCases, UtcClock,
+    ParticipantRepository, ParticipantService, ParticipantUpdateInput, ParticipantUseCases,
+    ReadinessService, ReadinessUseCases, SpendingEligibilityReader, SpendingReader,
+    SpendingRepository, SpendingService, SpendingUseCases, UtcClock,
 };
 use debtor_infra::auth::{ArgonPasswordGate, MemoryLoginAttemptLimiter};
 use debtor_infra::db::repos::SqliteLedgerRuntime;
@@ -208,6 +208,51 @@ impl GroupMutationExecutor for RootGroupMutationExecutor {
                     .create_group_participant(input.group_id, input.name, input.color)
                     .await
                 {
+                    Ok(participant) => {
+                        guard.committed();
+                        Ok(participant)
+                    }
+                    Err(error) => {
+                        guard.rolled_back();
+                        Err(error)
+                    }
+                }
+            });
+            match task.await {
+                Ok(result) => result,
+                Err(_) => Err(debtor_application::ApplicationError::Storage(
+                    debtor_application::StorageReason::Unexpected,
+                )),
+            }
+        })
+    }
+
+    fn update_group_participant(
+        &self,
+        input: ParticipantUpdateInput,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        debtor_application::Participant,
+                        debtor_application::ApplicationError,
+                    >,
+                > + Send
+                + '_,
+        >,
+    > {
+        Box::pin(async move {
+            let Some(lease) = self.mutations.try_register() else {
+                return Err(debtor_application::ApplicationError::Storage(
+                    debtor_application::StorageReason::Contention,
+                ));
+            };
+            let participants = self.participants.clone();
+            let mutations = self.mutations.clone();
+            let runtime = self.runtime.clone();
+            let task = tokio::spawn(async move {
+                let mut guard = GroupMutationGuard::new(lease, mutations, runtime);
+                match participants.update_group_participant(input).await {
                     Ok(participant) => {
                         guard.committed();
                         Ok(participant)

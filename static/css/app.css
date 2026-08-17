@@ -61,7 +61,11 @@ fieldset { border: 1px solid var(--line); border-radius: .25rem; margin-block: 1
 .link-button { background: transparent; color: var(--danger); padding: 0; }
 .member-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
 .participant-list { display: grid; gap: .5rem; list-style: none; margin: 0 0 1rem; padding: 0; }
-.participant-row { align-items: center; border-block-end: 1px solid var(--line); display: flex; gap: .75rem; min-block-size: 48px; padding-block: .5rem; }
+.participant-row { align-items: center; border-block-end: 1px solid var(--line); display: grid; gap: .75rem; grid-template-columns: 48px minmax(0, 1fr) auto; min-block-size: 48px; padding-block: .5rem; }
+.participant-identity { min-inline-size: 0; overflow-wrap: anywhere; }
+.participant-edit-form { display: grid; gap: .5rem; grid-column: 2 / -1; min-inline-size: 0; }
+.participant-edit-form .participant-form-grid { inline-size: 100%; }
+.participant-edit-link { align-self: center; }
 .participant-row small { color: #AAA59C; display: block; font-size: .75rem; }
 .participant-form { border-block-start: 1px solid var(--line); padding-block-start: 1rem; }
 .participant-form-grid { display: grid; gap: .75rem; grid-template-columns: minmax(0, 1fr) 124px; }
@@ -95,6 +99,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   header { align-items: start; flex-direction: column; }
   .page-heading, .member-actions { display: block; }
   .form-grid, .participant-form-grid { grid-template-columns: 1fr; }
+  .participant-row { align-items: start; grid-template-columns: 48px minmax(0, 1fr); }
+  .participant-edit-link { grid-column: 2; }
+  .participant-edit-form { grid-column: 1 / -1; }
   .settings-grid { grid-template-columns: 1fr; }
   .page-heading .button { margin-block: .5rem; }
   table, thead, tbody, tr, th, td { display: block; }

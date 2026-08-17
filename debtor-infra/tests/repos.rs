@@ -298,7 +298,7 @@ async fn archived_mutation_races_consistently_return_conflict(pool: SqlitePool) 
 
 #[sqlx::test(migrations = "../migrations")]
 async fn archived_participant_rejects_direct_update(pool: SqlitePool) {
-    let (store, _, participant_id) = active_group_and_participant(&pool).await;
+    let (store, group_id, participant_id) = active_group_and_participant(&pool).await;
     store
         .set_participant_archived(participant_id, true)
         .await
@@ -306,7 +306,8 @@ async fn archived_participant_rejects_direct_update(pool: SqlitePool) {
 
     assert!(matches!(
         store
-            .update_participant(
+            .update_group_participant(
+                group_id,
                 participant_id,
                 Name::new("Renamed").expect("valid name"),
                 Color::new("#445566").expect("valid color"),
@@ -323,6 +324,93 @@ async fn archived_participant_rejects_direct_update(pool: SqlitePool) {
             .as_str(),
         "Ari"
     );
+}
+
+#[sqlx::test(migrations = "../migrations")]
+async fn participant_update_is_group_scoped_and_preserves_identity(pool: SqlitePool) {
+    let (store, group_id, participant_id) = active_group_and_participant(&pool).await;
+    let other_group = store
+        .create_group(Name::new("Other").expect("valid name"), Currency::Usd)
+        .await
+        .expect("create other group");
+
+    let updated = store
+        .update_group_participant(
+            group_id,
+            participant_id,
+            Name::new("  Updated  ").expect("valid name"),
+            Color::new("#aabbcc").expect("valid color"),
+        )
+        .await
+        .expect("update participant");
+    assert_eq!(updated.id, participant_id);
+    assert_eq!(updated.name.as_str(), "Updated");
+    assert_eq!(updated.color.as_str(), "#AABBCC");
+
+    assert!(matches!(
+        store
+            .update_group_participant(
+                other_group.id,
+                participant_id,
+                Name::new("No disclosure").expect("valid name"),
+                Color::new("#ddeeff").expect("valid color"),
+            )
+            .await,
+        Err(ApplicationError::NotFound)
+    ));
+    let persisted = store
+        .participant(participant_id)
+        .await
+        .expect("participant");
+    assert_eq!(persisted.id, participant_id);
+    assert_eq!(persisted.name.as_str(), "Updated");
+    assert_eq!(persisted.color.as_str(), "#AABBCC");
+}
+
+#[sqlx::test(migrations = "../migrations")]
+async fn participant_update_rechecks_group_and_membership_lifecycle(pool: SqlitePool) {
+    let (store, group_id, participant_id) = active_group_and_participant(&pool).await;
+    store
+        .set_group_archived(group_id, true)
+        .await
+        .expect("archive group");
+    assert!(matches!(
+        store
+            .update_group_participant(
+                group_id,
+                participant_id,
+                Name::new("Archived").expect("valid name"),
+                Color::new("#445566").expect("valid color"),
+            )
+            .await,
+        Err(ApplicationError::NotFound | ApplicationError::Conflict)
+    ));
+    assert_eq!(
+        store
+            .participant(participant_id)
+            .await
+            .expect("load participant")
+            .name
+            .as_str(),
+        "Ari"
+    );
+
+    let (store, group_id, participant_id) = active_group_and_participant(&pool).await;
+    store
+        .set_member_active(group_id, participant_id, false)
+        .await
+        .expect("deactivate membership");
+    assert!(matches!(
+        store
+            .update_group_participant(
+                group_id,
+                participant_id,
+                Name::new("Inactive").expect("valid name"),
+                Color::new("#778899").expect("valid color"),
+            )
+            .await,
+        Err(ApplicationError::NotFound)
+    ));
 }
 
 #[sqlx::test(migrations = "../migrations")]
