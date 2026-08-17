@@ -1,11 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::str::FromStr;
 
 use axum::response::Response;
-use debtor_application::SpendingCursor;
+use debtor_application::{SpendingCursor, parse_unsigned_decimal};
 use debtor_domain::{
     currency::Currency,
-    expenses::{ShareMode, infer_share_mode},
-    model::{Allocation, Spending, SpendingType},
+    expenses::{ShareMode, infer_share_mode, splitting::equal_split},
+    model::{Allocation, Spending, SpendingType, ValidationError},
 };
 use tower_sessions::Session;
 
@@ -256,7 +257,7 @@ async fn build_group_settings_fallback(
             single_payer_id: 0,
             payer_rows: Vec::new(),
             share_rows: Vec::new(),
-            exact_rows: Vec::new(),
+            allocation_status: String::new(),
             error: None,
         },
     })
@@ -282,6 +283,7 @@ fn member_row(
         active,
         archived: participant.is_archived,
         selected,
+        allocation_error: None,
         amount: String::new(),
         derived_amount: String::new(),
         editing: false,
@@ -348,7 +350,7 @@ fn expense_view(
                 row
             })
             .collect(),
-        exact_rows: members.to_vec(),
+        allocation_status: String::new(),
         error: None,
     };
     if let Some(spending) = spending {
@@ -387,12 +389,10 @@ fn expense_view(
             .iter()
             .map(|allocation| (allocation.participant_id, allocation.amount.to_string()))
             .collect();
-        view.exact_rows.iter_mut().for_each(|member| {
-            member.amount = exact_map.get(&member.id).cloned().unwrap_or_default();
-        });
         view.share_rows.iter_mut().for_each(|member| {
             member.amount = exact_map.get(&member.id).cloned().unwrap_or_default();
         });
+        view.allocation_status = "Exact Shares must equal the Total.".into();
     }
     if let Some(form) = submitted {
         apply_submitted_expense(&mut view, form);
@@ -423,29 +423,117 @@ fn apply_submitted_expense(view: &mut ExpenseFormView, form: &ExpenseForm) {
             .unwrap_or_default();
     });
     view.share_rows.iter_mut().for_each(|row| {
-        row.selected = form.extra.contains_key(&format!("weight_{}", row.id));
-        row.amount = form
-            .extra
-            .get(&format!("weight_{}", row.id))
-            .cloned()
-            .unwrap_or_default();
-    });
-    view.exact_rows.iter_mut().for_each(|row| {
-        row.amount = form
-            .extra
-            .get(&format!("exact_{}", row.id))
-            .cloned()
-            .unwrap_or_default();
-    });
-    if form.split_mode == "exact" {
-        view.share_rows.iter_mut().for_each(|row| {
+        if form.split_mode == "proportional" {
+            row.selected = form.extra.contains_key(&format!("included_{}", row.id));
+            row.amount = form
+                .extra
+                .get(&format!("weight_{}", row.id))
+                .cloned()
+                .unwrap_or_default();
+        } else {
+            row.selected = form.extra.contains_key(&format!("included_{}", row.id));
             row.amount = form
                 .extra
                 .get(&format!("exact_{}", row.id))
                 .cloned()
                 .unwrap_or_default();
-        });
+        }
+        row.allocation_error = if form.split_mode == "exact" && row.selected {
+            match parse_unsigned_decimal(&row.amount, "owed amount") {
+                Ok(value) if !value.is_zero() => None,
+                Ok(_) => Some("Share must be greater than zero.".into()),
+                Err(_) => Some("Enter a valid exact Share.".into()),
+            }
+        } else {
+            None
+        };
+    });
+    view.allocation_status = exact_allocation_status(form);
+}
+
+fn exact_allocation_status(form: &ExpenseForm) -> String {
+    if form.split_mode != "exact" {
+        return String::new();
     }
+    let Ok(total) = parse_unsigned_decimal(&form.total, "total") else {
+        return String::new();
+    };
+    let mut values = form
+        .extra
+        .iter()
+        .filter(|(key, _)| key.starts_with("included_"))
+        .filter_map(|(key, _)| {
+            key.strip_prefix("included_")
+                .and_then(|id| form.extra.get(&format!("exact_{id}")))
+        })
+        .filter_map(|value| parse_unsigned_decimal(value, "owed amount").ok())
+        .collect::<Vec<_>>();
+    let Some(mut sum) = values.pop() else {
+        return String::new();
+    };
+    for value in values {
+        sum = match sum.checked_add(value) {
+            Some(value) => value,
+            None => return "Exact Share total is too large.".into(),
+        };
+    }
+    let Some(difference) = total.checked_sub(sum) else {
+        return "Exact Share difference is too large.".into();
+    };
+    if difference.is_sign_positive() && !difference.is_zero() {
+        format!("Remaining: {difference} {}", form.currency)
+    } else if difference.is_sign_negative() {
+        let amount = difference.to_string();
+        let amount = amount.strip_prefix('-').unwrap_or(&amount);
+        format!("Excess: {amount} {}", form.currency)
+    } else {
+        "Exact Shares close the Total.".into()
+    }
+}
+
+pub(super) fn initialize_exact_defaults(
+    form: &mut ExpenseForm,
+    member_ids: &[i64],
+) -> Result<(), String> {
+    if form.split_mode != "exact" {
+        return Ok(());
+    }
+    let selected = member_ids
+        .iter()
+        .copied()
+        .filter(|id| form.extra.contains_key(&format!("included_{id}")))
+        .collect::<Vec<_>>();
+    if selected.is_empty()
+        || selected.iter().any(|id| {
+            form.extra
+                .get(&format!("exact_{id}"))
+                .is_some_and(|value| !value.trim().is_empty())
+        })
+    {
+        return Ok(());
+    }
+    let total = parse_unsigned_decimal(&form.total, "total")
+        .map_err(|_| "Enter a valid Total.".to_owned())?;
+    let currency = Currency::from_str(&form.currency)
+        .map_err(|_| "Choose a supported Source Currency.".to_owned())?;
+    let allocations = match equal_split(total, currency, &selected) {
+        Ok(allocations) => allocations,
+        Err(ValidationError::InsufficientMinorUnits { .. }) => {
+            for participant_id in selected {
+                form.extra
+                    .insert(format!("exact_{participant_id}"), "0".into());
+            }
+            return Ok(());
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    for allocation in allocations {
+        form.extra.insert(
+            format!("exact_{}", allocation.participant_id),
+            allocation.amount.to_string(),
+        );
+    }
+    Ok(())
 }
 
 pub(super) fn named_allocations(
@@ -462,4 +550,57 @@ pub(super) fn named_allocations(
             amount: allocation.amount.to_string(),
         })
         .collect()
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::{ExpenseForm, exact_allocation_status};
+
+    fn exact_form(total: &str, amounts: &[(&str, &str)]) -> ExpenseForm {
+        let mut extra = HashMap::new();
+        for (id, amount) in amounts {
+            extra.insert(format!("included_{id}"), "on".into());
+            extra.insert(format!("exact_{id}"), (*amount).into());
+        }
+        ExpenseForm {
+            description: String::new(),
+            total: total.into(),
+            currency: "USD".into(),
+            spending_type: "food".into(),
+            spent_date: "2026-08-17".into(),
+            payer_mode: "single".into(),
+            single_payer_id: Some(1),
+            split_mode: "exact".into(),
+            extra,
+        }
+    }
+
+    #[test]
+    fn exact_status_reports_remaining_and_excess() {
+        assert_eq!(
+            exact_allocation_status(&exact_form("10.00", &[("1", "4.00")])),
+            "Remaining: 6.00 USD"
+        );
+        assert_eq!(
+            exact_allocation_status(&exact_form("10.00", &[("1", "12.00")])),
+            "Excess: 2.00 USD"
+        );
+        assert_eq!(
+            exact_allocation_status(&exact_form("10.00", &[("1", "4.00"), ("2", "6.00")])),
+            "Exact Shares close the Total."
+        );
+        assert_eq!(
+            exact_allocation_status(&exact_form(
+                "1",
+                &[
+                    ("1", "79228162514264337593543950335"),
+                    ("2", "79228162514264337593543950335"),
+                ]
+            )),
+            "Exact Share total is too large."
+        );
+    }
 }

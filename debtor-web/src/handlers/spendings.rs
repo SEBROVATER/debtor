@@ -18,12 +18,12 @@ use super::{
     groups::require_writable_group,
     response::{error_response, map_error, render},
     spending_views::{
-        build_group_template, build_spending_form_template, map_group_template_error,
-        named_allocations,
+        build_group_template, build_spending_form_template, initialize_exact_defaults,
+        map_group_template_error, named_allocations,
     },
 };
 use crate::{
-    forms::{CsrfValidatedForm, parse_expense_form},
+    forms::{CsrfValidatedForm, OrderedForm, parse_expense_form},
     session,
     state::AppState,
     templates::{ConfirmTemplate, SpendingDetailTemplate},
@@ -46,6 +46,7 @@ pub(crate) async fn new_spending_form(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn preview_spending(
     State(state): State<AppState>,
     session: Session,
@@ -58,11 +59,33 @@ pub(crate) async fn preview_spending(
     if let Err(response) = require_writable_group(&state, group_id).await {
         return response;
     }
-    let ordered = form.ordered();
+    let mut ordered = form.ordered();
     let parsed = match parse_expense_form(ordered.clone()) {
         Ok(value) => value,
         Err(error) => return error_response(error.status, error.message),
     };
+    let mut parsed = parsed;
+    let member_ids = match active_member_ids(&state, group_id).await {
+        Ok(ids) => ids,
+        Err(response) => return response,
+    };
+    if let Err(message) = initialize_exact_defaults(&mut parsed, &member_ids) {
+        return match build_spending_form_template(
+            &state,
+            &session,
+            group_id,
+            Some(&parsed),
+            None,
+            Some(message),
+            false,
+        )
+        .await
+        {
+            Ok(template) => (StatusCode::UNPROCESSABLE_ENTITY, render(&template)).into_response(),
+            Err(error) => map_group_template_error(error),
+        };
+    }
+    bind_generated_exact_fields(&mut ordered, &parsed, &member_ids);
     let input = match parse_expense(group_id, &parsed) {
         Ok(value) => value,
         Err(message) => {
@@ -305,6 +328,23 @@ pub(crate) async fn delete_spending(
     }
 }
 
+async fn active_member_ids(state: &AppState, group_id: i64) -> Result<Vec<i64>, Response> {
+    state
+        .participants
+        .members(group_id)
+        .await
+        .map(|members| {
+            members
+                .iter()
+                .filter(|(participant, membership)| {
+                    membership.is_active && !participant.is_archived
+                })
+                .map(|(participant, _)| participant.id)
+                .collect()
+        })
+        .map_err(map_error)
+}
+
 async fn save_spending(
     state: AppState,
     session: Session,
@@ -450,7 +490,7 @@ fn parse_expense(group_id: i64, form: &ExpenseForm) -> Result<SpendingInput, Str
     };
     let shares = match form.split_mode.as_str() {
         "proportional" => ShareInput::Proportional(raw_proportional_allocations(&form.extra)?),
-        "exact" => ShareInput::Exact(raw_allocations(&form.extra, "exact_")),
+        "exact" => ShareInput::Exact(raw_exact_allocations(&form.extra)?),
         _ => return Err("Choose how the expense is split.".into()),
     };
     Ok(SpendingInput {
@@ -465,18 +505,40 @@ fn parse_expense(group_id: i64, form: &ExpenseForm) -> Result<SpendingInput, Str
     })
 }
 
-fn raw_allocations(fields: &HashMap<String, String>, prefix: &str) -> Vec<(i64, String)> {
-    let mut values = fields
-        .iter()
-        .filter_map(|(key, value)| {
-            key.strip_prefix(prefix)
-                .and_then(|id| id.parse().ok())
-                .map(|id| (id, value.clone()))
-        })
-        .filter(|(_, value)| !value.trim().is_empty())
+fn bind_generated_exact_fields(ordered: &mut OrderedForm, form: &ExpenseForm, member_ids: &[i64]) {
+    if form.split_mode != "exact" {
+        return;
+    }
+    for participant_id in member_ids {
+        let key = format!("exact_{participant_id}");
+        let Some(value) = form.extra.get(&key) else {
+            continue;
+        };
+        if let Some((_, submitted)) = ordered.0.iter_mut().find(|(field, _)| field == &key) {
+            submitted.clone_from(value);
+        } else {
+            ordered.0.push((key, value.clone()));
+        }
+    }
+}
+
+fn raw_exact_allocations(fields: &HashMap<String, String>) -> Result<Vec<(i64, String)>, String> {
+    let mut included = fields
+        .keys()
+        .filter_map(|key| key.strip_prefix("included_")?.parse::<i64>().ok())
         .collect::<Vec<_>>();
-    values.sort_unstable_by_key(|(id, _)| *id);
-    values
+    included.sort_unstable();
+    included.dedup();
+    included
+        .into_iter()
+        .map(|participant_id| {
+            let amount = fields
+                .get(&format!("exact_{participant_id}"))
+                .filter(|amount| !amount.trim().is_empty())
+                .ok_or_else(|| "Each selected Participant needs an exact Share.".to_owned())?;
+            Ok((participant_id, amount.clone()))
+        })
+        .collect()
 }
 
 fn raw_proportional_allocations(
@@ -533,7 +595,13 @@ pub(super) fn parse_cursor(raw: Option<&str>) -> Result<Option<SpendingCursor>, 
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
-    use super::{SpendingPageDirection, parse_cursor};
+    use std::collections::HashMap;
+
+    use super::{
+        ExpenseForm, SpendingPageDirection, bind_generated_exact_fields, parse_cursor,
+        raw_exact_allocations,
+    };
+    use crate::forms::OrderedForm;
 
     #[test]
     fn cursor_parser_accepts_only_strict_direction_date_and_positive_id() {
@@ -545,5 +613,44 @@ mod tests {
         assert!(parse_cursor(Some("sideways:2026-01-02:7")).is_err());
         assert!(parse_cursor(Some("older:2026-01-02:0")).is_err());
         assert!(parse_cursor(Some("older:2026-01-02:7:extra")).is_err());
+    }
+
+    #[test]
+    fn exact_allocations_use_explicit_selection_and_sorted_ids() {
+        let fields = HashMap::from([
+            ("included_9".to_owned(), "on".to_owned()),
+            ("exact_9".to_owned(), "3.00".to_owned()),
+            ("included_2".to_owned(), "on".to_owned()),
+            ("exact_2".to_owned(), "7.00".to_owned()),
+            ("exact_4".to_owned(), "ignored".to_owned()),
+        ]);
+
+        assert_eq!(
+            raw_exact_allocations(&fields).expect("exact allocations"),
+            vec![(2, "7.00".to_owned()), (9, "3.00".to_owned())]
+        );
+    }
+
+    #[test]
+    fn generated_exact_defaults_replace_the_reviewed_wire_values() {
+        let mut ordered = OrderedForm(vec![
+            ("split_mode".into(), "exact".into()),
+            ("exact_1".into(), String::new()),
+        ]);
+        let form = ExpenseForm {
+            description: String::new(),
+            total: "10".into(),
+            currency: "USD".into(),
+            spending_type: "food".into(),
+            spent_date: "2026-08-17".into(),
+            payer_mode: "single".into(),
+            single_payer_id: Some(1),
+            split_mode: "exact".into(),
+            extra: HashMap::from([("exact_1".into(), "10".into())]),
+        };
+
+        bind_generated_exact_fields(&mut ordered, &form, &[1]);
+
+        assert_eq!(ordered.0[1], ("exact_1".into(), "10".into()));
     }
 }

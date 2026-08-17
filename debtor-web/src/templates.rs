@@ -305,8 +305,8 @@ pub struct ExpenseFormView {
     pub payer_rows: Vec<MemberRow>,
     /// Equal recipients.
     pub share_rows: Vec<MemberRow>,
-    /// Exact owed rows.
-    pub exact_rows: Vec<MemberRow>,
+    /// Exact allocation difference or closure state.
+    pub allocation_status: String,
     /// Error message.
     pub error: Option<String>,
 }
@@ -337,6 +337,8 @@ pub struct MemberRow {
     pub archived: bool,
     /// Selected in the current form.
     pub selected: bool,
+    /// Exact allocation validation message for this row.
+    pub allocation_error: Option<String>,
     /// Draft amount.
     pub amount: String,
     /// Derived exact Share amount for a Proportional preview.

@@ -339,6 +339,16 @@ pub(crate) fn parse_expense_form(form: OrderedForm) -> Result<ExpenseForm, FormE
     let single_payer_id = scalar(&scalars, "single_payer_id")
         .parse()
         .map_err(|_| malformed_form("Malformed form submission."))?;
+    let split_mode = scalar(&scalars, "split_mode");
+    let mode_fields_are_valid = extra.iter().all(|(key, value)| {
+        value.trim().is_empty()
+            || split_mode != "proportional" && split_mode != "exact"
+            || (split_mode == "proportional" && !key.starts_with("exact_"))
+            || (split_mode == "exact" && !key.starts_with("weight_"))
+    });
+    if !mode_fields_are_valid {
+        return Err(malformed_form("Malformed form submission."));
+    }
     Ok(ExpenseForm {
         description: scalar(&scalars, "description"),
         total: scalar(&scalars, "total"),
@@ -347,7 +357,7 @@ pub(crate) fn parse_expense_form(form: OrderedForm) -> Result<ExpenseForm, FormE
         spent_date: scalar(&scalars, "spent_date"),
         payer_mode: scalar(&scalars, "payer_mode"),
         single_payer_id: (single_payer_id != 0).then_some(single_payer_id),
-        split_mode: scalar(&scalars, "split_mode"),
+        split_mode,
         extra,
     })
 }

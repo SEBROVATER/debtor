@@ -28,7 +28,7 @@
     <main id="spending-form" class="spending-form-page" aria-busy="false">
       <p class="eyebrow">{{ group_name }}</p>
       <h1 id="spending-heading" tabindex="-1"{% if focus_heading %} autofocus{% endif %}>{{ expense.heading }}</h1>
-      {% match status %}{% when Some with (message) %}<p id="spending-status" class="status" role="status" aria-live="polite" aria-atomic="true">{{ message }}</p>{% when None %}<p id="spending-status" class="status" role="status" aria-live="polite" aria-atomic="true"> </p>{% endmatch %}
+      <p id="spending-status" class="status" role="status" aria-live="polite" aria-atomic="true">{% match status %}{% when Some with (message) %}{{ message }}{% when None %}{% endmatch %}{% if expense.allocation_status != "" %} {{ expense.allocation_status }}{% endif %}</p>
       <form method="post" action="{{ action }}" class="spending-entry-form" aria-describedby="spending-status">
         <input type="hidden" name="csrf" value="{{ shell.csrf }}" />
         <input type="hidden" name="submission_token" value="{{ shell.submission_token }}" />
@@ -75,8 +75,8 @@
             <label><input type="radio" name="split_mode" value="proportional"{% if expense.split_mode == "proportional" %} checked{% endif %} /> Proportional</label>
             <label><input type="radio" name="split_mode" value="exact"{% if expense.split_mode == "exact" %} checked{% endif %} /> Exact</label>
           </div>{% endif %}
-          {% if expense.split_mode == "proportional" %}<p class="helper">Select Participants and assign positive weights. Preview calculates exact minor-unit Shares.</p>{% else %}<p class="helper">Enter exact Share amounts. They must add up to the Total.</p>{% endif %}
-          <div class="allocation-scroll" tabindex="0" aria-labelledby="allocation-heading">
+           {% if expense.split_mode == "proportional" %}<p class="helper">Select Participants and assign positive weights. Preview calculates exact minor-unit Shares.</p>{% else %}<p class="helper">Select Participants and enter exact Share amounts. They must add up to the Total.</p>{% endif %}
+           <div class="allocation-scroll" tabindex="0" aria-labelledby="allocation-heading" aria-describedby="spending-status" aria-busy="false">
             <table id="allocation-table" class="allocation-table">
               <caption id="allocation-heading">Participant allocation table; scroll horizontally for Included, Weight, and Share</caption>
               <thead><tr><th scope="col">Participant</th><th scope="col">Payer</th><th scope="col">Included</th><th scope="col">Weight</th><th scope="col">Share</th></tr></thead>
@@ -85,21 +85,20 @@
                 <tr>
                   <th scope="row"><span class="swatch" style="background: {{ member.color }}" aria-hidden="true"></span> {{ member.name }}</th>
                   <td><span class="allocation-payer-label">{% if member.id == expense.single_payer_id %}Pays Total{% else %}Not Payer{% endif %}</span></td>
-                  {% if expense.split_mode == "proportional" %}<td>{% if reviewed && member.selected %}<input type="hidden" name="included_{{ member.id }}" value="on" />{% endif %}<input aria-label="Include {{ member.name }}" type="checkbox" name="included_{{ member.id }}" value="on"{% if member.selected %} checked{% endif %}{% if reviewed %} disabled{% endif %} /></td>
-                  <td><input aria-label="Weight for {{ member.name }}" name="weight_{{ member.id }}" value="{{ member.amount }}" inputmode="decimal"{% if !member.selected %} disabled{% endif %}{% if reviewed %} readonly{% endif %} /></td>
-                  {% else %}<td></td><td><input aria-label="Exact Share for {{ member.name }}" name="exact_{{ member.id }}" value="{{ member.amount }}" inputmode="decimal"{% if reviewed %} readonly{% endif %} /></td>{% endif %}
-                  <td class="derived-share">{% if member.derived_amount != "" %}{{ member.derived_amount }} {{ expense.currency }}{% else %}Not previewed{% endif %}</td>
+                   <td>{% if reviewed && member.selected %}<input type="hidden" name="included_{{ member.id }}" value="on" />{% endif %}<input aria-label="Include {{ member.name }}" type="checkbox" name="included_{{ member.id }}" value="on"{% if member.selected %} checked{% endif %}{% if reviewed %} disabled{% endif %} /></td>
+                   <td><span class="mode-weight">{% if reviewed && expense.split_mode != "proportional" %}{% else %}<input aria-label="Weight for {{ member.name }}" name="weight_{{ member.id }}" value="{% if expense.split_mode == "proportional" %}{{ member.amount }}{% endif %}" inputmode="decimal"{% if !member.selected %} disabled{% endif %}{% if reviewed %} readonly{% endif %} />{% endif %}</span><span class="mode-exact">{% if reviewed && expense.split_mode != "exact" %}{% else %}<input aria-label="Exact Share for {{ member.name }}" name="exact_{{ member.id }}" value="{% if expense.split_mode == "exact" %}{{ member.amount }}{% endif %}" inputmode="decimal"{% if !member.selected %} disabled{% endif %}{% if member.allocation_error.is_some() %} aria-invalid="true" aria-describedby="allocation-error-{{ member.id }}"{% endif %}{% if reviewed %} readonly{% endif %} />{% endif %}</span>{% match member.allocation_error %}{% when Some with (message) %}<p id="allocation-error-{{ member.id }}" class="error">{{ message }}</p>{% when None %}{% endmatch %}</td>
+                   <td class="derived-share">{% if member.derived_amount != "" %}{{ member.derived_amount }} {{ expense.currency }}{% else %}Not previewed{% endif %}</td>
                 </tr>
                 {% endfor %}
               </tbody>
-            </table>
-          </div>
-        </fieldset>
+           </table>
+           </div>
+         </fieldset>
         <div class="spending-action-bar">
           <p class="spending-total-status">{% if expense.total != "" %}Total: {{ expense.total }} {{ expense.currency }}{% else %}Enter a Total{% endif %}</p>
           <div class="spending-actions">
             <a class="button secondary" href="/groups/{{ group_id }}/transactions">Cancel</a>
-            {% if reviewed %}<a class="button secondary" href="/groups/{{ group_id }}/spendings/new">Edit allocation</a><button type="submit">Approve</button>{% else %}<button type="submit">Preview</button>{% endif %}
+            {% if reviewed %}<a class="button secondary" href="/groups/{{ group_id }}/spendings/new">Edit allocation</a><button type="submit" aria-describedby="spending-status">Approve</button>{% else %}<button type="submit">Preview</button>{% endif %}
           </div>
         </div>
       </form>

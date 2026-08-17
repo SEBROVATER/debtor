@@ -205,7 +205,16 @@ impl SpendingService {
     }
 }
 
-fn parse_unsigned_decimal(value: &str, field: &'static str) -> Result<Decimal, ApplicationError> {
+/// Parses an unsigned plain decimal submitted by a transport adapter.
+///
+/// # Errors
+///
+/// Returns validation when the value is empty, signed, exponential, malformed,
+/// or otherwise not an exact decimal.
+pub fn parse_unsigned_decimal(
+    value: &str,
+    field: &'static str,
+) -> Result<Decimal, ApplicationError> {
     if value.is_empty()
         || value.starts_with(['+', '-'])
         || value
@@ -272,7 +281,10 @@ fn parse_input(input: SpendingInput, spending_id: EntityId) -> Result<Spending, 
                 .collect::<Result<Vec<_>, ApplicationError>>()?;
             proportional_split(total, currency, &values)?
         }
-        ShareInput::Exact(values) => parse_allocations(values, "owed amount")?,
+        ShareInput::Exact(mut values) => {
+            values.sort_unstable_by_key(|(participant_id, _)| *participant_id);
+            parse_allocations(values, "owed amount")?
+        }
     };
     let spending = Spending {
         id: spending_id,
@@ -590,6 +602,34 @@ mod tests {
                 ValidationError::InvalidParticipantId
             ))
         ));
+    }
+
+    #[tokio::test]
+    async fn exact_input_orders_shares_independently_of_submitted_field_order() {
+        let fake = Arc::new(SpendingFake {
+            read_requests: Mutex::new(Vec::new()),
+            created: Mutex::new(Vec::new()),
+            updated: Mutex::new(Vec::new()),
+            fail_update: false,
+            eligible: [PARTICIPANT_ONE, PARTICIPANT_TWO].into_iter().collect(),
+        });
+        let service = SpendingService::new(fake.clone(), fake.clone(), fake);
+        let mut input = exact_input();
+        input.shares = ShareInput::Exact(vec![
+            (PARTICIPANT_TWO, "6.00".into()),
+            (PARTICIPANT_ONE, "4.00".into()),
+        ]);
+
+        let preview = service.preview_input(input).await.expect("exact preview");
+
+        assert_eq!(
+            preview
+                .shares
+                .iter()
+                .map(|allocation| allocation.participant_id)
+                .collect::<Vec<_>>(),
+            vec![PARTICIPANT_ONE, PARTICIPANT_TWO]
+        );
     }
 
     #[tokio::test]
