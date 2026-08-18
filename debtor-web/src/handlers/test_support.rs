@@ -9,7 +9,8 @@ use debtor_application::{
     DebtUseCases, GroupCreateInput, GroupDeleteInput, GroupInput, GroupMutationExecutor,
     GroupUseCases, LoginAdmission, LoginAttemptLimiter, ParticipantCreateInput,
     ParticipantUpdateInput, ParticipantUseCases, PasswordVerifier, RateMode, ReadinessUseCases,
-    SpendingInput, SpendingMutationExecutor, SpendingPage, SpendingUseCases, UtcClock,
+    SourceCurrencySummary, SourcePayerTotal, SourceSummary, SpendingInput,
+    SpendingMutationExecutor, SpendingPage, SpendingUseCases, SummaryUseCases, UtcClock,
 };
 use debtor_domain::{
     currency::Currency,
@@ -150,6 +151,7 @@ fn state_with_errors_and_password(
     let spendings: Arc<dyn SpendingUseCases> = fake_spendings.clone();
     let spending_mutations: Arc<dyn SpendingMutationExecutor> = fake_spendings;
     let debts: Arc<dyn DebtUseCases> = Arc::new(FakeDebts);
+    let summaries: Arc<dyn SummaryUseCases> = Arc::new(FakeSummaries);
     let auth_attempts = Arc::new(AtomicUsize::new(0));
     let password_verifications = Arc::new(AtomicUsize::new(0));
     let password: Arc<dyn PasswordVerifier> = Arc::new(FakePassword {
@@ -175,6 +177,7 @@ fn state_with_errors_and_password(
             spendings,
             spending_mutations,
             debts,
+            summaries,
             authentication,
             clock,
             readiness: Arc::new(FakeReadiness { healthy: true }),
@@ -563,6 +566,45 @@ struct FakeDebts;
 impl DebtUseCases for FakeDebts {
     async fn calculate(&self, _: i64, _: RateMode) -> Result<DebtResult, ApplicationError> {
         Err(ApplicationError::NotFound)
+    }
+}
+
+struct FakeSummaries;
+
+#[async_trait]
+impl SummaryUseCases for FakeSummaries {
+    async fn source_summary(&self, _: i64) -> Result<SourceSummary, ApplicationError> {
+        let participant = Participant {
+            id: 1,
+            name: Name::new("Archived Ada").expect("summary participant"),
+            color: Color::new("#123456").expect("summary color"),
+            is_archived: true,
+        };
+        Ok(SourceSummary {
+            month: chrono::NaiveDate::from_ymd_opt(2026, 8, 1).expect("test month"),
+            currencies: vec![
+                SourceCurrencySummary {
+                    currency: Currency::Eur,
+                    total: debtor_domain::money::parse_decimal("12.34").expect("summary total"),
+                    display_total: "€12.34 EUR".into(),
+                    payers: vec![SourcePayerTotal {
+                        participant: participant.clone(),
+                        total: debtor_domain::money::parse_decimal("12.34").expect("payer total"),
+                        display_total: "€12.34 EUR".into(),
+                    }],
+                },
+                SourceCurrencySummary {
+                    currency: Currency::Usd,
+                    total: debtor_domain::money::parse_decimal("10").expect("summary total"),
+                    display_total: "$10.00 USD".into(),
+                    payers: vec![SourcePayerTotal {
+                        participant,
+                        total: debtor_domain::money::parse_decimal("10").expect("payer total"),
+                        display_total: "$10.00 USD".into(),
+                    }],
+                },
+            ],
+        })
     }
 }
 

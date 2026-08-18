@@ -7,10 +7,13 @@ use debtor_application::{
     ApplicationError, DatabaseReadiness, LedgerSnapshot, LedgerSnapshotReader, StorageReason,
 };
 use debtor_domain::currency::Currency;
-use debtor_domain::model::{Allocation, Description, EntityId, Spending, SpendingType};
+use debtor_domain::model::{
+    Allocation, Description, EntityId, GroupMember, Spending, SpendingType,
+};
 
 use super::decoding::{
-    DbGroup, DbSnapshotSpending, DbSpendingAllocation, canonical_decimal, group, invalid,
+    DbGroup, DbGroupMember, DbSnapshotSpending, DbSpendingAllocation, canonical_decimal, group,
+    invalid,
 };
 use super::{SqliteLedgerStore, storage};
 
@@ -31,6 +34,27 @@ async fn ledger_snapshot(
     .map_err(storage)?
     .ok_or(ApplicationError::NotFound)
     .and_then(group)?;
+    let members = sqlx::query_as!(DbGroupMember, "SELECT p.id AS \"id!: i64\", p.name, p.color, p.is_archived, gm.is_active AS \"is_active!: i64\" FROM group_members gm JOIN participants p ON p.id = gm.participant_id WHERE gm.group_id = ? ORDER BY p.name, p.id", group_id)
+        .fetch_all(&mut *tx).await.map_err(storage)?;
+    let participants = members
+        .into_iter()
+        .map(|row| {
+            let participant = super::decoding::participant(super::decoding::DbParticipant {
+                id: row.id,
+                name: row.name,
+                color: row.color,
+                is_archived: row.is_archived,
+            })?;
+            Ok((
+                participant,
+                GroupMember {
+                    group_id,
+                    participant_id: row.id,
+                    is_active: super::decoding::decoded_bool(row.is_active)?,
+                },
+            ))
+        })
+        .collect::<Result<Vec<_>, ApplicationError>>()?;
     let parents = sqlx::query_as!(DbSnapshotSpending, "SELECT id AS \"id!: i64\", description, total_amount, currency, spending_type, spent_date FROM spendings WHERE group_id = ? ORDER BY spent_date DESC, id DESC", group_id)
         .fetch_all(&mut *tx).await.map_err(storage)?;
     let payer_rows = sqlx::query_as!(DbSpendingAllocation, "SELECT sp.id AS \"spending_id!: i64\", p.participant_id, p.paid_amount AS amount FROM spending_payers p JOIN spendings sp ON sp.id = p.spending_id WHERE sp.group_id = ? ORDER BY sp.id, p.participant_id", group_id)
@@ -69,7 +93,11 @@ async fn ledger_snapshot(
         spendings.push(spending);
     }
     tx.commit().await.map_err(storage)?;
-    Ok(LedgerSnapshot { group, spendings })
+    Ok(LedgerSnapshot {
+        group,
+        spendings,
+        participants,
+    })
 }
 
 #[async_trait]

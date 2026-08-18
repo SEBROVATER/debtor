@@ -7,7 +7,7 @@ use debtor_domain::currency::Currency;
 use debtor_domain::debts::{
     CalculationError, Transfer, add_converted_spending, quantize_balances, simplify,
 };
-use debtor_domain::model::{EntityId, Group, Spending};
+use debtor_domain::model::{EntityId, Group, GroupMember, Participant, Spending};
 use futures::stream::{self, StreamExt};
 use rust_decimal::Decimal;
 
@@ -76,6 +76,8 @@ pub struct LedgerSnapshot {
     pub group: Group,
     /// Complete spending aggregates from the same database snapshot.
     pub spendings: Vec<Spending>,
+    /// Current Group-owned Participant identities from the same database snapshot.
+    pub participants: Vec<(Participant, GroupMember)>,
 }
 
 /// Reads one transactionally consistent ledger snapshot.
@@ -328,6 +330,7 @@ mod tests {
             Ok(LedgerSnapshot {
                 group: group(group_id),
                 spendings: self.0.clone(),
+                participants: Vec::new(),
             })
         }
     }
@@ -664,6 +667,7 @@ mod tests {
                 snapshot: LedgerSnapshot {
                     group: group(GROUP_ID),
                     spendings: vec![spending],
+                    participants: Vec::new(),
                 },
                 completed: completed.clone(),
             }),

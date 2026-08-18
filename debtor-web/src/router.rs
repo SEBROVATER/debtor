@@ -174,7 +174,9 @@ mod tests {
         },
         response::Response,
     };
-    use debtor_application::{ApplicationError, LoginAdmission, ReadinessUseCases};
+    use debtor_application::{
+        ApplicationError, LoginAdmission, ReadinessUseCases, SourceSummary, SummaryUseCases,
+    };
     use debtor_domain::currency::Currency;
     use tower::ServiceExt;
     use tower_sessions::{
@@ -492,6 +494,96 @@ mod tests {
                 .await
                 .contains("href=\"/groups/1/transactions\">Open Transactions</a>")
         );
+    }
+
+    #[tokio::test]
+    async fn summary_renders_exact_source_currency_hierarchy_and_focus() {
+        let test_state = state(false);
+        let app = app(&test_state);
+        let session_cookie = login(&app).await;
+
+        let response = app
+            .oneshot(request(Method::GET, "/groups/1", "", Some(&session_cookie)))
+            .await
+            .expect("summary response");
+        let body = response_body(response).await;
+
+        assert!(body.contains("id=\"source-summary\""));
+        assert!(body.contains("id=\"summary-heading\""));
+        assert!(body.contains("Current-Month Summary: 2026-08"));
+        assert!(body.contains("2026-08 · UTC"));
+        assert!(body.contains("USD Source Currency"));
+        assert!(body.contains("EUR Source Currency"));
+        assert!(body.contains("Group total"));
+        assert!(body.contains("€12.34 EUR"));
+        assert!(body.contains("$10.00 USD"));
+        assert!(body.contains("Archived Ada"));
+        assert!(body.contains("Archived</span>"));
+        assert!(body.contains("id=\"source-summary-status\""));
+        assert!(body.contains("aria-busy=\"false\""));
+        assert!(body.contains("aria-live=\"polite\""));
+        assert!(body.contains("aria-atomic=\"true\""));
+        assert!(body.contains("aria-current=\"page\">Summary</a>"));
+    }
+
+    struct FailingSummary;
+
+    #[async_trait]
+    impl SummaryUseCases for FailingSummary {
+        async fn source_summary(&self, _: i64) -> Result<SourceSummary, ApplicationError> {
+            Err(ApplicationError::Storage(
+                debtor_application::StorageReason::InvalidData,
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn summary_hides_partial_values_when_source_calculation_fails() {
+        let mut test_state = state(false);
+        test_state.app.summaries = Arc::new(FailingSummary);
+        let app = app(&test_state);
+        let session_cookie = login(&app).await;
+
+        let response = app
+            .oneshot(request(Method::GET, "/groups/1", "", Some(&session_cookie)))
+            .await
+            .expect("summary failure response");
+        let body = response_body(response).await;
+
+        assert!(body.contains("Source totals are unavailable."));
+        assert!(body.contains("No partial totals are shown."));
+        assert!(!body.contains("Source Currency</h3>"));
+        assert!(!body.contains("SQLx"));
+    }
+
+    struct EmptySummary;
+
+    #[async_trait]
+    impl SummaryUseCases for EmptySummary {
+        async fn source_summary(&self, _: i64) -> Result<SourceSummary, ApplicationError> {
+            Ok(SourceSummary {
+                month: chrono::NaiveDate::from_ymd_opt(2026, 8, 1).expect("test month"),
+                currencies: Vec::new(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn summary_renders_an_empty_month_without_fabricated_currency_totals() {
+        let mut test_state = state(false);
+        test_state.app.summaries = Arc::new(EmptySummary);
+        let app = app(&test_state);
+        let session_cookie = login(&app).await;
+
+        let response = app
+            .oneshot(request(Method::GET, "/groups/1", "", Some(&session_cookie)))
+            .await
+            .expect("empty summary response");
+        let body = response_body(response).await;
+
+        assert!(body.contains("No Spendings fall in this current UTC month."));
+        assert!(!body.contains("Source Currency</h3>"));
+        assert!(body.contains("href=\"/groups/1/spendings/new\">Add Spending</a>"));
     }
 
     #[tokio::test]

@@ -14,6 +14,7 @@ use std::{
 use debtor_application::{
     AuthenticationUseCases, Clock, DebtUseCases, GroupMutationExecutor, GroupUseCases,
     ParticipantUseCases, ReadinessUseCases, SpendingMutationExecutor, SpendingUseCases,
+    SummaryUseCases,
 };
 
 use crate::submission_tokens::SubmissionTokenStore;
@@ -33,6 +34,8 @@ pub struct AppState {
     pub spending_mutations: Arc<dyn SpendingMutationExecutor>,
     /// Debt workflows.
     pub debts: Arc<dyn DebtUseCases>,
+    /// Current-month source-summary workflow.
+    pub summaries: Arc<dyn SummaryUseCases>,
     /// Authentication policy and password gate.
     pub authentication: Arc<dyn AuthenticationUseCases>,
     /// Shared UTC clock for deterministic form defaults.

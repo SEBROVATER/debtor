@@ -175,6 +175,19 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .confirmation-facts > div { display: grid; gap: 1rem; grid-template-columns: 108px minmax(0, 1fr); padding-block: .4rem; }
 .confirmation-facts dt { font-weight: 700; }
 .confirmation-facts dd { margin: 0; min-inline-size: 0; overflow-wrap: anywhere; }
+.financial-results { border-block: 1px solid var(--line); margin-block: 1rem; padding-block: 1rem; }
+.financial-results h2, .source-currency-block h3 { font-family: Georgia, "Times New Roman", serif; font-weight: 500; }
+.financial-results h2:focus { outline: 2px solid var(--focus); outline-offset: 2px; }
+.summary-context, .summary-status { color: #AAA59C; }
+.summary-status { border-block: 1px solid transparent; min-block-size: 48px; padding-block: .75rem; }
+.source-currency-list { display: grid; gap: 1rem; }
+.source-currency-block { border-block: 1px solid var(--line); padding-block: .75rem; }
+.source-money-list { margin: 0; }
+.source-money-list > div { align-items: baseline; border-block-end: 1px solid var(--line); display: grid; gap: 1rem; grid-template-columns: minmax(0, 1fr) max-content; padding: .65rem 0; }
+.source-money-list dt { min-inline-size: 0; overflow-wrap: anywhere; }
+.source-money-list dd { font-variant-numeric: tabular-nums; margin: 0; white-space: nowrap; }
+.source-group-total { font-family: Georgia, "Times New Roman", serif; font-size: 1.15rem; }
+.source-payer-row { padding-inline-start: 1rem; }
 @media (max-width: 40rem) {
   .transaction-row summary { align-items: start; grid-template-columns: minmax(0, 1fr); }
   .transaction-total { justify-self: end; }
@@ -182,4 +195,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .transaction-facts > div { grid-template-columns: minmax(6rem, 0.35fr) minmax(0, 1fr); }
   .pagination { gap: .5rem; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .pagination-context { grid-column: 1 / -1; grid-row: 1; }
+  .source-money-list > div { gap: .5rem; grid-template-columns: minmax(0, 1fr) minmax(0, max-content); }
+  .source-payer-row { padding-inline-start: .5rem; }
 }

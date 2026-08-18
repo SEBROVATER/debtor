@@ -9,7 +9,7 @@ use debtor_application::{
     ParticipantReader, ParticipantRepository, ParticipantService, ParticipantUpdateInput,
     ParticipantUseCases, ReadinessService, ReadinessUseCases, SpendingEligibilityReader,
     SpendingInput, SpendingMutationExecutor, SpendingReader, SpendingRepository, SpendingService,
-    SpendingUseCases, UtcClock,
+    SpendingUseCases, SummaryService, SummaryUseCases, UtcClock,
 };
 use debtor_infra::auth::{ArgonPasswordGate, MemoryLoginAttemptLimiter};
 use debtor_infra::db::repos::SqliteLedgerRuntime;
@@ -564,11 +564,11 @@ pub(crate) async fn build_app_with_control(
     let spending_eligibility: Arc<dyn SpendingEligibilityReader> = store.clone();
     let spending_reader: Arc<dyn SpendingReader> = store.clone();
     let snapshot_reader: Arc<dyn LedgerSnapshotReader> = store.clone();
-    let spending_repository: Arc<dyn SpendingRepository> = store;
+    let spending_repository: Arc<dyn SpendingRepository> = store.clone();
     let groups: Arc<dyn GroupUseCases> =
         Arc::new(GroupService::new(group_reader.clone(), group_repository));
     let participants: Arc<dyn ParticipantUseCases> = Arc::new(ParticipantService::new(
-        participant_reader,
+        participant_reader.clone(),
         participant_repository,
         group_reader.clone(),
     ));
@@ -589,6 +589,8 @@ pub(crate) async fn build_app_with_control(
     let clock: Arc<dyn Clock> = Arc::new(UtcClock);
     let debts: Arc<dyn DebtUseCases> =
         Arc::new(DebtService::new(snapshot_reader, rates, clock.clone()));
+    let summaries: Arc<dyn SummaryUseCases> =
+        Arc::new(SummaryService::new(store.clone(), clock.clone()));
     let limiter = Arc::new(MemoryLoginAttemptLimiter::default());
     let authentication: Arc<dyn AuthenticationUseCases> =
         Arc::new(AuthenticationService::new(limiter, password));
@@ -599,6 +601,7 @@ pub(crate) async fn build_app_with_control(
         spendings,
         spending_mutations,
         debts,
+        summaries,
         authentication,
         clock,
         readiness,

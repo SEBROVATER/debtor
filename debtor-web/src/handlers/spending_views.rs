@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 
 use axum::response::Response;
-use debtor_application::{SpendingCursor, parse_unsigned_decimal};
+use debtor_application::{SourceSummary, SpendingCursor, parse_unsigned_decimal};
 use debtor_domain::{
     currency::Currency,
     expenses::{ShareMode, infer_share_mode, splitting::equal_split},
@@ -15,8 +15,9 @@ use crate::{
     participant_color::suggested_participant_color,
     state::AppState,
     templates::{
-        ExpenseFormView, GroupTemplate, MemberRow, SelectOption, SpendingFormTemplate, SpendingRow,
-        TransactionAllocationRow, TransactionParticipant, TransactionRow, TransactionsTemplate,
+        ExpenseFormView, GroupTemplate, MemberRow, SelectOption, SourceCurrencyRow, SourcePayerRow,
+        SourceSummaryView, SpendingFormTemplate, SpendingRow, TransactionAllocationRow,
+        TransactionParticipant, TransactionRow, TransactionsTemplate,
     },
 };
 
@@ -135,8 +136,18 @@ pub(super) async fn build_group_template(
     error: Option<String>,
     submitted: Option<&ExpenseForm>,
     participant_draft: Option<ParticipantDraft>,
+    include_summary: bool,
 ) -> Result<GroupTemplate, GroupTemplateError> {
     let group = state.groups.group(id).await?;
+    let source_summary = if include_summary {
+        let summary_today = state.clock.now().date_naive();
+        match state.summaries.source_summary(id).await {
+            Ok(summary) => source_summary_view(summary),
+            Err(_) => unavailable_source_summary_view(summary_today),
+        }
+    } else {
+        unavailable_source_summary_view(state.clock.now().date_naive())
+    };
     let members = state.participants.members(id).await?;
     let active_members = members
         .iter()
@@ -274,6 +285,7 @@ pub(super) async fn build_group_template(
         create_name,
         create_color,
         expense,
+        source_summary,
     })
 }
 
@@ -287,7 +299,7 @@ pub(super) async fn build_group_manage_template(
     settings_notice: Option<String>,
 ) -> Result<GroupTemplate, GroupTemplateError> {
     let mut template =
-        match build_group_template(state, session, id, None, None, None, None, None).await {
+        match build_group_template(state, session, id, None, None, None, None, None, false).await {
             Ok(template) => template,
             Err(_error) if settings_draft.is_some() || settings_error.is_some() => {
                 build_group_settings_fallback(state, session, id).await?
@@ -316,8 +328,10 @@ pub(super) async fn build_spending_form_template(
     reviewed: bool,
 ) -> Result<SpendingFormTemplate, GroupTemplateError> {
     let group = state.groups.group(id).await?;
-    let mut page =
-        build_group_template(state, session, id, None, spending, None, submitted, None).await?;
+    let mut page = build_group_template(
+        state, session, id, None, spending, None, submitted, None, false,
+    )
+    .await?;
     let action = spending.map_or_else(
         || {
             if reviewed {
@@ -412,7 +426,58 @@ async fn build_group_settings_fallback(
             error: None,
             unmapped_fields: Vec::new(),
         },
+        source_summary: unavailable_source_summary_view(state.clock.now().date_naive()),
     })
+}
+
+fn source_summary_view(summary: SourceSummary) -> SourceSummaryView {
+    let month = summary.month.format("%Y-%m").to_string();
+    let context = format!("{month} · UTC");
+    let currencies = summary
+        .currencies
+        .into_iter()
+        .map(|currency| SourceCurrencyRow {
+            symbol: currency.currency.symbol().to_owned(),
+            currency: currency.currency.to_string(),
+            total: currency.display_total,
+            payers: currency
+                .payers
+                .into_iter()
+                .map(|payer| SourcePayerRow {
+                    id: payer.participant.id,
+                    name: payer.participant.name.to_string(),
+                    color: payer.participant.color.as_str().to_owned(),
+                    archived: payer.participant.is_archived,
+                    total: payer.display_total,
+                })
+                .collect(),
+        })
+        .collect::<Vec<_>>();
+    let empty = currencies.is_empty();
+    SourceSummaryView {
+        month,
+        context,
+        currencies,
+        empty,
+        unavailable: false,
+        status: if empty {
+            "No Spendings fall in this current UTC month.".to_owned()
+        } else {
+            "Source totals ready.".to_owned()
+        },
+    }
+}
+
+fn unavailable_source_summary_view(today: chrono::NaiveDate) -> SourceSummaryView {
+    let month = today.format("%Y-%m").to_string();
+    SourceSummaryView {
+        context: format!("{month} · UTC"),
+        month,
+        currencies: Vec::new(),
+        empty: false,
+        unavailable: true,
+        status: "Source totals are unavailable. No partial totals are shown.".to_owned(),
+    }
 }
 
 pub(super) fn encode_cursor(cursor: SpendingCursor) -> String {

@@ -28,7 +28,7 @@
     <main>
       <div class="page-heading">
         <div>
-           <h1 id="group-heading" class="group-heading" tabindex="-1"{% if !archived && section != "manage" && settings_notice.is_none() && settings_error.is_none() %} autofocus{% endif %}>{{ name }}{% if archived %} <span id="archived-status">Archived</span>{% endif %}</h1>
+           <h1 id="group-heading" class="group-heading" tabindex="-1"{% if !archived && section != "manage" && section != "summary" && settings_notice.is_none() && settings_error.is_none() %} autofocus{% endif %}>{{ name }}{% if archived %} <span id="archived-status">Archived</span>{% endif %}</h1>
           <p>Settlement target: <strong>{{ currency }}</strong></p>
         </div>
         {% if !archived && can_delete && section != "manage" %}<a class="button secondary" href="/groups/{{ group_id }}/delete"
@@ -168,7 +168,34 @@
        {% if members.len() > 0 && !archived %}
        <p class="helper">Use Add Spending to open the focused Spending form.</p>
        {% endif %}
-       <section class="card" aria-labelledby="transactions-link-heading">
+        <section id="source-summary" class="financial-results" aria-labelledby="summary-heading" aria-busy="false">
+          <h2 id="summary-heading" tabindex="-1" autofocus>Current-Month Summary: {{ source_summary.month }}</h2>
+          <p class="summary-context">{{ source_summary.context }}</p>
+          <p id="source-summary-status" class="summary-status" role="status" aria-live="polite" aria-atomic="true">{{ source_summary.status }}</p>
+          {% if source_summary.unavailable %}
+          <p class="warning">Source totals are unavailable. No partial totals are shown.</p>
+          {% else %}{% if source_summary.empty %}
+          <p class="empty">No Spendings fall in this current UTC month.</p>
+          {% else %}
+          <div class="source-currency-list">
+            {% for currency in source_summary.currencies %}
+            <section class="source-currency-block" aria-labelledby="source-currency-{{ currency.currency }}">
+              <h3 id="source-currency-{{ currency.currency }}">{{ currency.currency }} Source Currency</h3>
+              <dl class="source-money-list">
+                <div class="source-group-total"><dt>Group total</dt><dd>{{ currency.total }}</dd></div>
+                {% for payer in currency.payers %}
+                <div class="source-payer-row">
+                  <dt><span class="participant-marker" style="background: {{ payer.color }}" aria-hidden="true"></span>{{ payer.name }}{% if payer.archived %} <span>Archived</span>{% endif %}</dt>
+                  <dd>{{ payer.total }}</dd>
+                </div>
+                {% endfor %}
+              </dl>
+            </section>
+            {% endfor %}
+          </div>
+          {% endif %}{% endif %}
+        </section>
+        <section class="card" aria-labelledby="transactions-link-heading">
          <h2 id="transactions-link-heading">Expense history</h2>
          <p>Browse and inspect the complete Spending history in Transactions.</p>
          <p><a class="button" href="/groups/{{ group_id }}/transactions">Open Transactions</a></p>

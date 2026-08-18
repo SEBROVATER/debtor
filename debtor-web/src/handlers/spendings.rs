@@ -876,6 +876,7 @@ async fn form_error(
         Some(message),
         Some(form),
         None,
+        false,
     )
     .await
     {

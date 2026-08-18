@@ -73,6 +73,48 @@ pub struct GroupRow {
     pub focused: bool,
 }
 
+/// Current-month Source Currency summary projection.
+pub struct SourceSummaryView {
+    /// Current UTC month label.
+    pub month: String,
+    /// Explicit UTC context label.
+    pub context: String,
+    /// Source Currency blocks.
+    pub currencies: Vec<SourceCurrencyRow>,
+    /// Whether the month contains no Spendings.
+    pub empty: bool,
+    /// Whether the source calculation was unavailable.
+    pub unavailable: bool,
+    /// Scoped status announcement.
+    pub status: String,
+}
+
+/// One Source Currency block in the Summary projection.
+pub struct SourceCurrencyRow {
+    /// ISO Source Currency code.
+    pub currency: String,
+    /// Currency symbol.
+    pub symbol: String,
+    /// Exact formatted Group total.
+    pub total: String,
+    /// Per-Payer totals.
+    pub payers: Vec<SourcePayerRow>,
+}
+
+/// One current Participant Payer row in a Source Currency block.
+pub struct SourcePayerRow {
+    /// Participant identifier, retained for stable markup.
+    pub id: i64,
+    /// Current Participant name.
+    pub name: String,
+    /// Stored marker color.
+    pub color: String,
+    /// Whether the identity is archived.
+    pub archived: bool,
+    /// Exact formatted paid total.
+    pub total: String,
+}
+
 /// Debt view page.
 #[derive(Template)]
 #[template(path = "debts.html")]
@@ -233,6 +275,8 @@ pub struct GroupTemplate {
     pub create_color: String,
     /// Expense form state.
     pub expense: ExpenseFormView,
+    /// Current-month Source Currency financial result.
+    pub source_summary: SourceSummaryView,
 }
 
 /// Focused full-page Spending create/preview form.
