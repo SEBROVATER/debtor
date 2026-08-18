@@ -1,0 +1,33 @@
+<section id="converted-summary" class="financial-results converted-results" aria-labelledby="converted-summary-heading" aria-describedby="converted-summary-status" aria-busy="false">
+  <h2 id="converted-summary-heading" tabindex="-1">Group Currency Summary: {{ converted_summary.currency }}</h2>
+  <p id="converted-summary-status" class="summary-status" role="status" aria-live="polite" aria-atomic="true">{{ converted_summary.status }}</p>
+  {% if converted_summary.state.is_unavailable() %}
+  <p class="warning">Converted values are unavailable. Reopen this section to retry.</p>
+  {% else %}{% if converted_summary.empty %}
+  <p class="empty">No current-month Spendings are available for conversion.</p>
+  {% else %}
+  <dl class="source-money-list converted-money-list">
+    <div class="source-group-total converted-group-total"><dt>Group total</dt><dd>{{ converted_summary.total }}</dd></div>
+    {% for payer in converted_summary.payers %}
+    <div class="source-payer-row converted-payer-row">
+      <dt><span class="participant-marker" style="background: {{ payer.color }}" aria-hidden="true"></span>{{ payer.name }}{% if payer.archived %} <span>Archived</span>{% endif %}</dt>
+      <dd>{{ payer.total }}</dd>
+    </div>
+    {% endfor %}
+  </dl>
+  <section class="rate-disclosure" aria-labelledby="rate-disclosure-heading">
+    <h3 id="rate-disclosure-heading">Rate evidence</h3>
+    {% if converted_summary.state.is_provisional() %}<p class="warning">Provisional: a current rate was used for a future Spending.</p>{% endif %}
+    <ul>
+      {% for rate in converted_summary.rates %}
+      <li>
+        <span>{{ rate.base }} to {{ rate.quote }}</span>
+        <span>Requested {{ rate.requested_date }}; fetched {{ rate.fetch_date }}; effective {{ rate.effective_date }}; rate {{ rate.rate }}</span>
+        {% if rate.stale %}<span>Stale evidence.</span>{% endif %}
+        {% if rate.provisional %}<span>Provisional future Spending.</span>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}{% endif %}
+</section>

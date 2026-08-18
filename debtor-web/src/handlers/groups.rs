@@ -11,8 +11,8 @@ use super::{
     auth::{authenticated_shell, require_auth},
     response::{error_response, map_error, render},
     spending_views::{
-        build_group_manage_template, build_group_template, build_transactions_template,
-        map_group_template_error,
+        build_converted_summary_template, build_group_manage_template, build_group_template,
+        build_transactions_template, map_group_template_error,
     },
 };
 use crate::{
@@ -111,6 +111,20 @@ pub(crate) async fn group_detail(
         Err(message) => return error_response(StatusCode::BAD_REQUEST, message),
     };
     match build_group_template(&state, &session, id, cursor, None, None, None, None, true).await {
+        Ok(template) => render(&template),
+        Err(error) => map_group_template_error(error),
+    }
+}
+
+pub(crate) async fn converted_summary(
+    State(state): State<AppState>,
+    session: Session,
+    Path(id): Path<i64>,
+) -> Response {
+    if let Err(response) = require_auth(&session).await {
+        return response;
+    }
+    match build_converted_summary_template(&state, id).await {
         Ok(template) => render(&template),
         Err(error) => map_group_template_error(error),
     }

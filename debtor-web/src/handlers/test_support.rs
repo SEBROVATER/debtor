@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use debtor_application::{
     ApplicationError, AuthenticationService, AuthenticationUseCases, Clock, DebtResult,
     DebtUseCases, GroupCreateInput, GroupDeleteInput, GroupInput, GroupMutationExecutor,
-    GroupUseCases, LoginAdmission, LoginAttemptLimiter, ParticipantCreateInput,
+    GroupUseCases, LoginAdmission, LoginAttemptLimiter, MonthlySummary, ParticipantCreateInput,
     ParticipantUpdateInput, ParticipantUseCases, PasswordVerifier, RateMode, ReadinessUseCases,
     SourceCurrencySummary, SourcePayerTotal, SourceSummary, SpendingInput,
     SpendingMutationExecutor, SpendingPage, SpendingUseCases, SummaryUseCases, UtcClock,
@@ -604,6 +604,23 @@ impl SummaryUseCases for FakeSummaries {
                     }],
                 },
             ],
+        })
+    }
+
+    async fn converted_summary(
+        &self,
+        _: i64,
+    ) -> Result<debtor_application::ConvertedSummary, ApplicationError> {
+        Err(ApplicationError::Unavailable(
+            debtor_application::UnavailableReason::ExchangeRates,
+        ))
+    }
+
+    async fn monthly_summary(&self, group_id: i64) -> Result<MonthlySummary, ApplicationError> {
+        Ok(MonthlySummary {
+            currency: Currency::Usd,
+            source: self.source_summary(group_id).await,
+            converted: self.converted_summary(group_id).await,
         })
     }
 }

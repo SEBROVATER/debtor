@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 
 use axum::response::Response;
-use debtor_application::{SourceSummary, SpendingCursor, parse_unsigned_decimal};
+use debtor_application::{ConvertedSummary, SourceSummary, SpendingCursor, parse_unsigned_decimal};
 use debtor_domain::{
     currency::Currency,
     expenses::{ShareMode, infer_share_mode, splitting::equal_split},
@@ -15,9 +15,10 @@ use crate::{
     participant_color::suggested_participant_color,
     state::AppState,
     templates::{
-        ExpenseFormView, GroupTemplate, MemberRow, SelectOption, SourceCurrencyRow, SourcePayerRow,
-        SourceSummaryView, SpendingFormTemplate, SpendingRow, TransactionAllocationRow,
-        TransactionParticipant, TransactionRow, TransactionsTemplate,
+        ConvertedPayerRow, ConvertedRateRow, ConvertedSummaryState, ConvertedSummaryTemplate,
+        ConvertedSummaryView, ExpenseFormView, GroupTemplate, MemberRow, SelectOption,
+        SourceCurrencyRow, SourcePayerRow, SourceSummaryView, SpendingFormTemplate, SpendingRow,
+        TransactionAllocationRow, TransactionParticipant, TransactionRow, TransactionsTemplate,
     },
 };
 
@@ -139,14 +140,36 @@ pub(super) async fn build_group_template(
     include_summary: bool,
 ) -> Result<GroupTemplate, GroupTemplateError> {
     let group = state.groups.group(id).await?;
-    let source_summary = if include_summary {
-        let summary_today = state.clock.now().date_naive();
-        match state.summaries.source_summary(id).await {
-            Ok(summary) => source_summary_view(summary),
-            Err(_) => unavailable_source_summary_view(summary_today),
+    let mut summary_currency = group.currency;
+    let (source_summary, converted_summary) = if include_summary {
+        match state.summaries.monthly_summary(id).await {
+            Ok(summary) => {
+                summary_currency = summary.currency;
+                (
+                    summary.source.map_or_else(
+                        |_| unavailable_source_summary_view(state.clock.now().date_naive()),
+                        source_summary_view,
+                    ),
+                    summary.converted.map_or_else(
+                        |_| unavailable_converted_summary_view(summary_currency),
+                        |summary| {
+                            let mut view = converted_summary_view(summary);
+                            view.state = ConvertedSummaryState::Updating;
+                            view
+                        },
+                    ),
+                )
+            }
+            Err(_) => (
+                unavailable_source_summary_view(state.clock.now().date_naive()),
+                unavailable_converted_summary_view(summary_currency),
+            ),
         }
     } else {
-        unavailable_source_summary_view(state.clock.now().date_naive())
+        (
+            unavailable_source_summary_view(state.clock.now().date_naive()),
+            unavailable_converted_summary_view(summary_currency),
+        )
     };
     let members = state.participants.members(id).await?;
     let active_members = members
@@ -236,7 +259,7 @@ pub(super) async fn build_group_template(
             }
         }
     }
-    let mut expense = expense_view(state, group.currency, &form_members, editing, submitted);
+    let mut expense = expense_view(state, summary_currency, &form_members, editing, submitted);
     if editing.is_none() {
         expense.action = format!("/groups/{id}/spendings");
     }
@@ -251,10 +274,10 @@ pub(super) async fn build_group_template(
         name: group.name.to_string(),
         group_id: id,
         section: "summary".to_owned(),
-        currency: group.currency.to_string(),
+        currency: summary_currency.to_string(),
         settings_name: group.name.to_string(),
-        settings_currency: group.currency.to_string(),
-        settings_currencies: super::groups::currency_options(&group.currency.to_string()),
+        settings_currency: summary_currency.to_string(),
+        settings_currencies: super::groups::currency_options(&summary_currency.to_string()),
         settings_error: None,
         settings_notice: None,
         settings_invalid_field: None,
@@ -286,6 +309,7 @@ pub(super) async fn build_group_template(
         create_color,
         expense,
         source_summary,
+        converted_summary,
     })
 }
 
@@ -427,6 +451,7 @@ async fn build_group_settings_fallback(
             unmapped_fields: Vec::new(),
         },
         source_summary: unavailable_source_summary_view(state.clock.now().date_naive()),
+        converted_summary: unavailable_converted_summary_view(group.currency),
     })
 }
 
@@ -477,6 +502,81 @@ fn unavailable_source_summary_view(today: chrono::NaiveDate) -> SourceSummaryVie
         empty: false,
         unavailable: true,
         status: "Source totals are unavailable. No partial totals are shown.".to_owned(),
+    }
+}
+
+fn converted_summary_view(summary: ConvertedSummary) -> ConvertedSummaryView {
+    let provisional = summary.rates.iter().any(|rate| rate.is_provisional);
+    let payers = summary
+        .payers
+        .into_iter()
+        .map(|payer| ConvertedPayerRow {
+            id: payer.participant.id,
+            name: payer.participant.name.to_string(),
+            color: payer.participant.color.as_str().to_owned(),
+            archived: payer.participant.is_archived,
+            total: payer.display_total,
+        })
+        .collect::<Vec<_>>();
+    let rates = summary
+        .rates
+        .into_iter()
+        .map(|rate| ConvertedRateRow {
+            base: rate.base.to_string(),
+            quote: rate.quote.to_string(),
+            requested_date: rate.requested_date.to_string(),
+            fetch_date: rate.fetch_date.to_string(),
+            effective_date: rate.effective_date.to_string(),
+            rate: rate.rate.to_string(),
+            stale: rate.is_stale,
+            provisional: rate.is_provisional,
+        })
+        .collect::<Vec<_>>();
+    ConvertedSummaryView {
+        currency: summary.currency.to_string(),
+        symbol: summary.currency.symbol().to_owned(),
+        empty: payers.is_empty(),
+        state: if provisional {
+            ConvertedSummaryState::Provisional
+        } else {
+            ConvertedSummaryState::Ready
+        },
+        total: summary.display_total,
+        payers,
+        rates,
+        status: if provisional {
+            "Converted values ready; one or more future Spendings use a current rate.".into()
+        } else {
+            "Converted values ready.".into()
+        },
+    }
+}
+
+pub(super) async fn build_converted_summary_template(
+    state: &AppState,
+    id: i64,
+) -> Result<ConvertedSummaryTemplate, GroupTemplateError> {
+    let group = state.groups.group(id).await?;
+    let converted_summary = state.summaries.converted_summary(id).await.map_or_else(
+        |_| unavailable_converted_summary_view(group.currency),
+        converted_summary_view,
+    );
+    Ok(ConvertedSummaryTemplate {
+        group_id: id,
+        converted_summary,
+    })
+}
+
+fn unavailable_converted_summary_view(currency: Currency) -> ConvertedSummaryView {
+    ConvertedSummaryView {
+        currency: currency.to_string(),
+        symbol: currency.symbol().to_owned(),
+        empty: false,
+        state: ConvertedSummaryState::Unavailable,
+        total: String::new(),
+        payers: Vec::new(),
+        rates: Vec::new(),
+        status: "Converted values are unavailable. Reopen this section to retry.".into(),
     }
 }
 

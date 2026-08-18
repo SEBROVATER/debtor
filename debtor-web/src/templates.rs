@@ -115,6 +115,100 @@ pub struct SourcePayerRow {
     pub total: String,
 }
 
+/// Current-month Group Currency conversion projection.
+#[derive(Clone, Copy)]
+pub enum ConvertedSummaryState {
+    /// Values are complete and use only non-future contexts.
+    Ready,
+    /// Values include at least one future-dated provisional context.
+    Provisional,
+    /// Values are being refreshed by an enhanced request.
+    Updating,
+    /// No converted values are available.
+    Unavailable,
+}
+
+impl ConvertedSummaryState {
+    /// Whether the owning result is currently busy.
+    pub fn is_updating(self) -> bool {
+        matches!(self, Self::Updating)
+    }
+
+    /// Whether the result has no usable converted values.
+    pub fn is_unavailable(self) -> bool {
+        matches!(self, Self::Unavailable)
+    }
+
+    /// Whether the values are provisional.
+    pub fn is_provisional(self) -> bool {
+        matches!(self, Self::Provisional)
+    }
+}
+
+/// Display-ready converted Summary state.
+pub struct ConvertedSummaryView {
+    /// Group Currency code.
+    pub currency: String,
+    /// Group Currency symbol.
+    pub symbol: String,
+    /// Whether the month has no converted Payer rows.
+    pub empty: bool,
+    /// Current conversion state.
+    pub state: ConvertedSummaryState,
+    /// Exact formatted Group Currency total.
+    pub total: String,
+    /// Converted Payer rows.
+    pub payers: Vec<ConvertedPayerRow>,
+    /// Deterministic rate evidence.
+    pub rates: Vec<ConvertedRateRow>,
+    /// Scoped status announcement.
+    pub status: String,
+}
+
+/// HTMX/native-refreshable converted Summary fragment.
+#[derive(Template)]
+#[template(path = "converted_summary.html")]
+pub struct ConvertedSummaryTemplate {
+    /// Group identifier used by the refresh target.
+    pub group_id: i64,
+    /// Display-ready converted state.
+    pub converted_summary: ConvertedSummaryView,
+}
+
+/// One converted Payer row.
+pub struct ConvertedPayerRow {
+    /// Participant identifier.
+    pub id: i64,
+    /// Current Participant name.
+    pub name: String,
+    /// Stored marker color.
+    pub color: String,
+    /// Whether the identity is archived.
+    pub archived: bool,
+    /// Formatted converted total.
+    pub total: String,
+}
+
+/// One disclosed rate context.
+pub struct ConvertedRateRow {
+    /// Source Currency code.
+    pub base: String,
+    /// Group Currency code.
+    pub quote: String,
+    /// Original requested date.
+    pub requested_date: String,
+    /// Effective fetch date.
+    pub fetch_date: String,
+    /// Provider effective date.
+    pub effective_date: String,
+    /// Exact rate.
+    pub rate: String,
+    /// Whether stale evidence was used.
+    pub stale: bool,
+    /// Whether the context is provisional.
+    pub provisional: bool,
+}
+
 /// Debt view page.
 #[derive(Template)]
 #[template(path = "debts.html")]
@@ -277,6 +371,8 @@ pub struct GroupTemplate {
     pub expense: ExpenseFormView,
     /// Current-month Source Currency financial result.
     pub source_summary: SourceSummaryView,
+    /// Current-month Group Currency financial result.
+    pub converted_summary: ConvertedSummaryView,
 }
 
 /// Focused full-page Spending create/preview form.

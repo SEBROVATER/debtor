@@ -587,10 +587,16 @@ pub(crate) async fn build_app_with_control(
     let group_mutations: Arc<dyn GroupMutationExecutor> = mutation_executor.clone();
     let spending_mutations: Arc<dyn SpendingMutationExecutor> = mutation_executor;
     let clock: Arc<dyn Clock> = Arc::new(UtcClock);
-    let debts: Arc<dyn DebtUseCases> =
-        Arc::new(DebtService::new(snapshot_reader, rates, clock.clone()));
-    let summaries: Arc<dyn SummaryUseCases> =
-        Arc::new(SummaryService::new(store.clone(), clock.clone()));
+    let debts: Arc<dyn DebtUseCases> = Arc::new(DebtService::new(
+        snapshot_reader,
+        rates.clone(),
+        clock.clone(),
+    ));
+    let summaries: Arc<dyn SummaryUseCases> = Arc::new(SummaryService::with_rates(
+        store.clone(),
+        rates,
+        clock.clone(),
+    ));
     let limiter = Arc::new(MemoryLoginAttemptLimiter::default());
     let authentication: Arc<dyn AuthenticationUseCases> =
         Arc::new(AuthenticationService::new(limiter, password));

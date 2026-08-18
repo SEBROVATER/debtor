@@ -75,6 +75,10 @@ pub fn router_with_sessions<S: SessionStore + Clone>(
             get(handlers::groups).post(handlers::create_group),
         )
         .route("/groups/{id}", get(handlers::group_detail))
+        .route(
+            "/groups/{id}/summary/converted",
+            get(handlers::converted_summary),
+        )
         .route("/groups/{id}/manage", get(handlers::group_manage))
         .route(
             "/groups/{id}/transactions",
@@ -175,9 +179,11 @@ mod tests {
         response::Response,
     };
     use debtor_application::{
-        ApplicationError, LoginAdmission, ReadinessUseCases, SourceSummary, SummaryUseCases,
+        ApplicationError, ConvertedPayerTotal, ConvertedSummary, LoginAdmission, MonthlySummary,
+        RateEvidence, ReadinessUseCases, SourceSummary, SummaryUseCases,
     };
     use debtor_domain::currency::Currency;
+    use debtor_domain::model::{Color, Name, Participant};
     use tower::ServiceExt;
     use tower_sessions::{
         SessionManagerLayer, SessionStore,
@@ -520,10 +526,118 @@ mod tests {
         assert!(body.contains("Archived Ada"));
         assert!(body.contains("Archived</span>"));
         assert!(body.contains("id=\"source-summary-status\""));
+        assert!(body.contains("Converted values are unavailable."));
         assert!(body.contains("aria-busy=\"false\""));
         assert!(body.contains("aria-live=\"polite\""));
         assert!(body.contains("aria-atomic=\"true\""));
         assert!(body.contains("aria-current=\"page\">Summary</a>"));
+    }
+
+    struct ConvertedSummaryFixture;
+
+    #[async_trait]
+    impl SummaryUseCases for ConvertedSummaryFixture {
+        async fn source_summary(&self, _: i64) -> Result<SourceSummary, ApplicationError> {
+            Ok(SourceSummary {
+                month: chrono::NaiveDate::from_ymd_opt(2026, 8, 1).expect("test month"),
+                currencies: Vec::new(),
+            })
+        }
+
+        async fn converted_summary(&self, _: i64) -> Result<ConvertedSummary, ApplicationError> {
+            Ok(ConvertedSummary {
+                month: chrono::NaiveDate::from_ymd_opt(2026, 8, 1).expect("test month"),
+                currency: Currency::Usd,
+                total: "1.01".parse().expect("test amount"),
+                display_total: "$1.01 USD".into(),
+                payers: vec![ConvertedPayerTotal {
+                    participant: Participant {
+                        id: 2,
+                        name: Name::new("Ada").expect("test name"),
+                        color: Color::new("#123456").expect("test color"),
+                        is_archived: true,
+                    },
+                    total: "1.01".parse().expect("test amount"),
+                    display_total: "$1.01 USD".into(),
+                }],
+                rates: vec![RateEvidence {
+                    base: Currency::Eur,
+                    quote: Currency::Usd,
+                    requested_date: chrono::NaiveDate::from_ymd_opt(2026, 8, 1)
+                        .expect("requested date"),
+                    fetch_date: chrono::NaiveDate::from_ymd_opt(2026, 8, 1).expect("fetch date"),
+                    effective_date: chrono::NaiveDate::from_ymd_opt(2026, 8, 1)
+                        .expect("effective date"),
+                    rate: "1.005".parse().expect("test rate"),
+                    is_stale: false,
+                    is_provisional: false,
+                }],
+            })
+        }
+
+        async fn monthly_summary(&self, group_id: i64) -> Result<MonthlySummary, ApplicationError> {
+            Ok(MonthlySummary {
+                currency: Currency::Usd,
+                source: self.source_summary(group_id).await,
+                converted: self.converted_summary(group_id).await,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn summary_renders_converted_hierarchy_and_rate_evidence() {
+        let mut test_state = state(false);
+        test_state.app.summaries = Arc::new(ConvertedSummaryFixture);
+        let app = app(&test_state);
+        let session_cookie = login(&app).await;
+
+        let response = app
+            .oneshot(request(Method::GET, "/groups/1", "", Some(&session_cookie)))
+            .await
+            .expect("summary response");
+        let body = response_body(response).await;
+
+        assert!(body.contains("id=\"source-summary\""));
+        assert!(body.contains("id=\"converted-summary\""));
+        assert!(
+            body.find("id=\"source-summary\"").expect("source")
+                < body.find("id=\"converted-summary\"").expect("converted")
+        );
+        assert!(body.contains("Group Currency Summary: USD"));
+        assert!(body.contains("$1.01 USD"));
+        assert!(body.contains("Archived</span>"));
+        assert!(body.contains("Rate evidence"));
+        assert!(body.contains("Requested 2026-08-01; fetched 2026-08-01; effective 2026-08-01"));
+        assert!(body.contains("id=\"converted-summary-status\""));
+        assert!(body.contains("aria-describedby=\"converted-summary-status\""));
+        assert!(body.contains("aria-busy=\"true\""));
+        assert!(body.contains("Updating converted values."));
+        assert!(body.contains("hx-get=\"/groups/1/summary/converted\""));
+        assert!(!body.contains("Retry"));
+    }
+
+    #[tokio::test]
+    async fn converted_summary_refresh_returns_stable_ready_fragment() {
+        let mut test_state = state(false);
+        test_state.app.summaries = Arc::new(ConvertedSummaryFixture);
+        let app = app(&test_state);
+        let session_cookie = login(&app).await;
+
+        let response = app
+            .oneshot(request(
+                Method::GET,
+                "/groups/1/summary/converted",
+                "",
+                Some(&session_cookie),
+            ))
+            .await
+            .expect("converted fragment response");
+        let body = response_body(response).await;
+
+        assert!(body.contains("id=\"converted-summary\""));
+        assert!(body.contains("aria-busy=\"false\""));
+        assert!(body.contains("Converted values ready."));
+        assert!(!body.contains("hx-get=\"/groups/1/summary/converted\""));
     }
 
     struct FailingSummary;
@@ -534,6 +648,20 @@ mod tests {
             Err(ApplicationError::Storage(
                 debtor_application::StorageReason::InvalidData,
             ))
+        }
+
+        async fn converted_summary(&self, _: i64) -> Result<ConvertedSummary, ApplicationError> {
+            Err(ApplicationError::Unavailable(
+                debtor_application::UnavailableReason::ExchangeRates,
+            ))
+        }
+
+        async fn monthly_summary(&self, group_id: i64) -> Result<MonthlySummary, ApplicationError> {
+            Ok(MonthlySummary {
+                currency: Currency::Usd,
+                source: self.source_summary(group_id).await,
+                converted: self.converted_summary(group_id).await,
+            })
         }
     }
 
@@ -552,6 +680,8 @@ mod tests {
 
         assert!(body.contains("Source totals are unavailable."));
         assert!(body.contains("No partial totals are shown."));
+        assert!(body.contains("id=\"converted-summary\""));
+        assert!(body.contains("Converted values are unavailable."));
         assert!(!body.contains("Source Currency</h3>"));
         assert!(!body.contains("SQLx"));
     }
@@ -564,6 +694,20 @@ mod tests {
             Ok(SourceSummary {
                 month: chrono::NaiveDate::from_ymd_opt(2026, 8, 1).expect("test month"),
                 currencies: Vec::new(),
+            })
+        }
+
+        async fn converted_summary(&self, _: i64) -> Result<ConvertedSummary, ApplicationError> {
+            Err(ApplicationError::Unavailable(
+                debtor_application::UnavailableReason::ExchangeRates,
+            ))
+        }
+
+        async fn monthly_summary(&self, group_id: i64) -> Result<MonthlySummary, ApplicationError> {
+            Ok(MonthlySummary {
+                currency: Currency::Usd,
+                source: self.source_summary(group_id).await,
+                converted: self.converted_summary(group_id).await,
             })
         }
     }

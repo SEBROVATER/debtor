@@ -133,6 +133,79 @@ pub fn quantize_balances(
     Ok(())
 }
 
+/// Quantizes positive totals together while preserving their target-precision aggregate.
+///
+/// Each value is truncated toward zero at the target currency precision. The
+/// positive residual minor units are assigned by descending fractional
+/// remainder and ascending Participant ID.
+///
+/// # Errors
+///
+/// Returns a calculation error when checked arithmetic overflows, a residual
+/// is not an exact number of minor units, or the residual cannot be assigned.
+pub fn quantize_positive_totals(
+    totals: &BTreeMap<EntityId, Decimal>,
+    currency: Currency,
+) -> Result<BTreeMap<EntityId, Decimal>, CalculationError> {
+    let unit = Decimal::new(1, currency.minor_unit_scale());
+    let mut original_sum = Decimal::ZERO;
+    let mut quantized = BTreeMap::new();
+    let mut remainders = Vec::with_capacity(totals.len());
+
+    for (&participant_id, &amount) in totals {
+        if !amount.is_sign_positive() || amount.is_zero() {
+            return Err(CalculationError::SettlementInvariant);
+        }
+        original_sum = original_sum
+            .checked_add(amount)
+            .ok_or(CalculationError::ArithmeticOverflow)?;
+        let truncated = amount.trunc_with_scale(currency.minor_unit_scale());
+        remainders.push((
+            participant_id,
+            amount
+                .checked_sub(truncated)
+                .ok_or(CalculationError::ArithmeticOverflow)?,
+        ));
+        quantized.insert(participant_id, truncated);
+    }
+
+    let quantized_sum = quantized.values().try_fold(Decimal::ZERO, |sum, value| {
+        sum.checked_add(*value)
+            .ok_or(CalculationError::ArithmeticOverflow)
+    })?;
+    let target_total = original_sum.trunc_with_scale(currency.minor_unit_scale());
+    let residual = target_total
+        .checked_sub(quantized_sum)
+        .ok_or(CalculationError::ArithmeticOverflow)?;
+    let residual_units_decimal = residual
+        .checked_div(unit)
+        .ok_or(CalculationError::ArithmeticOverflow)?;
+    let residual_units = residual_units_decimal
+        .to_i128()
+        .ok_or(CalculationError::ArithmeticOverflow)?;
+    let reconstructed = unit
+        .checked_mul(Decimal::from_i128_with_scale(residual_units, 0))
+        .ok_or(CalculationError::ArithmeticOverflow)?;
+    if reconstructed != residual || residual_units.is_negative() {
+        return Err(CalculationError::NonIntegralResidual);
+    }
+    let units =
+        usize::try_from(residual_units).map_err(|_| CalculationError::ArithmeticOverflow)?;
+    if units > remainders.len() {
+        return Err(CalculationError::SettlementInvariant);
+    }
+    remainders.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    for (participant_id, _) in remainders.into_iter().take(units) {
+        let value = quantized
+            .get_mut(&participant_id)
+            .ok_or(CalculationError::SettlementInvariant)?;
+        *value = value
+            .checked_add(unit)
+            .ok_or(CalculationError::ArithmeticOverflow)?;
+    }
+    Ok(quantized)
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
@@ -140,7 +213,7 @@ mod tests {
 
     use rust_decimal::Decimal;
 
-    use super::{add_converted_spending, quantize_balances};
+    use super::{add_converted_spending, quantize_balances, quantize_positive_totals};
     use crate::currency::Currency;
     use crate::model::{Allocation, Description, Spending, SpendingType};
 
@@ -300,6 +373,51 @@ mod tests {
         assert_eq!(
             add_converted_spending(&mut balances, &spending, Decimal::TWO),
             Err(super::CalculationError::ArithmeticOverflow)
+        );
+    }
+
+    #[test]
+    fn quantizes_positive_totals_together_and_conserves_the_displayed_sum() {
+        let totals = BTreeMap::from([(1, Decimal::new(1005, 3)), (2, Decimal::new(2005, 3))]);
+
+        assert_eq!(
+            quantize_positive_totals(&totals, Currency::Usd).unwrap(),
+            BTreeMap::from([(1, Decimal::new(101, 2)), (2, Decimal::new(200, 2)),])
+        );
+    }
+
+    #[test]
+    fn quantizes_positive_totals_by_participant_id_on_equal_remainders() {
+        let totals = BTreeMap::from([(9, Decimal::new(1005, 3)), (2, Decimal::new(2005, 3))]);
+
+        assert_eq!(
+            quantize_positive_totals(&totals, Currency::Usd).unwrap()[&2],
+            Decimal::new(201, 2)
+        );
+    }
+
+    #[test]
+    fn accepts_fractional_aggregate_rates_by_truncating_the_target_total() {
+        let totals = BTreeMap::from([(1, Decimal::new(1001, 3)), (2, Decimal::new(2001, 3))]);
+
+        assert_eq!(
+            quantize_positive_totals(&totals, Currency::Usd).unwrap(),
+            BTreeMap::from([(1, Decimal::new(100, 2)), (2, Decimal::new(200, 2))])
+        );
+    }
+
+    #[test]
+    fn positive_totals_use_currency_specific_minor_units() {
+        let jpy = BTreeMap::from([(1, Decimal::new(1005, 2)), (2, Decimal::new(1005, 2))]);
+        let omr = BTreeMap::from([(1, Decimal::new(10005, 4)), (2, Decimal::new(10005, 4))]);
+
+        assert_eq!(
+            quantize_positive_totals(&jpy, Currency::Jpy).unwrap(),
+            BTreeMap::from([(1, Decimal::new(10, 0)), (2, Decimal::new(10, 0))])
+        );
+        assert_eq!(
+            quantize_positive_totals(&omr, Currency::Omr).unwrap(),
+            BTreeMap::from([(1, Decimal::new(1001, 3)), (2, Decimal::new(1000, 3))])
         );
     }
 }

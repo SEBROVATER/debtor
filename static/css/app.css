@@ -188,6 +188,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .source-money-list dd { font-variant-numeric: tabular-nums; margin: 0; white-space: nowrap; }
 .source-group-total { font-family: Georgia, "Times New Roman", serif; font-size: 1.15rem; }
 .source-payer-row { padding-inline-start: 1rem; }
+.converted-results { margin-block-start: 1.5rem; }
+.converted-group-total { font-size: 1.3rem; }
+.converted-payer-row { padding-inline-start: 1rem; }
+.rate-disclosure { border-block-start: 1px solid var(--line); margin-block-start: 1rem; padding-block-start: .75rem; }
+.rate-disclosure h3 { font-family: Georgia, "Times New Roman", serif; font-weight: 500; }
+.rate-disclosure ul { display: grid; gap: .75rem; list-style: none; margin: 0; padding: 0; }
+.rate-disclosure li { border-block-end: 1px solid var(--line); display: grid; gap: .25rem; overflow-wrap: anywhere; padding-block: .5rem; }
 @media (max-width: 40rem) {
   .transaction-row summary { align-items: start; grid-template-columns: minmax(0, 1fr); }
   .transaction-total { justify-self: end; }
@@ -197,4 +204,5 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .pagination-context { grid-column: 1 / -1; grid-row: 1; }
   .source-money-list > div { gap: .5rem; grid-template-columns: minmax(0, 1fr) minmax(0, max-content); }
   .source-payer-row { padding-inline-start: .5rem; }
+  .converted-payer-row { padding-inline-start: .5rem; }
 }

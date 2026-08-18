@@ -25,5 +25,5 @@ pub enum CalculationError {
     SettlementInvariant,
 }
 
-pub use balance::{add_converted_spending, quantize_balances};
+pub use balance::{add_converted_spending, quantize_balances, quantize_positive_totals};
 pub use simplify::{Transfer, simplify};
