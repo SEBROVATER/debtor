@@ -1,5 +1,5 @@
 # generated: 2026-08-12T12:16:16+06:00
-# last_updated: 2026-08-17T21:42:12+06:00
+# last_updated: 2026-08-18T11:50:05+06:00
 # project: debtor
 # project_key: NOKEY
 # tracking_system: file-system
@@ -41,7 +41,7 @@
 # - Retrospective appends its action items to action_items; sprint-status surfaces open ones
 
 generated: 2026-08-12T12:16:16+06:00
-last_updated: 2026-08-17T21:42:12+06:00
+last_updated: 2026-08-18T11:50:05+06:00
 project: debtor
 project_key: NOKEY
 tracking_system: file-system
@@ -71,7 +71,7 @@ development_status:
   3-1-record-a-proportional-spending: done
   3-2-record-a-spending-with-exact-shares: done
   3-3-browse-and-inspect-spending-history: done
-  3-4-correct-an-existing-spending: backlog
+  3-4-correct-an-existing-spending: done
   3-5-delete-a-spending-atomically: backlog
   epic-3-retrospective: optional
   epic-4: backlog

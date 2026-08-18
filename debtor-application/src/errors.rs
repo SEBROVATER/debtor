@@ -27,6 +27,9 @@ pub enum StorageReason {
     /// An unexpected persistence operation failed.
     #[error("unexpected storage failure")]
     Unexpected,
+    /// A dispatched mutation ended without a definitive outcome.
+    #[error("unknown mutation outcome")]
+    Unknown,
 }
 
 /// Safe categories for startup configuration failures.

@@ -249,8 +249,14 @@ pub struct SpendingFormTemplate {
     pub expense: ExpenseFormView,
     /// Form action for create preview/approval or existing Spending update.
     pub action: String,
+    /// Allow-listed native return destination for Cancel.
+    pub cancel_path: String,
     /// Whether the current page is a reviewed non-editable preview.
     pub reviewed: bool,
+    /// Whether this form edits an existing Spending.
+    pub editing: bool,
+    /// Existing Spending identifier when editing.
+    pub spending_id: i64,
     /// Form-level error or status text.
     pub status: Option<String>,
     /// Whether the heading should receive forward focus.
@@ -301,6 +307,8 @@ pub struct ExpenseFormView {
     pub split_mode: String,
     /// Selected single payer.
     pub single_payer_id: i64,
+    /// Whether the selected Payer is eligible for this edit role.
+    pub payer_allowed: bool,
     /// Member payer rows.
     pub payer_rows: Vec<MemberRow>,
     /// Equal recipients.
@@ -309,6 +317,8 @@ pub struct ExpenseFormView {
     pub allocation_status: String,
     /// Error message.
     pub error: Option<String>,
+    /// Dynamic submitted fields whose participant row is not available in the current projection.
+    pub unmapped_fields: Vec<(String, String)>,
 }
 
 /// Select option.
@@ -335,6 +345,10 @@ pub struct MemberRow {
     pub active: bool,
     /// Archived identity.
     pub archived: bool,
+    /// Whether this identity may be selected as Payer in this form.
+    pub payer_allowed: bool,
+    /// Whether this identity may be selected as a Share Participant in this form.
+    pub share_allowed: bool,
     /// Selected in the current form.
     pub selected: bool,
     /// Exact allocation validation message for this row.

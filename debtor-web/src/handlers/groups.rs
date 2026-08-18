@@ -151,7 +151,7 @@ pub(crate) async fn group_transactions(
         Ok(cursor) => cursor,
         Err(message) => return error_response(StatusCode::BAD_REQUEST, message),
     };
-    match build_transactions_template(&state, &session, id, cursor).await {
+    match build_transactions_template(&state, &session, id, cursor, query.focus).await {
         Ok(template) => render(&template),
         Err(error) => map_group_template_error(error),
     }

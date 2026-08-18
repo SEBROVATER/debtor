@@ -114,6 +114,10 @@ pub fn router_with_sessions<S: SessionStore + Clone>(
             get(handlers::edit_spending_form),
         )
         .route(
+            "/groups/{group_id}/spendings/{spending_id}/preview",
+            post(handlers::preview_spending_edit),
+        )
+        .route(
             "/groups/{group_id}/spendings/{spending_id}/delete",
             get(handlers::delete_spending_form).post(handlers::delete_spending),
         )

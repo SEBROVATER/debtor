@@ -229,6 +229,12 @@ pub trait SpendingUseCases: Send + Sync {
         spending_id: EntityId,
         input: SpendingInput,
     ) -> Result<Spending, ApplicationError>;
+    /// Validates an update without changing persistence.
+    async fn validate_update_input(
+        &self,
+        spending_id: EntityId,
+        input: SpendingInput,
+    ) -> Result<Spending, ApplicationError>;
     /// Deletes a spending correction.
     async fn delete(
         &self,
@@ -242,6 +248,15 @@ pub trait SpendingMutationExecutor: Send + Sync {
     /// Creates a Spending and returns after a definitive outcome.
     fn create_spending(
         &self,
+        input: SpendingInput,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Spending, ApplicationError>> + Send + '_>,
+    >;
+
+    /// Updates a Spending and returns after a definitive outcome.
+    fn update_spending(
+        &self,
+        spending_id: EntityId,
         input: SpendingInput,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<Spending, ApplicationError>> + Send + '_>,
@@ -463,10 +478,19 @@ impl SpendingUseCases for SpendingService {
         spending_id: EntityId,
         input: SpendingInput,
     ) -> Result<Spending, ApplicationError> {
+        let spending = self.validate_update_input(spending_id, input).await?;
+        self.repository.update_spending(spending).await
+    }
+
+    async fn validate_update_input(
+        &self,
+        spending_id: EntityId,
+        input: SpendingInput,
+    ) -> Result<Spending, ApplicationError> {
         let spending = parse_input(input, spending_id)?;
         let original = self.reader.spending(spending.group_id, spending_id).await?;
         validate_update_eligible(self.eligibility.as_ref(), &original, &spending).await?;
-        self.repository.update_spending(spending).await
+        Ok(spending)
     }
 
     async fn delete(

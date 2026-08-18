@@ -41,7 +41,7 @@
         <div class="transaction-list">
           {% for spending in spendings %}
           <details id="spending-{{ spending.id }}" class="transaction-row"{% if spending.focused %} open{% endif %}>
-            <summary id="spending-{{ spending.id }}-summary">
+            <summary id="spending-{{ spending.id }}-summary"{% if spending.focused %} autofocus{% endif %}>
               <span class="transaction-summary-main"><span aria-hidden="true">+</span><span><strong>{{ spending.description }}</strong><small>{{ spending.spent_date }}</small></span></span>
               <span class="transaction-total">{{ spending.currency_symbol }}{{ spending.total }} {{ spending.currency }}</span>
             </summary>

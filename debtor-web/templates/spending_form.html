@@ -19,8 +19,9 @@
         <a href="/groups/{{ group_id }}/manage">Manage</a>
       </nav>
       <form method="post" action="/logout" class="sign-out-form" hx-ext="response-targets" hx-target="#sign-out-status" hx-target-4xx="#sign-out-status" hx-target-5xx="#sign-out-status">
-        <input type="hidden" name="csrf" value="{{ shell.csrf }}" />
-        <input type="hidden" name="submission_token" value="{{ shell.submission_token }}" />
+         <input type="hidden" name="csrf" value="{{ shell.csrf }}" />
+         <input type="hidden" name="submission_token" value="{{ shell.submission_token }}" />
+         {% for field in expense.unmapped_fields %}<input type="hidden" name="{{ field.0 }}" value="{{ field.1 }}" />{% endfor %}
         <button type="submit" class="sign-out-button" hx-post="/logout" hx-disabled-elt="button" hx-indicator="#sign-out-status">Sign out</button>
         <p id="sign-out-status" class="status" role="status" aria-live="polite" aria-atomic="true"> </p>
       </form>
@@ -29,7 +30,7 @@
       <p class="eyebrow">{{ group_name }}</p>
       <h1 id="spending-heading" tabindex="-1"{% if focus_heading %} autofocus{% endif %}>{{ expense.heading }}</h1>
       <p id="spending-status" class="status" role="status" aria-live="polite" aria-atomic="true">{% match status %}{% when Some with (message) %}{{ message }}{% when None %}{% endmatch %}{% if expense.allocation_status != "" %} {{ expense.allocation_status }}{% endif %}</p>
-      <form method="post" action="{{ action }}" class="spending-entry-form" aria-describedby="spending-status">
+      <form method="post" action="{{ action }}" class="spending-entry-form" aria-describedby="spending-status"{% if editing %} hx-ext="response-targets" hx-post="{{ action }}" hx-target="#spending-form" hx-target-4xx="#spending-form" hx-target-5xx="#spending-form" hx-select="#spending-form" hx-swap="outerHTML" hx-sync="this:replace" hx-disabled-elt="button"{% endif %}>
         <input type="hidden" name="csrf" value="{{ shell.csrf }}" />
         <input type="hidden" name="submission_token" value="{{ shell.submission_token }}" />
         <div class="form-grid spending-fields">
@@ -63,15 +64,15 @@
             {% if reviewed %}<input type="hidden" name="single_payer_id" value="{{ expense.single_payer_id }}" />{% endif %}
             <select id="single-payer-id" name="single_payer_id" required{% if reviewed %} disabled{% endif %}>
               <option value="0"{% if expense.single_payer_id == 0 %} selected{% endif %}>Choose a Participant</option>
-              {% for member in expense.payer_rows %}<option value="{{ member.id }}"{% if member.id == expense.single_payer_id %} selected{% endif %}>{{ member.name }}</option>{% endfor %}
+              {% for member in expense.payer_rows %}{% if member.payer_allowed || member.id == expense.single_payer_id %}<option value="{{ member.id }}"{% if member.id == expense.single_payer_id %} selected{% endif %}>{{ member.name }}{% if member.archived %} (Archived){% endif %}</option>{% endif %}{% endfor %}
             </select>
           </label>
           <p class="helper">The selected Payer pays the full Total.</p>
         </fieldset>
-        {% if reviewed %}<input type="hidden" name="split_mode" value="{{ expense.split_mode }}" />{% endif %}
+        {% if reviewed || editing %}<input type="hidden" name="split_mode" value="{{ expense.split_mode }}" />{% endif %}
         <fieldset class="allocation-fieldset">
           <legend>Share allocation</legend>
-          {% if !reviewed %}<div class="choice-row" aria-label="Share mode">
+          {% if !reviewed && !editing %}<div class="choice-row" aria-label="Share mode">
             <label><input type="radio" name="split_mode" value="proportional"{% if expense.split_mode == "proportional" %} checked{% endif %} /> Proportional</label>
             <label><input type="radio" name="split_mode" value="exact"{% if expense.split_mode == "exact" %} checked{% endif %} /> Exact</label>
           </div>{% endif %}
@@ -83,10 +84,10 @@
               <tbody>
                 {% for member in expense.share_rows %}
                 <tr>
-                  <th scope="row"><span class="swatch" style="background: {{ member.color }}" aria-hidden="true"></span> {{ member.name }}</th>
+                   <th scope="row"><span class="swatch" style="background: {{ member.color }}" aria-hidden="true"></span> {{ member.name }}{% if member.archived %} <span>Archived</span>{% endif %}</th>
                   <td><span class="allocation-payer-label">{% if member.id == expense.single_payer_id %}Pays Total{% else %}Not Payer{% endif %}</span></td>
-                   <td>{% if reviewed && member.selected %}<input type="hidden" name="included_{{ member.id }}" value="on" />{% endif %}<input aria-label="Include {{ member.name }}" type="checkbox" name="included_{{ member.id }}" value="on"{% if member.selected %} checked{% endif %}{% if reviewed %} disabled{% endif %} /></td>
-                   <td><span class="mode-weight">{% if reviewed && expense.split_mode != "proportional" %}{% else %}<input aria-label="Weight for {{ member.name }}" name="weight_{{ member.id }}" value="{% if expense.split_mode == "proportional" %}{{ member.amount }}{% endif %}" inputmode="decimal"{% if !member.selected %} disabled{% endif %}{% if reviewed %} readonly{% endif %} />{% endif %}</span><span class="mode-exact">{% if reviewed && expense.split_mode != "exact" %}{% else %}<input aria-label="Exact Share for {{ member.name }}" name="exact_{{ member.id }}" value="{% if expense.split_mode == "exact" %}{{ member.amount }}{% endif %}" inputmode="decimal"{% if !member.selected %} disabled{% endif %}{% if member.allocation_error.is_some() %} aria-invalid="true" aria-describedby="allocation-error-{{ member.id }}"{% endif %}{% if reviewed %} readonly{% endif %} />{% endif %}</span>{% match member.allocation_error %}{% when Some with (message) %}<p id="allocation-error-{{ member.id }}" class="error">{{ message }}</p>{% when None %}{% endmatch %}</td>
+                    <td>{% if member.share_allowed || member.selected %}{% if reviewed && member.selected || !member.share_allowed && member.selected %}<input type="hidden" name="included_{{ member.id }}" value="on" />{% endif %}<input aria-label="Include {{ member.name }}{% if member.archived %} (Archived){% endif %}" type="checkbox" name="included_{{ member.id }}" value="on"{% if member.selected %} checked{% endif %}{% if reviewed %} disabled{% endif %} />{% else %}<span class="helper">Payer only</span>{% endif %}</td>
+                    <td><span class="mode-weight">{% if member.share_allowed || member.selected %}{% if reviewed && expense.split_mode != "proportional" %}{% else %}<input aria-label="Weight for {{ member.name }}" name="weight_{{ member.id }}" value="{% if expense.split_mode == "proportional" %}{{ member.amount }}{% endif %}" inputmode="decimal"{% if !member.selected %} disabled{% endif %}{% if reviewed %} readonly{% endif %} />{% endif %}{% endif %}</span><span class="mode-exact">{% if member.share_allowed || member.selected %}{% if reviewed && expense.split_mode != "exact" %}{% else %}<input aria-label="Exact Share for {{ member.name }}" name="exact_{{ member.id }}" value="{% if expense.split_mode == "exact" %}{{ member.amount }}{% endif %}" inputmode="decimal"{% if !member.selected %} disabled{% endif %}{% if member.allocation_error.is_some() %} aria-invalid="true" aria-describedby="allocation-error-{{ member.id }}"{% endif %}{% if reviewed %} readonly{% endif %} />{% endif %}{% endif %}</span>{% match member.allocation_error %}{% when Some with (message) %}<p id="allocation-error-{{ member.id }}" class="error">{{ message }}</p>{% when None %}{% endmatch %}</td>
                    <td class="derived-share">{% if member.derived_amount != "" %}{{ member.derived_amount }} {{ expense.currency }}{% else %}Not previewed{% endif %}</td>
                 </tr>
                 {% endfor %}
@@ -97,8 +98,8 @@
         <div class="spending-action-bar">
           <p class="spending-total-status">{% if expense.total != "" %}Total: {{ expense.total }} {{ expense.currency }}{% else %}Enter a Total{% endif %}</p>
           <div class="spending-actions">
-            <a class="button secondary" href="/groups/{{ group_id }}/transactions">Cancel</a>
-            {% if reviewed %}<a class="button secondary" href="/groups/{{ group_id }}/spendings/new">Edit allocation</a><button type="submit" aria-describedby="spending-status">Approve</button>{% else %}<button type="submit">Preview</button>{% endif %}
+            <a class="button secondary" href="{{ cancel_path }}">Cancel</a>
+            {% if reviewed %}<a class="button secondary" href="{% if editing %}/groups/{{ group_id }}/spendings/{{ spending_id }}/edit{% else %}/groups/{{ group_id }}/spendings/new{% endif %}">Edit allocation</a><button type="submit" aria-describedby="spending-status">Approve</button>{% else %}<button type="submit">Preview</button>{% endif %}
           </div>
         </div>
       </form>

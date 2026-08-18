@@ -474,6 +474,14 @@ impl SpendingUseCases for FakeSpendings {
         Err(validation_error())
     }
 
+    async fn validate_update_input(
+        &self,
+        _: i64,
+        _: SpendingInput,
+    ) -> Result<Spending, ApplicationError> {
+        Err(validation_error())
+    }
+
     async fn delete(&self, _: i64, _: i64) -> Result<(), ApplicationError> {
         Ok(())
     }
@@ -482,6 +490,16 @@ impl SpendingUseCases for FakeSpendings {
 impl SpendingMutationExecutor for FakeSpendings {
     fn create_spending(
         &self,
+        _: SpendingInput,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Spending, ApplicationError>> + Send + '_>,
+    > {
+        Box::pin(async { Err(validation_error()) })
+    }
+
+    fn update_spending(
+        &self,
+        _: i64,
         _: SpendingInput,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<Spending, ApplicationError>> + Send + '_>,

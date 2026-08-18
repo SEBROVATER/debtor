@@ -12,6 +12,7 @@ const GROUP_DELETE_PARTICIPANTS: &str = "group_delete_participants";
 const GROUP_DELETE_TOKEN: &str = "group_delete_token";
 const GROUP_RESTORE_FOCUS: &str = "group_restore_focus";
 const SPENDING_PREVIEW_GROUP: &str = "spending_preview_group";
+const SPENDING_PREVIEW_ID: &str = "spending_preview_id";
 const SPENDING_PREVIEW_FIELDS: &str = "spending_preview_fields";
 
 /// Returns the fixed expiry policy for anonymous sessions.
@@ -36,10 +37,15 @@ pub(crate) fn spending_approval_lock() -> &'static tokio::sync::Mutex<()> {
 pub(crate) async fn set_spending_preview(
     session: &Session,
     group_id: i64,
+    spending_id: Option<i64>,
     fields: Vec<(String, String)>,
 ) -> Result<(), SessionError> {
     session
         .insert(SPENDING_PREVIEW_GROUP, group_id)
+        .await
+        .map_err(|_| SessionError)?;
+    session
+        .insert(SPENDING_PREVIEW_ID, spending_id)
         .await
         .map_err(|_| SessionError)?;
     session
@@ -51,29 +57,54 @@ pub(crate) async fn set_spending_preview(
 pub(crate) async fn take_matching_spending_preview(
     session: &Session,
     group_id: i64,
+    spending_id: Option<i64>,
     fields: &[(String, String)],
 ) -> Result<bool, SessionError> {
-    let matches = session
+    let matches = spending_preview_matches(session, group_id, spending_id, fields).await?;
+    if matches {
+        clear_spending_preview(session).await?;
+    }
+    Ok(matches)
+}
+
+pub(crate) async fn spending_preview_matches(
+    session: &Session,
+    group_id: i64,
+    spending_id: Option<i64>,
+    fields: &[(String, String)],
+) -> Result<bool, SessionError> {
+    Ok(session
         .get::<i64>(SPENDING_PREVIEW_GROUP)
         .await
         .map_err(|_| SessionError)?
         .is_some_and(|stored_group| stored_group == group_id)
         && session
+            .get::<Option<i64>>(SPENDING_PREVIEW_ID)
+            .await
+            .map_err(|_| SessionError)?
+            .flatten()
+            == spending_id
+        && session
             .get::<Vec<(String, String)>>(SPENDING_PREVIEW_FIELDS)
             .await
             .map_err(|_| SessionError)?
-            .is_some_and(|stored_fields| stored_fields == fields);
-    if matches {
-        session
-            .remove::<i64>(SPENDING_PREVIEW_GROUP)
-            .await
-            .map_err(|_| SessionError)?;
-        session
-            .remove::<Vec<(String, String)>>(SPENDING_PREVIEW_FIELDS)
-            .await
-            .map_err(|_| SessionError)?;
-    }
-    Ok(matches)
+            .is_some_and(|stored_fields| stored_fields == fields))
+}
+
+pub(crate) async fn clear_spending_preview(session: &Session) -> Result<(), SessionError> {
+    session
+        .remove::<i64>(SPENDING_PREVIEW_GROUP)
+        .await
+        .map_err(|_| SessionError)?;
+    session
+        .remove::<Option<i64>>(SPENDING_PREVIEW_ID)
+        .await
+        .map_err(|_| SessionError)?;
+    session
+        .remove::<Vec<(String, String)>>(SPENDING_PREVIEW_FIELDS)
+        .await
+        .map(|_| ())
+        .map_err(|_| SessionError)
 }
 
 /// Returns whether this session is authenticated.
@@ -230,7 +261,8 @@ mod tests {
 
     use super::{
         AUTHENTICATED, anonymous_expiry, authenticated, authenticated_expiry, csrf_token,
-        establish, flush,
+        establish, flush, set_spending_preview, spending_preview_matches,
+        take_matching_spending_preview,
     };
     use crate::session_store::ReapingMemoryStore;
 
@@ -271,6 +303,37 @@ mod tests {
                 .await
                 .expect("flushed auth marker")
                 .unwrap_or(false)
+        );
+    }
+
+    #[tokio::test]
+    async fn spending_preview_binding_includes_existing_spending_identity() {
+        let store = Arc::new(ReapingMemoryStore::default());
+        let session = Session::new(None, store, Some(authenticated_expiry()));
+        session.save().await.expect("save authenticated session");
+        let fields = vec![("total".to_owned(), "10.00".to_owned())];
+
+        set_spending_preview(&session, 7, Some(11), fields.clone())
+            .await
+            .expect("set edit preview");
+        assert!(
+            take_matching_spending_preview(&session, 7, Some(11), &fields)
+                .await
+                .expect("take matching edit preview")
+        );
+
+        set_spending_preview(&session, 7, Some(11), fields.clone())
+            .await
+            .expect("reset edit preview");
+        assert!(
+            !take_matching_spending_preview(&session, 7, Some(12), &fields)
+                .await
+                .expect("reject wrong Spending preview")
+        );
+        assert!(
+            spending_preview_matches(&session, 7, Some(11), &fields)
+                .await
+                .expect("retain edit preview after mismatch")
         );
     }
 }

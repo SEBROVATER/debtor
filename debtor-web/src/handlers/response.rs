@@ -185,6 +185,12 @@ pub(super) fn map_error(error: debtor_application::ApplicationError) -> Response
         debtor_application::ApplicationError::Storage(
             debtor_application::StorageReason::Unexpected,
         ) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "Storage error."),
+        debtor_application::ApplicationError::Storage(
+            debtor_application::StorageReason::Unknown,
+        ) => error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Mutation outcome is unknown. Restart before retrying.",
+        ),
         debtor_application::ApplicationError::Configuration(_) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Application configuration error.",
@@ -232,6 +238,10 @@ mod tests {
             (
                 ApplicationError::Storage(StorageReason::Unexpected),
                 StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                ApplicationError::Storage(StorageReason::Unknown),
+                StatusCode::SERVICE_UNAVAILABLE,
             ),
             (
                 ApplicationError::Configuration(ConfigurationError::InvalidPasswordHash),

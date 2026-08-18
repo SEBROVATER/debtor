@@ -28,7 +28,7 @@ pub(crate) use memberships::{
 };
 pub(crate) use spendings::{
     create_spending, delete_spending, delete_spending_form, edit_spending_form, new_spending_form,
-    preview_spending, spending_detail, update_spending,
+    preview_spending, preview_spending_edit, spending_detail, update_spending,
 };
 
 #[derive(Deserialize)]
@@ -41,6 +41,7 @@ pub(crate) struct GroupsQuery {
 #[serde(deny_unknown_fields)]
 pub(crate) struct SpendingQuery {
     pub(super) cursor: Option<String>,
+    pub(super) focus: Option<i64>,
 }
 
 #[derive(Deserialize, Default)]

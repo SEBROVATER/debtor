@@ -30,6 +30,7 @@ pub(super) async fn build_transactions_template(
     session: &Session,
     id: i64,
     cursor: Option<SpendingCursor>,
+    focus: Option<i64>,
 ) -> Result<TransactionsTemplate, GroupTemplateError> {
     let page = state.spendings.spending_history_page(id, cursor).await?;
     let group = page.group.clone();
@@ -61,7 +62,7 @@ pub(super) async fn build_transactions_template(
                     amount: allocation.amount.to_string(),
                 })
                 .collect(),
-            focused: false,
+            focused: focus == Some(row.spending.id),
         })
         .collect::<Vec<_>>();
     let page_status = if empty {
@@ -150,6 +151,16 @@ pub(super) async fn build_group_template(
     let show_newest_spendings = had_cursor && spending_page.items.is_empty();
     let mut form_members = active_members.clone();
     if let Some(spending) = editing {
+        let payer_ids: BTreeSet<_> = spending
+            .payers
+            .iter()
+            .map(|allocation| allocation.participant_id)
+            .collect();
+        let share_ids: BTreeSet<_> = spending
+            .shares
+            .iter()
+            .map(|allocation| allocation.participant_id)
+            .collect();
         let historical_ids: BTreeSet<_> = spending
             .payers
             .iter()
@@ -163,6 +174,51 @@ pub(super) async fn build_group_template(
                     .any(|member| member.id == participant.id)
             {
                 form_members.push(member_row(participant, membership.is_active, false));
+            }
+        }
+        for member in &mut form_members {
+            if member.archived || !member.active {
+                member.payer_allowed = payer_ids.contains(&member.id);
+                member.share_allowed = share_ids.contains(&member.id);
+            }
+        }
+    }
+    if let Some(form) = submitted {
+        let submitted_ids = form
+            .extra
+            .keys()
+            .filter_map(|key| {
+                ["included_", "weight_", "exact_"]
+                    .iter()
+                    .find_map(|prefix| key.strip_prefix(prefix))
+            })
+            .filter_map(|id| id.parse::<i64>().ok())
+            .collect::<BTreeSet<_>>();
+        for (participant, membership) in &members {
+            if submitted_ids.contains(&participant.id)
+                && !form_members
+                    .iter()
+                    .any(|member| member.id == participant.id)
+            {
+                form_members.push(member_row(participant, membership.is_active, false));
+            }
+        }
+        if let Some(spending) = editing {
+            let payer_ids: BTreeSet<_> = spending
+                .payers
+                .iter()
+                .map(|allocation| allocation.participant_id)
+                .collect();
+            let share_ids: BTreeSet<_> = spending
+                .shares
+                .iter()
+                .map(|allocation| allocation.participant_id)
+                .collect();
+            for member in &mut form_members {
+                if member.archived || !member.active {
+                    member.payer_allowed = payer_ids.contains(&member.id);
+                    member.share_allowed = share_ids.contains(&member.id);
+                }
             }
         }
     }
@@ -267,7 +323,17 @@ pub(super) async fn build_spending_form_template(
                 format!("/groups/{id}/spendings/preview")
             }
         },
-        |value| format!("/groups/{id}/spendings/{}", value.id),
+        |value| {
+            if reviewed {
+                format!("/groups/{id}/spendings/{}", value.id)
+            } else {
+                format!("/groups/{id}/spendings/{}/preview", value.id)
+            }
+        },
+    );
+    let cancel_path = spending.map_or_else(
+        || format!("/groups/{id}/transactions"),
+        |value| format!("/groups/{id}/transactions?focus={}", value.id),
     );
     page.expense.action.clone_from(&action);
     Ok(SpendingFormTemplate {
@@ -276,7 +342,10 @@ pub(super) async fn build_spending_form_template(
         shell: page.shell,
         expense: page.expense,
         action,
+        cancel_path,
         reviewed,
+        editing: spending.is_some(),
+        spending_id: spending.map_or(0, |value| value.id),
         status,
         focus_heading: true,
     })
@@ -333,10 +402,12 @@ async fn build_group_settings_fallback(
             payer_mode: String::new(),
             split_mode: String::new(),
             single_payer_id: 0,
+            payer_allowed: true,
             payer_rows: Vec::new(),
             share_rows: Vec::new(),
             allocation_status: String::new(),
             error: None,
+            unmapped_fields: Vec::new(),
         },
     })
 }
@@ -360,6 +431,8 @@ fn member_row(
         color: participant.color.as_str().to_owned(),
         active,
         archived: participant.is_archived,
+        payer_allowed: true,
+        share_allowed: true,
         selected,
         allocation_error: None,
         amount: String::new(),
@@ -418,6 +491,7 @@ fn expense_view(
         payer_mode: "single".into(),
         split_mode: "proportional".into(),
         single_payer_id: 0,
+        payer_allowed: true,
         payer_rows: members.to_vec(),
         share_rows: members
             .iter()
@@ -430,6 +504,7 @@ fn expense_view(
             .collect(),
         allocation_status: String::new(),
         error: None,
+        unmapped_fields: Vec::new(),
     };
     if let Some(spending) = spending {
         spending
@@ -487,6 +562,11 @@ fn apply_submitted_expense(view: &mut ExpenseFormView, form: &ExpenseForm) {
     view.payer_mode.clone_from(&form.payer_mode);
     view.split_mode.clone_from(&form.split_mode);
     view.single_payer_id = form.single_payer_id.unwrap_or(0);
+    view.payer_allowed = view
+        .payer_rows
+        .iter()
+        .find(|row| row.id == view.single_payer_id)
+        .is_some_and(|row| row.payer_allowed);
     view.currencies
         .iter_mut()
         .for_each(|option| option.selected = option.value == view.currency);
@@ -526,6 +606,22 @@ fn apply_submitted_expense(view: &mut ExpenseFormView, form: &ExpenseForm) {
             None
         };
     });
+    let rendered_ids = view
+        .share_rows
+        .iter()
+        .map(|row| row.id.to_string())
+        .collect::<BTreeSet<_>>();
+    view.unmapped_fields = form
+        .extra
+        .iter()
+        .filter(|(key, _)| {
+            ["included_", "weight_", "exact_"].iter().any(|prefix| {
+                key.strip_prefix(prefix)
+                    .is_some_and(|id| !rendered_ids.contains(id))
+            })
+        })
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
     view.allocation_status = exact_allocation_status(form);
 }
 

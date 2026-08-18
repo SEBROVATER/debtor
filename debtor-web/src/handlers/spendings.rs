@@ -117,7 +117,7 @@ pub(crate) async fn preview_spending(
                 .filter(|(key, _)| key != "csrf" && key != "submission_token")
                 .cloned()
                 .collect();
-            if session::set_spending_preview(&session, group_id, review_fields)
+            if session::set_spending_preview(&session, group_id, None, review_fields)
                 .await
                 .is_err()
             {
@@ -163,6 +163,100 @@ pub(crate) async fn preview_spending(
                 }
                 Err(error) => map_group_template_error(error),
             }
+        }
+        Err(error) => map_error(error),
+    }
+}
+
+pub(crate) async fn preview_spending_edit(
+    State(state): State<AppState>,
+    session: Session,
+    Path((group_id, spending_id)): Path<(i64, i64)>,
+    form: CsrfValidatedForm,
+) -> Response {
+    if let Err(response) = require_auth(&session).await {
+        return response;
+    }
+    if let Err(response) = require_writable_group(&state, group_id).await {
+        return response;
+    }
+    let existing = match state.spendings.spending(group_id, spending_id).await {
+        Ok(value) => value,
+        Err(error) => return map_error(error),
+    };
+    let ordered = form.ordered();
+    let review_fields = ordered
+        .0
+        .iter()
+        .filter(|(key, _)| key != "csrf" && key != "submission_token")
+        .cloned()
+        .collect::<Vec<_>>();
+    let parsed = match parse_expense_form(ordered) {
+        Ok(value) => value,
+        Err(error) => return error_response(error.status, error.message),
+    };
+    if parsed.split_mode != "exact" {
+        return edit_form_error(
+            &state,
+            &session,
+            group_id,
+            &existing,
+            &parsed,
+            "Existing Spendings must use Exact Shares.".into(),
+        )
+        .await;
+    }
+    let input = match parse_expense(group_id, &parsed) {
+        Ok(value) => value,
+        Err(message) => {
+            return edit_form_error(&state, &session, group_id, &existing, &parsed, message).await;
+        }
+    };
+    match state
+        .spendings
+        .validate_update_input(spending_id, input)
+        .await
+    {
+        Ok(preview) => {
+            if session::set_spending_preview(&session, group_id, Some(spending_id), review_fields)
+                .await
+                .is_err()
+            {
+                return super::response::session_error();
+            }
+            let mut template = match build_spending_form_template(
+                &state,
+                &session,
+                group_id,
+                Some(&parsed),
+                Some(&existing),
+                Some("Preview ready. Review the corrected Spending before approving.".into()),
+                true,
+            )
+            .await
+            {
+                Ok(template) => template,
+                Err(error) => return map_group_template_error(error),
+            };
+            for row in &mut template.expense.share_rows {
+                row.derived_amount = preview
+                    .shares
+                    .iter()
+                    .find(|allocation| allocation.participant_id == row.id)
+                    .map_or_else(String::new, |allocation| allocation.amount.to_string());
+            }
+            render(&template)
+        }
+        Err(debtor_application::ApplicationError::Validation(error)) => {
+            edit_form_error(
+                &state,
+                &session,
+                group_id,
+                &existing,
+                &parsed,
+                error.to_string(),
+            )
+            .await
         }
         Err(error) => map_error(error),
     }
@@ -358,6 +452,7 @@ async fn active_member_ids(state: &AppState, group_id: i64) -> Result<Vec<i64>, 
         .map_err(map_error)
 }
 
+#[allow(clippy::too_many_lines)]
 async fn save_spending(
     state: AppState,
     session: Session,
@@ -408,53 +503,151 @@ async fn save_spending(
         }
     };
     let _approval_guard = session::spending_approval_lock().lock().await;
-    if spending_id.is_none() {
-        if let Err(response) = reserve_submission_token(&state, &session, &csrf_form).await {
-            return response;
+    if let Some(id) = spending_id {
+        if form.split_mode != "exact" {
+            return if let (Some(_), Some(existing)) = (spending_id, editing.as_ref()) {
+                edit_form_error(
+                    &state,
+                    &session,
+                    group_id,
+                    existing,
+                    &form,
+                    "Existing Spendings must use Exact Shares.".into(),
+                )
+                .await
+            } else {
+                form_error(
+                    &state,
+                    &session,
+                    group_id,
+                    None,
+                    editing.as_ref(),
+                    "Existing Spendings must use Exact Shares.".into(),
+                    &form,
+                )
+                .await
+            };
         }
-        match session::take_matching_spending_preview(&session, group_id, &review_fields).await {
-            Ok(true) => {}
-            Ok(false) => {
-                return crate::handlers::response::submission_token_conflict_for(
-                    &format!("/groups/{group_id}/spendings"),
-                    false,
-                );
-            }
-            Err(_) => return super::response::session_error(),
+        if let Err(error) = state
+            .spendings
+            .validate_update_input(id, input.clone())
+            .await
+        {
+            return match error {
+                debtor_application::ApplicationError::Validation(error) => {
+                    if let Some(existing) = editing.as_ref() {
+                        edit_form_error(
+                            &state,
+                            &session,
+                            group_id,
+                            existing,
+                            &form,
+                            error.to_string(),
+                        )
+                        .await
+                    } else {
+                        form_error(
+                            &state,
+                            &session,
+                            group_id,
+                            None,
+                            None,
+                            error.to_string(),
+                            &form,
+                        )
+                        .await
+                    }
+                }
+                error => map_error(error),
+            };
         }
     }
-    if spending_id.is_some()
-        && let Err(response) = reserve_submission_token(&state, &session, &csrf_form).await
-    {
+    let conflict_path = spending_id.map_or_else(
+        || format!("/groups/{group_id}/spendings"),
+        |id| format!("/groups/{group_id}/spendings/{id}/edit"),
+    );
+    match session::spending_preview_matches(&session, group_id, spending_id, &review_fields).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return crate::handlers::response::submission_token_conflict_for(&conflict_path, false);
+        }
+        Err(_) => return super::response::session_error(),
+    }
+    if let Err(response) = reserve_submission_token(&state, &session, &csrf_form).await {
         return response;
     }
+    if session::take_matching_spending_preview(&session, group_id, spending_id, &review_fields)
+        .await
+        .is_err()
+    {
+        return super::response::session_error();
+    }
     let result = if let Some(id) = spending_id {
-        state.spendings.update_input(id, input).await
+        state.spending_mutations.update_spending(id, input).await
     } else {
         state.spending_mutations.create_spending(input).await
     };
     match result {
         Ok(_) => {
             let destination = if spending_id.is_some() {
-                format!("/groups/{group_id}")
+                format!(
+                    "/groups/{group_id}/spendings/{}",
+                    spending_id.unwrap_or_default()
+                )
             } else {
                 format!("/groups/{group_id}/transactions")
             };
             Redirect::to(&destination).into_response()
         }
         Err(debtor_application::ApplicationError::Validation(error)) => {
-            form_error(
-                &state,
-                &session,
-                group_id,
-                None,
-                editing.as_ref(),
-                error.to_string(),
-                &form,
-            )
-            .await
+            if let Some(existing) = editing.as_ref() {
+                edit_form_error(
+                    &state,
+                    &session,
+                    group_id,
+                    existing,
+                    &form,
+                    error.to_string(),
+                )
+                .await
+            } else {
+                form_error(
+                    &state,
+                    &session,
+                    group_id,
+                    None,
+                    None,
+                    error.to_string(),
+                    &form,
+                )
+                .await
+            }
         }
         Err(error) => map_error(error),
+    }
+}
+
+async fn edit_form_error(
+    state: &AppState,
+    session: &Session,
+    group_id: i64,
+    existing: &Spending,
+    form: &ExpenseForm,
+    message: String,
+) -> Response {
+    match build_spending_form_template(
+        state,
+        session,
+        group_id,
+        Some(form),
+        Some(existing),
+        Some(message),
+        false,
+    )
+    .await
+    {
+        Ok(template) => (StatusCode::UNPROCESSABLE_ENTITY, render(&template)).into_response(),
+        Err(error) => map_group_template_error(error),
     }
 }
 
