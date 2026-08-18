@@ -518,6 +518,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn spending_delete_confirmation_renders_complete_scope_and_canonical_return() {
+        let test_state = state(false);
+        let app = app(&test_state);
+        let session_cookie = login(&app).await;
+
+        let response = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                "/groups/1/spendings/1/delete?focus=1",
+                "",
+                Some(&session_cookie),
+            ))
+            .await
+            .expect("delete confirmation response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        assert!(body.contains("Delete Spending"));
+        assert!(body.contains("Dinner"));
+        assert!(body.contains("$10 USD"));
+        assert!(body.contains("Payer"));
+        assert!(body.contains("Shares"));
+        assert!(body.contains("irreversible"));
+        assert!(body.contains("/groups/1/transactions?focus_delete=1"));
+
+        let response = app
+            .oneshot(request(
+                Method::POST,
+                "/groups/1/spendings/1/delete",
+                &format!(
+                    "csrf={}&submission_token={}",
+                    csrf(&body),
+                    submission_token(&body)
+                ),
+                Some(&session_cookie),
+            ))
+            .await
+            .expect("delete mutation response");
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(response.headers()["location"], "/groups/1/transactions");
+    }
+
+    #[tokio::test]
     async fn transactions_route_rejects_unknown_query_fields() {
         let test_state = state(false);
         let app = app(&test_state);

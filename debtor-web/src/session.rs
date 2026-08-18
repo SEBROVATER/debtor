@@ -14,6 +14,23 @@ const GROUP_RESTORE_FOCUS: &str = "group_restore_focus";
 const SPENDING_PREVIEW_GROUP: &str = "spending_preview_group";
 const SPENDING_PREVIEW_ID: &str = "spending_preview_id";
 const SPENDING_PREVIEW_FIELDS: &str = "spending_preview_fields";
+const SPENDING_DELETE_GROUP: &str = "spending_delete_group";
+const SPENDING_DELETE_ID: &str = "spending_delete_id";
+const SPENDING_DELETE_CURSOR: &str = "spending_delete_cursor";
+const SPENDING_DELETE_NEXT: &str = "spending_delete_next";
+const SPENDING_DELETE_PREVIOUS: &str = "spending_delete_previous";
+const SPENDING_DELETE_CONTROL: &str = "spending_delete_control";
+const SPENDING_DELETE_TOKEN: &str = "spending_delete_token";
+
+pub(crate) struct SpendingDeleteBinding {
+    pub(crate) group_id: i64,
+    pub(crate) spending_id: i64,
+    pub(crate) cursor: Option<String>,
+    pub(crate) next_focus: Option<i64>,
+    pub(crate) previous_focus: Option<i64>,
+    pub(crate) control_id: String,
+    pub(crate) submission_token: String,
+}
 
 /// Returns the fixed expiry policy for anonymous sessions.
 pub fn anonymous_expiry() -> Expiry {
@@ -105,6 +122,160 @@ pub(crate) async fn clear_spending_preview(session: &Session) -> Result<(), Sess
         .await
         .map(|_| ())
         .map_err(|_| SessionError)
+}
+
+/// Binds a Spending delete confirmation to one canonical Transactions context.
+pub(crate) async fn set_spending_delete_confirmation(
+    session: &Session,
+    binding: SpendingDeleteBinding,
+) -> Result<(), SessionError> {
+    session
+        .insert(SPENDING_DELETE_GROUP, binding.group_id)
+        .await
+        .map_err(|_| SessionError)?;
+    session
+        .insert(SPENDING_DELETE_ID, binding.spending_id)
+        .await
+        .map_err(|_| SessionError)?;
+    session
+        .insert(SPENDING_DELETE_CURSOR, binding.cursor)
+        .await
+        .map_err(|_| SessionError)?;
+    session
+        .insert(SPENDING_DELETE_NEXT, binding.next_focus)
+        .await
+        .map_err(|_| SessionError)?;
+    session
+        .insert(SPENDING_DELETE_PREVIOUS, binding.previous_focus)
+        .await
+        .map_err(|_| SessionError)?;
+    session
+        .insert(SPENDING_DELETE_CONTROL, binding.control_id)
+        .await
+        .map_err(|_| SessionError)?;
+    session
+        .insert(SPENDING_DELETE_TOKEN, binding.submission_token)
+        .await
+        .map_err(|_| SessionError)
+}
+
+/// Reads the session-bound Spending delete confirmation context.
+pub(crate) async fn spending_delete_confirmation(
+    session: &Session,
+) -> Result<
+    Option<(
+        i64,
+        i64,
+        Option<String>,
+        Option<i64>,
+        Option<i64>,
+        String,
+        String,
+    )>,
+    SessionError,
+> {
+    let group_id = session
+        .get::<i64>(SPENDING_DELETE_GROUP)
+        .await
+        .map_err(|_| SessionError)?;
+    let spending_id = session
+        .get::<i64>(SPENDING_DELETE_ID)
+        .await
+        .map_err(|_| SessionError)?;
+    let cursor = session
+        .get::<Option<String>>(SPENDING_DELETE_CURSOR)
+        .await
+        .map_err(|_| SessionError)?
+        .flatten();
+    let next_focus = session
+        .get::<Option<i64>>(SPENDING_DELETE_NEXT)
+        .await
+        .map_err(|_| SessionError)?
+        .flatten();
+    let previous_focus = session
+        .get::<Option<i64>>(SPENDING_DELETE_PREVIOUS)
+        .await
+        .map_err(|_| SessionError)?
+        .flatten();
+    let control_id = session
+        .get::<String>(SPENDING_DELETE_CONTROL)
+        .await
+        .map_err(|_| SessionError)?;
+    let submission_token = session
+        .get::<String>(SPENDING_DELETE_TOKEN)
+        .await
+        .map_err(|_| SessionError)?;
+    Ok(group_id
+        .zip(spending_id)
+        .zip(control_id)
+        .zip(submission_token)
+        .map(
+            |(((group_id, spending_id), control_id), submission_token)| {
+                (
+                    group_id,
+                    spending_id,
+                    cursor,
+                    next_focus,
+                    previous_focus,
+                    control_id,
+                    submission_token,
+                )
+            },
+        ))
+}
+
+/// Clears the server-owned Spending delete confirmation state.
+pub(crate) async fn clear_spending_delete_confirmation(
+    session: &Session,
+) -> Result<(), SessionError> {
+    session
+        .remove::<i64>(SPENDING_DELETE_GROUP)
+        .await
+        .map_err(|_| SessionError)?;
+    session
+        .remove::<i64>(SPENDING_DELETE_ID)
+        .await
+        .map_err(|_| SessionError)?;
+    session
+        .remove::<Option<String>>(SPENDING_DELETE_CURSOR)
+        .await
+        .map_err(|_| SessionError)?;
+    session
+        .remove::<Option<i64>>(SPENDING_DELETE_NEXT)
+        .await
+        .map_err(|_| SessionError)?;
+    session
+        .remove::<Option<i64>>(SPENDING_DELETE_PREVIOUS)
+        .await
+        .map_err(|_| SessionError)?;
+    session
+        .remove::<String>(SPENDING_DELETE_CONTROL)
+        .await
+        .map_err(|_| SessionError)?;
+    session
+        .remove::<String>(SPENDING_DELETE_TOKEN)
+        .await
+        .map_err(|_| SessionError)?;
+    Ok(())
+}
+
+/// Returns the server-owned Delete control identity for a pending confirmation.
+pub(crate) async fn spending_delete_focus(session: &Session) -> Result<Option<i64>, SessionError> {
+    let Some(control_id) = session
+        .get::<String>(SPENDING_DELETE_CONTROL)
+        .await
+        .map_err(|_| SessionError)?
+    else {
+        return Ok(None);
+    };
+    let Some(id) = control_id
+        .strip_prefix("spending-")
+        .and_then(|value| value.strip_suffix("-delete"))
+        .and_then(|value| value.parse::<i64>().ok())
+    else {
+        return Ok(None);
+    };
+    Ok((id > 0).then_some(id))
 }
 
 /// Returns whether this session is authenticated.

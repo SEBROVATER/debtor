@@ -1,7 +1,7 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt::Write as _};
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Redirect, Response},
 };
@@ -10,6 +10,7 @@ use debtor_application::{
     PayerInput, ShareInput, SpendingCursor, SpendingInput, SpendingPageDirection,
 };
 use debtor_domain::model::Spending;
+use serde::Deserialize;
 use tower_sessions::Session;
 
 use super::{
@@ -18,8 +19,8 @@ use super::{
     groups::require_writable_group,
     response::{error_response, map_error, render},
     spending_views::{
-        build_group_template, build_spending_form_template, initialize_exact_defaults,
-        map_group_template_error,
+        build_group_template, build_spending_form_template, encode_cursor,
+        initialize_exact_defaults, map_group_template_error,
     },
 };
 use crate::{
@@ -27,9 +28,17 @@ use crate::{
     session,
     state::AppState,
     templates::{
-        ConfirmTemplate, SpendingDetailTemplate, TransactionAllocationRow, TransactionParticipant,
+        ConfirmFact, ConfirmTemplate, SpendingDetailTemplate, TransactionAllocationRow,
+        TransactionParticipant,
     },
 };
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DeleteSpendingQuery {
+    cursor: Option<String>,
+    focus: Option<String>,
+}
 
 pub(crate) async fn new_spending_form(
     State(state): State<AppState>,
@@ -369,10 +378,12 @@ pub(crate) async fn spending_detail(
     })
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn delete_spending_form(
     State(state): State<AppState>,
     session: Session,
     Path((group_id, spending_id)): Path<(i64, i64)>,
+    Query(query): Query<DeleteSpendingQuery>,
 ) -> Response {
     if let Err(response) = require_auth(&session).await {
         return response;
@@ -380,24 +391,97 @@ pub(crate) async fn delete_spending_form(
     if let Err(response) = require_writable_group(&state, group_id).await {
         return response;
     }
-    let spending = match state.spendings.spending(group_id, spending_id).await {
+    let cursor = super::spendings::parse_cursor(query.cursor.as_deref())
+        .ok()
+        .flatten();
+    let _invoking_focus = query
+        .focus
+        .as_deref()
+        .and_then(|value| value.parse::<i64>().ok())
+        .filter(|focus| *focus == spending_id);
+    let detail = match state.spendings.spending_detail(group_id, spending_id).await {
         Ok(value) => value,
         Err(error) => return map_error(error),
     };
+    if detail.group.is_archived {
+        return error_response(StatusCode::CONFLICT, "Archived Groups cannot be changed.");
+    }
+    let page = match state
+        .spendings
+        .spending_history_page(group_id, cursor)
+        .await
+    {
+        Ok(page) => page,
+        Err(error) => return map_error(error),
+    };
+    let (next_focus, previous_focus) = page
+        .items
+        .iter()
+        .position(|row| row.spending.id == spending_id)
+        .map_or((None, None), |index| {
+            (
+                page.items.get(index + 1).map(|row| row.spending.id),
+                index
+                    .checked_sub(1)
+                    .and_then(|index| page.items.get(index).map(|row| row.spending.id)),
+            )
+        });
+    let cursor_text = cursor.map(encode_cursor);
     let shell = match authenticated_shell(&state, &session).await {
         Ok(shell) => shell,
         Err(response) => return response,
     };
+    let control_id = format!("spending-{spending_id}-delete");
+    if session::set_spending_delete_confirmation(
+        &session,
+        session::SpendingDeleteBinding {
+            group_id,
+            spending_id,
+            cursor: cursor_text.clone(),
+            next_focus,
+            previous_focus,
+            control_id,
+            submission_token: shell.submission_token.clone(),
+        },
+    )
+    .await
+    .is_err()
+    {
+        return super::response::session_error();
+    }
+    let currency = detail.spending.currency;
+    let format_allocation =
+        |participant: &debtor_domain::model::Participant,
+         allocation: &debtor_domain::model::Allocation| {
+            format!(
+                "{}{} {}{} {}",
+                participant.name,
+                if participant.is_archived {
+                    " (Archived)"
+                } else {
+                    ""
+                },
+                currency.symbol(),
+                allocation.amount,
+                currency
+            )
+        };
+    let payer = detail.payers.first().map_or_else(
+        || "Unavailable".into(),
+        |(participant, allocation)| format_allocation(participant, allocation),
+    );
+    let shares = detail
+        .shares
+        .iter()
+        .map(|(participant, allocation)| format_allocation(participant, allocation))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let cancel = transactions_cancel_path(group_id, cursor_text.as_deref(), spending_id);
     render(&ConfirmTemplate {
-        heading: "Delete expense".into(),
-        message: format!(
-            "Delete '{}' ({} {})?",
-            spending.description.as_str(),
-            spending.total,
-            spending.currency
-        ),
+        heading: "Delete Spending".into(),
+        message: "This deletion is irreversible. Confirm once to remove the complete Spending aggregate and its allocations.".into(),
         action: format!("/groups/{group_id}/spendings/{spending_id}/delete"),
-        cancel: format!("/groups/{group_id}/spendings/{spending_id}"),
+        cancel,
         csrf: match csrf(&session).await {
             Ok(token) => token,
             Err(response) => return response,
@@ -405,6 +489,15 @@ pub(crate) async fn delete_spending_form(
         shell,
         details: Vec::new(),
         destructive: true,
+        facts: vec![
+            ConfirmFact { label: "Description".into(), value: detail.spending.description.as_str().to_owned() },
+            ConfirmFact { label: "Total".into(), value: format!("{}{} {}", currency.symbol(), detail.spending.total, currency) },
+            ConfirmFact { label: "Date".into(), value: detail.spending.spent_date.to_string() },
+            ConfirmFact { label: "Category".into(), value: detail.spending.spending_type.to_string() },
+            ConfirmFact { label: "Payer".into(), value: payer },
+            ConfirmFact { label: "Shares".into(), value: shares },
+        ],
+        focus_id: "confirm-heading".into(),
     })
 }
 
@@ -420,19 +513,121 @@ pub(crate) async fn delete_spending(
     if let Err(response) = require_writable_group(&state, group_id).await {
         return response;
     }
+    if let Err(error) = crate::forms::parse_lifecycle_form(&form.ordered()) {
+        return error_response(error.status, error.message);
+    }
+    let confirmation = match session::spending_delete_confirmation(&session).await {
+        Ok(Some(value)) if value.0 == group_id && value.1 == spending_id => value,
+        Ok(_) => {
+            return super::response::submission_token_conflict_for(
+                &format!("/groups/{group_id}/transactions"),
+                false,
+            );
+        }
+        Err(_) => return super::response::session_error(),
+    };
     let Some(session_id) = session.id() else {
         return super::response::session_error();
     };
+    if form.submission_token() != Some(confirmation.6.as_str()) {
+        return super::response::submission_token_conflict_for(
+            &format!("/groups/{group_id}/transactions"),
+            false,
+        );
+    }
     if let Err(response) = form
         .reserve_and_dispatch(&state.submission_tokens, session_id)
         .await
     {
         return response;
     }
-    match state.spendings.delete(group_id, spending_id).await {
-        Ok(()) => Redirect::to(&format!("/groups/{group_id}")).into_response(),
+    if session::clear_spending_delete_confirmation(&session)
+        .await
+        .is_err()
+    {
+        return super::response::session_error();
+    }
+    match state
+        .spending_mutations
+        .delete_spending(group_id, spending_id)
+        .await
+    {
+        Ok(()) => {
+            let (_, _, cursor, next_focus, previous_focus, _, _) = confirmation;
+            let (destination_cursor, focus) = post_delete_focus(
+                &state,
+                group_id,
+                cursor.as_deref(),
+                next_focus,
+                previous_focus,
+            )
+            .await;
+            let destination = transactions_path(group_id, destination_cursor.as_deref(), focus);
+            Redirect::to(&destination).into_response()
+        }
         Err(error) => map_error(error),
     }
+}
+
+async fn post_delete_focus(
+    state: &AppState,
+    group_id: i64,
+    cursor: Option<&str>,
+    next_focus: Option<i64>,
+    previous_focus: Option<i64>,
+) -> (Option<String>, Option<i64>) {
+    let parsed = super::spendings::parse_cursor(cursor).ok().flatten();
+    let Some(parsed) = parsed else {
+        return (None, None);
+    };
+    let Ok(page) = state
+        .spendings
+        .spending_history_page(group_id, Some(parsed))
+        .await
+    else {
+        return (cursor.map(str::to_owned), next_focus.or(previous_focus));
+    };
+    if let Some(focus) = next_focus
+        .filter(|id| page.items.iter().any(|row| row.spending.id == *id))
+        .or_else(|| previous_focus.filter(|id| page.items.iter().any(|row| row.spending.id == *id)))
+        .or_else(|| page.items.first().map(|row| row.spending.id))
+    {
+        return (cursor.map(str::to_owned), Some(focus));
+    }
+    let Some(newer) = page.newer else {
+        return (None, None);
+    };
+    let newer_text = encode_cursor(newer);
+    let focus = state
+        .spendings
+        .spending_history_page(group_id, Some(newer))
+        .await
+        .ok()
+        .and_then(|page| page.items.first().map(|row| row.spending.id));
+    (Some(newer_text), focus)
+}
+
+fn transactions_cancel_path(group_id: i64, cursor: Option<&str>, focus: i64) -> String {
+    let mut path = transactions_path(group_id, cursor, None);
+    path.push_str(if path.contains('?') { "&" } else { "?" });
+    let _ = write!(path, "focus_delete={focus}");
+    path
+}
+
+fn transactions_path(group_id: i64, cursor: Option<&str>, focus: Option<i64>) -> String {
+    let mut path = format!("/groups/{group_id}/transactions");
+    let mut query = Vec::new();
+    if let Some(cursor) = cursor {
+        query.push(format!("cursor={cursor}"));
+    }
+    if let Some(focus) = focus {
+        query.push(format!("focus={focus}"));
+    }
+    if !query.is_empty() {
+        path.push('?');
+        path.push_str(&query.join("&"));
+    }
+    path
 }
 
 async fn active_member_ids(state: &AppState, group_id: i64) -> Result<Vec<i64>, Response> {

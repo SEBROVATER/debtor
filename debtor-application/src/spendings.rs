@@ -261,6 +261,15 @@ pub trait SpendingMutationExecutor: Send + Sync {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<Spending, ApplicationError>> + Send + '_>,
     >;
+
+    /// Deletes a Spending and returns after a definitive outcome.
+    fn delete_spending(
+        &self,
+        group_id: EntityId,
+        spending_id: EntityId,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), ApplicationError>> + Send + '_>,
+    >;
 }
 
 /// Spending workflow implementation.

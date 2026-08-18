@@ -13,7 +13,10 @@ use debtor_application::{
 };
 use debtor_domain::{
     currency::Currency,
-    model::{Color, Group, GroupMember, Name, Participant, Spending, ValidationError},
+    model::{
+        Allocation, Color, Description, Group, GroupMember, Name, Participant, Spending,
+        SpendingType, ValidationError,
+    },
 };
 
 use crate::state::{AppState, TrustedProxyConfig};
@@ -438,10 +441,10 @@ impl SpendingUseCases for FakeSpendings {
 
     async fn spending_detail(
         &self,
-        _: i64,
-        _: i64,
+        group_id: i64,
+        spending_id: i64,
     ) -> Result<debtor_application::SpendingDetail, ApplicationError> {
-        Err(ApplicationError::NotFound)
+        Ok(test_spending_detail(group_id, spending_id))
     }
 
     async fn spending_history_page(
@@ -487,6 +490,42 @@ impl SpendingUseCases for FakeSpendings {
     }
 }
 
+fn test_spending_detail(group_id: i64, spending_id: i64) -> debtor_application::SpendingDetail {
+    let amount = debtor_domain::money::parse_decimal("10").expect("test amount");
+    let participant = Participant {
+        id: 1,
+        name: Name::new("Ada").expect("participant name"),
+        color: Color::new("#123456").expect("participant color"),
+        is_archived: false,
+    };
+    let allocation = Allocation {
+        participant_id: participant.id,
+        amount,
+    };
+    let spending = Spending {
+        id: spending_id,
+        group_id,
+        description: Description::new("Dinner").expect("description"),
+        total: amount,
+        currency: Currency::Usd,
+        spending_type: SpendingType::Food,
+        spent_date: chrono::NaiveDate::from_ymd_opt(2026, 8, 18).expect("date"),
+        payers: vec![allocation.clone()],
+        shares: vec![allocation.clone()],
+    };
+    debtor_application::SpendingDetail {
+        group: Group {
+            id: group_id,
+            name: Name::new("Test Group").expect("group name"),
+            currency: Currency::Usd,
+            is_archived: false,
+        },
+        spending,
+        payers: vec![(participant.clone(), allocation.clone())],
+        shares: vec![(participant, allocation)],
+    }
+}
+
 impl SpendingMutationExecutor for FakeSpendings {
     fn create_spending(
         &self,
@@ -505,6 +544,16 @@ impl SpendingMutationExecutor for FakeSpendings {
         Box<dyn std::future::Future<Output = Result<Spending, ApplicationError>> + Send + '_>,
     > {
         Box::pin(async { Err(validation_error()) })
+    }
+
+    fn delete_spending(
+        &self,
+        _: i64,
+        _: i64,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), ApplicationError>> + Send + '_>,
+    > {
+        Box::pin(async { Ok(()) })
     }
 }
 

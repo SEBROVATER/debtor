@@ -31,6 +31,7 @@ pub(super) async fn build_transactions_template(
     id: i64,
     cursor: Option<SpendingCursor>,
     focus: Option<i64>,
+    delete_focus: Option<i64>,
 ) -> Result<TransactionsTemplate, GroupTemplateError> {
     let page = state.spendings.spending_history_page(id, cursor).await?;
     let group = page.group.clone();
@@ -63,6 +64,8 @@ pub(super) async fn build_transactions_template(
                 })
                 .collect(),
             focused: focus == Some(row.spending.id),
+            delete_focused: delete_focus == Some(row.spending.id),
+            delete_path: delete_path(id, cursor, row.spending.id),
         })
         .collect::<Vec<_>>();
     let page_status = if empty {
@@ -412,12 +415,20 @@ async fn build_group_settings_fallback(
     })
 }
 
-fn encode_cursor(cursor: SpendingCursor) -> String {
+pub(super) fn encode_cursor(cursor: SpendingCursor) -> String {
     let direction = match cursor.direction {
         debtor_application::SpendingPageDirection::Older => "older",
         debtor_application::SpendingPageDirection::Newer => "newer",
     };
     format!("{direction}:{}:{}", cursor.spent_date, cursor.id)
+}
+
+fn delete_path(group_id: i64, cursor: Option<SpendingCursor>, spending_id: i64) -> String {
+    let query = cursor.map_or_else(
+        || format!("focus={spending_id}"),
+        |cursor| format!("cursor={}&focus={spending_id}", encode_cursor(cursor)),
+    );
+    format!("/groups/{group_id}/spendings/{spending_id}/delete?{query}")
 }
 
 fn member_row(

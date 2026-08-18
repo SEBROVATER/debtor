@@ -19,8 +19,13 @@
       </form>
     </header>
     <main>
-      <h1 id="confirm-heading" tabindex="-1" autofocus>{{ heading }}</h1>
+      <h1 id="{{ focus_id }}" tabindex="-1" autofocus>{{ heading }}</h1>
       <p>{{ message }}</p>
+      {% if facts.len() > 0 %}
+      <dl class="confirmation-facts">
+        {% for fact in facts %}<div><dt>{{ fact.label }}</dt><dd>{{ fact.value }}</dd></div>{% endfor %}
+      </dl>
+      {% endif %}
       {% if details.len() > 0 %}
       <ul aria-label="Participants included in deletion">
         {% for detail in details %}<li>{{ detail }}</li>{% endfor %}

@@ -42,6 +42,7 @@ pub(crate) struct GroupsQuery {
 pub(crate) struct SpendingQuery {
     pub(super) cursor: Option<String>,
     pub(super) focus: Option<i64>,
+    pub(super) focus_delete: Option<i64>,
 }
 
 #[derive(Deserialize, Default)]

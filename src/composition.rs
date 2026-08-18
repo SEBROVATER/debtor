@@ -141,6 +141,48 @@ impl SpendingMutationExecutor for RootGroupMutationExecutor {
             }
         })
     }
+
+    fn delete_spending(
+        &self,
+        group_id: i64,
+        spending_id: i64,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<(), debtor_application::ApplicationError>>
+                + Send
+                + '_,
+        >,
+    > {
+        let spendings = self.spendings.clone();
+        let mutations = self.mutations.clone();
+        let runtime = self.runtime.clone();
+        Box::pin(async move {
+            let Some(lease) = mutations.try_register() else {
+                return Err(debtor_application::ApplicationError::Storage(
+                    debtor_application::StorageReason::Contention,
+                ));
+            };
+            let task = tokio::spawn(async move {
+                let mut guard = GroupMutationGuard::new(lease, mutations, runtime);
+                match spendings.delete(group_id, spending_id).await {
+                    Ok(()) => {
+                        guard.committed();
+                        Ok(())
+                    }
+                    Err(error) => {
+                        guard.rolled_back();
+                        Err(error)
+                    }
+                }
+            });
+            match task.await {
+                Ok(result) => result,
+                Err(_) => Err(debtor_application::ApplicationError::Storage(
+                    debtor_application::StorageReason::Unknown,
+                )),
+            }
+        })
+    }
 }
 
 struct GroupMutationGuard {

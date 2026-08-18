@@ -171,6 +171,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .pagination-context { color: #AAA59C; text-align: center; overflow-wrap: anywhere; }
 .pagination-disabled { color: #AAA59C; }
 .standalone-detail { border-block: 1px solid var(--line); margin-block: 1rem; padding-block: 1rem; }
+.confirmation-facts { border-block: 1px solid var(--line); display: grid; gap: .5rem; margin-block: 1rem; padding-block: .5rem; }
+.confirmation-facts > div { display: grid; gap: 1rem; grid-template-columns: 108px minmax(0, 1fr); padding-block: .4rem; }
+.confirmation-facts dt { font-weight: 700; }
+.confirmation-facts dd { margin: 0; min-inline-size: 0; overflow-wrap: anywhere; }
 @media (max-width: 40rem) {
   .transaction-row summary { align-items: start; grid-template-columns: minmax(0, 1fr); }
   .transaction-total { justify-self: end; }

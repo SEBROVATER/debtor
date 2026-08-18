@@ -151,7 +151,24 @@ pub(crate) async fn group_transactions(
         Ok(cursor) => cursor,
         Err(message) => return error_response(StatusCode::BAD_REQUEST, message),
     };
-    match build_transactions_template(&state, &session, id, cursor, query.focus).await {
+    let delete_focus = if query.focus_delete.is_some() {
+        session::spending_delete_focus(&session)
+            .await
+            .ok()
+            .flatten()
+            .filter(|focus| query.focus_delete == Some(*focus))
+    } else {
+        None
+    };
+    if (query.focus.is_some() || delete_focus.is_some())
+        && session::clear_spending_delete_confirmation(&session)
+            .await
+            .is_err()
+    {
+        return super::response::session_error();
+    }
+    match build_transactions_template(&state, &session, id, cursor, query.focus, delete_focus).await
+    {
         Ok(template) => render(&template),
         Err(error) => map_group_template_error(error),
     }
@@ -218,6 +235,8 @@ pub(crate) async fn archive_group_form(
         shell,
         details: Vec::new(),
         destructive: false,
+        facts: Vec::new(),
+        focus_id: "confirm-heading".into(),
     })
 }
 
@@ -410,6 +429,8 @@ pub(crate) async fn delete_group_form(
                 shell,
                 details,
                 destructive: true,
+                facts: Vec::new(),
+                focus_id: "confirm-heading".into(),
             })
         }
         Ok(_) => error_response(StatusCode::CONFLICT, "Archived groups cannot be deleted."),

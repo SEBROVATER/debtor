@@ -398,6 +398,95 @@ async fn archived_group_rejects_spending_delete_and_preserves_history(pool: Sqli
 }
 
 #[sqlx::test(migrations = "../migrations")]
+async fn spending_delete_removes_the_complete_aggregate_and_restores_empty_group_eligibility(
+    pool: SqlitePool,
+) {
+    let (store, group_id, participant_id) = active_group_and_participant(&pool).await;
+    store
+        .add_member(group_id, participant_id)
+        .await
+        .expect("add member");
+    let created = store
+        .create_spending(spending(group_id, participant_id))
+        .await
+        .expect("create spending");
+
+    store
+        .delete_spending(group_id, created.id)
+        .await
+        .expect("delete complete spending");
+
+    assert!(matches!(
+        store.spending(group_id, created.id).await,
+        Err(ApplicationError::NotFound)
+    ));
+    let payer_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM spending_payers WHERE spending_id = ?")
+            .bind(created.id)
+            .fetch_one(&pool)
+            .await
+            .expect("count payers");
+    let share_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM spending_shares WHERE spending_id = ?")
+            .bind(created.id)
+            .fetch_one(&pool)
+            .await
+            .expect("count shares");
+    assert_eq!(payer_count, 0);
+    assert_eq!(share_count, 0);
+
+    store
+        .delete_empty_group(GroupDeleteInput {
+            group_id,
+            participant_ids: vec![participant_id],
+        })
+        .await
+        .expect("delete history-free group after spending deletion");
+    assert!(matches!(
+        store.group(group_id).await,
+        Err(ApplicationError::NotFound)
+    ));
+}
+
+#[sqlx::test(migrations = "../migrations")]
+async fn concurrent_spending_deletes_have_one_commit_and_one_safe_loser(pool: SqlitePool) {
+    let (store, group_id, participant_id) = active_group_and_participant(&pool).await;
+    store
+        .add_member(group_id, participant_id)
+        .await
+        .expect("add member");
+    let created = store
+        .create_spending(spending(group_id, participant_id))
+        .await
+        .expect("create spending");
+
+    let runtime = SqliteLedgerRuntime::new(pool.clone());
+    let first = runtime.store();
+    let second = runtime.store();
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+    let first_barrier = barrier.clone();
+    let second_barrier = barrier;
+    let first_task = tokio::spawn(async move {
+        first_barrier.wait().await;
+        first.delete_spending(group_id, created.id).await
+    });
+    let second_task = tokio::spawn(async move {
+        second_barrier.wait().await;
+        second.delete_spending(group_id, created.id).await
+    });
+    let first_result = first_task.await.expect("first delete task");
+    let second_result = second_task.await.expect("second delete task");
+    assert!(matches!(
+        (first_result, second_result),
+        (Ok(()), Err(ApplicationError::NotFound)) | (Err(ApplicationError::NotFound), Ok(()))
+    ));
+    assert!(matches!(
+        store.spending(group_id, created.id).await,
+        Err(ApplicationError::NotFound)
+    ));
+}
+
+#[sqlx::test(migrations = "../migrations")]
 async fn archived_mutation_races_consistently_return_conflict(pool: SqlitePool) {
     let (store, group_id, participant_id) = active_group_and_participant(&pool).await;
     store

@@ -474,6 +474,10 @@ pub struct TransactionRow {
     pub shares: Vec<TransactionAllocationRow>,
     /// Whether this row should be expanded/focused.
     pub focused: bool,
+    /// Whether this row's Delete control receives return focus.
+    pub delete_focused: bool,
+    /// Canonical Delete confirmation route for this row.
+    pub delete_path: String,
 }
 
 /// Current Participant identity shown in history.
@@ -524,4 +528,16 @@ pub struct ConfirmTemplate {
     pub details: Vec<String>,
     /// Whether the confirmation is irreversible.
     pub destructive: bool,
+    /// Complete Spending facts shown on a Spending delete confirmation.
+    pub facts: Vec<ConfirmFact>,
+    /// Stable focus target for the confirmation page.
+    pub focus_id: String,
+}
+
+/// One labeled fact on a destructive confirmation page.
+pub struct ConfirmFact {
+    /// Fact label.
+    pub label: String,
+    /// Already validated display value.
+    pub value: String,
 }
