@@ -11,6 +11,9 @@
   <body>
     <header id="authenticated-header" class="site-header" aria-busy="false">
       <a href="/groups">debtor</a>
+      <nav aria-label="Group navigation">
+        <a href="/groups">Groups</a><a href="/groups/{{ group_id }}">Summary</a><a href="/groups/{{ group_id }}/transactions">Transactions</a><a href="/groups/{{ group_id }}/debts" aria-current="page">Debts</a><a href="/groups/{{ group_id }}/manage">Manage</a>
+      </nav>
       <form method="post" action="/logout" class="sign-out-form" hx-ext="response-targets" hx-target="#sign-out-status" hx-target-4xx="#sign-out-status" hx-target-5xx="#sign-out-status">
         <input type="hidden" name="csrf" value="{{ shell.csrf }}" />
         <input type="hidden" name="submission_token" value="{{ shell.submission_token }}" />
@@ -19,69 +22,66 @@
       </form>
     </header>
     <main>
-      <h1>Advisory transfers</h1>
-      {% if !archived %}<p id="add-spending-action"><a class="button" href="/groups/{{ group_id }}/spendings/new">Add Spending</a></p>{% endif %}
-      <p>
-        Target currency: <strong>{{ currency }}</strong>.
-        <a href="?rate_mode=historical">Historical rates</a> |
-        <a href="?rate_mode=current">Current rates</a>
-      </p>
-      <p>Calculated at {{ calculated_at }} UTC.</p>
-      {% match warning %}{% when Some with (message) %}
-      <p class="warning">{{ message }}</p>
-      {% when None %}{% endmatch %}{% if transfers.len() == 0 %}
-      <p class="empty">All balances are settled.</p>
-      {% else %}
-      <table>
-        <thead>
-          <tr>
-            <th>From participant</th>
-            <th>To participant</th>
-            <th>Amount</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for transfer in transfers %}
-          <tr>
-            <td data-label="From participant">{{ transfer.from }}</td>
-            <td data-label="To participant">{{ transfer.to }}</td>
-            <td data-label="Amount">{{ transfer.amount }} {{ currency }}</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-      {% endif %}
-      <h2>Rates used</h2>
-      {% if rates.len() == 0 %}
-      <p class="empty">No conversions were needed.</p>
-      {% else %}
-      <table>
-        <thead>
-          <tr>
-            <th>Pair</th>
-            <th>Requested</th>
-            <th>Effective</th>
-            <th>Rate</th>
-            <th>Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for rate in rates %}
-          <tr>
-            <td data-label="Pair">{{ rate.base }}/{{ rate.quote }}</td>
-            <td data-label="Requested">{{ rate.requested_date }}</td>
-            <td data-label="Effective">{{ rate.effective_date }}</td>
-            <td data-label="Rate">{{ rate.rate }}</td>
-            <td data-label="Status">
-              {% if rate.stale %}stale {% endif %}{% if rate.provisional %}provisional{% endif %}{%
-              if !rate.stale && !rate.provisional %}current{% endif %}
-            </td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-      {% endif %}
-      <p>Rate mode: {{ mode }}. Transfers are advisory and are not recorded as payments.</p>
+      <div class="page-heading">
+        <div>
+          <h1 id="debts-heading" class="group-heading" tabindex="-1" autofocus>All-time Debts{% if archived %} <span>Archived</span>{% endif %}</h1>
+          <p>Target currency: <strong>{{ currency }}</strong>.</p>
+        </div>
+        {% if !archived %}<p><a class="button" href="/groups/{{ group_id }}/spendings/new">Add Spending</a></p>{% endif %}
+      </div>
+      <form method="get" action="/groups/{{ group_id }}/debts" class="debt-mode-form" hx-ext="response-targets" hx-get="/groups/{{ group_id }}/debts" hx-target="#debts-results" hx-target-4xx="#debts-results" hx-target-5xx="#debts-results" hx-select="#debts-results" hx-swap="outerHTML" hx-indicator="#debts-results">
+        <fieldset>
+          <legend>Rate mode</legend>
+          <div class="choice-row">
+            <label><input type="radio" name="rate_mode" value="historical"{% if mode == "historical" %} checked{% endif %} /> Historical</label>
+            <label><input type="radio" name="rate_mode" value="current"{% if mode == "current" %} checked{% endif %} /> Current</label>
+          </div>
+          <button type="submit">Calculate balances</button>
+        </fieldset>
+      </form>
+      <section id="debts-results" class="financial-results debt-results" aria-labelledby="debts-results-heading" aria-describedby="debts-status" aria-busy="false">
+        <h2 id="debts-results-heading" tabindex="-1">Historical calculation</h2>
+        <p id="debts-status" class="debt-status" role="status" aria-live="polite" aria-atomic="true">Calculation complete. Historical rates are selected by default.</p>
+        <p class="summary-context">Mode: {{ mode }}. Calculated at {{ calculated_at }} UTC.</p>
+        {% if !has_spendings %}<p class="empty">No Spendings exist. Every Group-owned Participant is shown at exact zero.</p>{% endif %}
+        <h2 id="balances-heading">Balances</h2>
+        {% if balances.len() == 0 %}
+        <p class="empty">No Participants are owned by this Group.</p>
+        {% else %}
+        <table aria-labelledby="balances-heading">
+          <thead><tr><th>Participant</th><th>Balance</th><th>Direction</th></tr></thead>
+          <tbody>
+            {% for balance in balances %}
+            <tr>
+              <td data-label="Participant"><span class="participant-marker" style="background: {{ balance.color }}" aria-hidden="true"></span>{{ balance.participant }}{% if balance.archived %} <span>Archived</span>{% endif %}</td>
+              <td data-label="Balance">{{ balance.amount }}</td>
+              <td data-label="Direction">{{ balance.direction }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% endif %}
+        <section class="settlement-results" aria-labelledby="settlement-heading">
+          <h2 id="settlement-heading">Settlement</h2>
+          {% if transfers.len() == 0 %}<p class="empty">All balances are settled.</p>{% else %}
+          <table>
+            <thead><tr><th>From participant</th><th>To participant</th><th>Amount</th></tr></thead>
+            <tbody>{% for transfer in transfers %}<tr><td data-label="From participant">{{ transfer.from }}</td><td data-label="To participant">{{ transfer.to }}</td><td data-label="Amount">{{ transfer.amount }}</td></tr>{% endfor %}</tbody>
+          </table>
+          {% endif %}
+        </section>
+        <section class="rate-disclosure" aria-labelledby="rates-heading">
+          <h2 id="rates-heading">Rates used</h2>
+          {% if rates.len() == 0 %}<p class="empty">No conversions were needed.</p>{% else %}
+          <table>
+            <thead><tr><th>Context</th><th>Requested</th><th>Fetched</th><th>Effective</th><th>Rate</th><th>Status</th></tr></thead>
+          <tbody>{% for rate in rates %}<tr><td data-label="Context">{{ rate.base }}/{{ rate.quote }}</td><td data-label="Requested">{{ rate.requested_date }}</td><td data-label="Fetched">{{ rate.fetch_date }}</td><td data-label="Effective">{{ rate.effective_date }}</td><td data-label="Rate">{{ rate.rate }}</td><td data-label="Status">{% if rate.base == rate.quote %}synthetic{% else %}{% if rate.stale %}stale {% endif %}{% if rate.provisional %}provisional{% endif %}{% if !rate.stale && !rate.provisional %}current{% endif %}{% endif %}</td></tr>{% endfor %}</tbody>
+          </table>
+          {% endif %}
+        </section>
+        {% match warning %}{% when Some with (message) %}<p class="warning">{{ message }}</p>{% when None %}{% endmatch %}
+        <p class="helper">Balances are derived from all-time history. Transfers are advisory and are not recorded as payments.</p>
+      </section>
     </main>
   </body>
 </html>

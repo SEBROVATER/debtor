@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -11,13 +9,27 @@ use tower_sessions::Session;
 use super::{
     DebtQuery,
     auth::{authenticated_shell, require_auth},
-    response::{error_response, map_error, render},
+    response::{debt_error_response, error_response, render},
 };
 use crate::{
     state::AppState,
-    templates::{DebtsTemplate, RateRow, TransferRow},
+    templates::{BalanceRow, DebtsTemplate, RateRow, TransferRow},
 };
 
+fn format_money(
+    amount: impl std::fmt::Display,
+    currency: debtor_domain::currency::Currency,
+) -> String {
+    format!(
+        "{}{:.*} {}",
+        currency.symbol(),
+        currency.minor_unit_scale() as usize,
+        amount,
+        currency
+    )
+}
+
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn debts(
     State(state): State<AppState>,
     session: Session,
@@ -32,50 +44,97 @@ pub(crate) async fn debts(
         Some("current") => RateMode::Current,
         Some(_) => return error_response(StatusCode::BAD_REQUEST, "Unknown rate mode."),
     };
+    let calculated_at = state.clock.now();
     let result = match state.debts.calculate(id, mode).await {
         Ok(value) => value,
-        Err(error) => return map_error(error),
+        Err(error) => return debt_error_response(error, mode, calculated_at),
     };
-    let group = match state.groups.group(id).await {
-        Ok(value) => value,
-        Err(error) => return map_error(error),
-    };
-    let members = match state.participants.members(id).await {
-        Ok(value) => value,
-        Err(error) => return map_error(error),
-    };
-    let names: BTreeMap<_, _> = members
-        .into_iter()
-        .map(|(p, _)| (p.id, p.name.to_string()))
-        .collect();
-    let warning = result
-        .rates
+    let participants = result
+        .participants
         .iter()
-        .any(|r| r.is_stale || r.is_provisional)
-        .then(|| "Some conversions use stale or provisional rates.".to_string());
+        .map(|(participant, _)| (participant.id, participant))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let balances = result
+        .balances
+        .iter()
+        .map(|(participant_id, amount)| {
+            let participant = participants.get(participant_id).ok_or(())?;
+            let (direction, signed_amount) = if amount.is_zero() {
+                (
+                    "is settled".to_owned(),
+                    format_money(*amount, result.currency),
+                )
+            } else if amount.is_sign_positive() {
+                (
+                    "is owed".to_owned(),
+                    format!("+{}", format_money(*amount, result.currency)),
+                )
+            } else {
+                ("owes".to_owned(), format_money(*amount, result.currency))
+            };
+            Ok(BalanceRow {
+                participant: participant.name.to_string(),
+                archived: participant.is_archived,
+                color: participant.color.as_str().to_owned(),
+                amount: signed_amount,
+                direction,
+            })
+        })
+        .collect::<Result<Vec<_>, ()>>();
+    let Ok(balances) = balances else {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Unable to render debts.");
+    };
+    let participants = result
+        .participants
+        .into_iter()
+        .map(|(participant, _)| (participant.id, participant.name.to_string()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let has_stale = result.rates.iter().any(|rate| rate.is_stale);
+    let has_provisional = result.rates.iter().any(|rate| rate.is_provisional);
+    let has_synthetic = result.rates.iter().any(|rate| rate.base == rate.quote);
+    let mut warnings = Vec::new();
+    if has_stale {
+        warnings.push("stale rates");
+    }
+    if has_provisional {
+        warnings.push("provisional rates");
+    }
+    if has_synthetic {
+        warnings.push("exact synthetic same-currency rates");
+    }
+    let warning =
+        (!warnings.is_empty()).then(|| format!("Some conversions use {}.", warnings.join(" and ")));
+    let transfers = result
+        .transfers
+        .into_iter()
+        .map(|transfer| {
+            Ok(TransferRow {
+                from: participants
+                    .get(&transfer.from_participant_id)
+                    .cloned()
+                    .ok_or(())?,
+                to: participants
+                    .get(&transfer.to_participant_id)
+                    .cloned()
+                    .ok_or(())?,
+                amount: format_money(transfer.amount, result.currency),
+            })
+        })
+        .collect::<Result<Vec<_>, ()>>();
+    let Ok(transfers) = transfers else {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Unable to render debts.");
+    };
     let shell = match authenticated_shell(&state, &session).await {
         Ok(shell) => shell,
         Err(response) => return response,
     };
     render(&DebtsTemplate {
         group_id: id,
-        archived: group.is_archived,
+        archived: result.group_is_archived,
         currency: result.currency.to_string(),
-        transfers: result
-            .transfers
-            .into_iter()
-            .map(|t| TransferRow {
-                from: names
-                    .get(&t.from_participant_id)
-                    .cloned()
-                    .unwrap_or_else(|| format!("Participant {}", t.from_participant_id)),
-                to: names
-                    .get(&t.to_participant_id)
-                    .cloned()
-                    .unwrap_or_else(|| format!("Participant {}", t.to_participant_id)),
-                amount: t.amount.to_string(),
-            })
-            .collect(),
+        has_spendings: result.has_spendings,
+        balances,
+        transfers,
         mode: if mode == RateMode::Current {
             "current".into()
         } else {
@@ -90,6 +149,7 @@ pub(crate) async fn debts(
                 base: r.base.to_string(),
                 quote: r.quote.to_string(),
                 requested_date: r.requested_date.to_string(),
+                fetch_date: r.fetch_date.to_string(),
                 effective_date: r.effective_date.to_string(),
                 rate: r.rate.to_string(),
                 stale: r.is_stale,

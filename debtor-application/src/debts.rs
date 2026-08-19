@@ -93,8 +93,14 @@ pub trait LedgerSnapshotReader: Send + Sync {
 /// Result of a debt calculation.
 #[derive(Debug, Clone)]
 pub struct DebtResult {
+    /// Whether the calculated Group is read-only because it is archived.
+    pub group_is_archived: bool,
     /// Group currency.
     pub currency: Currency,
+    /// Group-owned identities from the calculation snapshot.
+    pub participants: Vec<(Participant, GroupMember)>,
+    /// Whether the snapshot contained at least one Spending.
+    pub has_spendings: bool,
     /// Transfers which settle the rounded balances.
     pub transfers: Vec<Transfer>,
     /// Final target-currency balances by participant.
@@ -178,6 +184,7 @@ fn calculation_error(error: CalculationError) -> ApplicationError {
 
 #[async_trait]
 impl DebtUseCases for DebtService {
+    #[allow(clippy::too_many_lines)]
     async fn calculate(
         &self,
         group_id: EntityId,
@@ -188,6 +195,34 @@ impl DebtUseCases for DebtService {
         let snapshot = self.snapshot_reader.ledger_snapshot(group_id).await?;
         let group = snapshot.group;
         let spendings = snapshot.spendings;
+        if group.id != group_id {
+            return Err(ApplicationError::Storage(crate::StorageReason::InvalidData));
+        }
+        let participant_ids = snapshot
+            .participants
+            .iter()
+            .map(|(participant, member)| {
+                (
+                    participant.id,
+                    member.group_id == group.id && member.participant_id == participant.id,
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        if participant_ids.len() != snapshot.participants.len()
+            || participant_ids.values().any(|valid| !valid)
+            || spendings.iter().any(|spending| {
+                spending.group_id != group.id
+                    || spending
+                        .payers
+                        .iter()
+                        .chain(spending.shares.iter())
+                        .any(|allocation| {
+                            participant_ids.get(&allocation.participant_id) != Some(&true)
+                        })
+            })
+        {
+            return Err(ApplicationError::Storage(crate::StorageReason::InvalidData));
+        }
         let mut context_set = BTreeSet::new();
         let mut contexts = Vec::new();
         for spending in &spendings {
@@ -207,28 +242,60 @@ impl DebtUseCases for DebtService {
         }
         contexts.sort_unstable();
 
-        let mut fetched = stream::iter(contexts.iter().copied().map(|context| async move {
-            let quote = self
-                .rates
-                .rate(
-                    context.base,
-                    context.quote,
-                    context.requested_date,
-                    context.today,
-                )
-                .await?;
-            if quote.base != context.base
-                || quote.quote != context.quote
-                || quote.requested_date != context.requested_date
-            {
-                return Err(ApplicationError::Unavailable(
-                    UnavailableReason::ExchangeRates,
-                ));
-            }
-            Ok::<_, ApplicationError>((context, quote))
-        }))
-        .buffer_unordered(4);
         let mut quotes = BTreeMap::new();
+        for context in contexts
+            .iter()
+            .copied()
+            .filter(|context| context.base == context.quote)
+        {
+            quotes.insert(
+                context,
+                RateQuote {
+                    base: context.base,
+                    quote: context.quote,
+                    requested_date: context.requested_date,
+                    fetch_date: context.requested_date.min(context.today),
+                    effective_date: context.requested_date.min(context.today),
+                    rate: Decimal::ONE,
+                    is_stale: false,
+                    is_provisional: context.requested_date > context.today,
+                },
+            );
+        }
+        let mut fetched = stream::iter(
+            contexts
+                .iter()
+                .copied()
+                .filter(|context| context.base != context.quote)
+                .map(|context| async move {
+                    let quote = self
+                        .rates
+                        .rate(
+                            context.base,
+                            context.quote,
+                            context.requested_date,
+                            context.today,
+                        )
+                        .await?;
+                    if quote.base != context.base
+                        || quote.quote != context.quote
+                        || quote.requested_date != context.requested_date
+                        || (!quote.is_stale
+                            && quote.fetch_date != context.requested_date.min(context.today))
+                        || (quote.is_stale
+                            && quote.fetch_date > context.requested_date.min(context.today))
+                        || quote.rate <= Decimal::ZERO
+                        || quote.effective_date > quote.fetch_date
+                        || quote.is_provisional != (context.requested_date > context.today)
+                    {
+                        return Err(ApplicationError::Unavailable(
+                            UnavailableReason::ExchangeRates,
+                        ));
+                    }
+                    Ok::<_, ApplicationError>((context, quote))
+                }),
+        )
+        .buffer_unordered(4);
         while let Some(result) = fetched.next().await {
             let (context, quote) = result?;
             quotes.insert(context, quote);
@@ -245,7 +312,11 @@ impl DebtUseCases for DebtService {
                     ))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let mut balances = BTreeMap::new();
+        let mut balances = snapshot
+            .participants
+            .iter()
+            .map(|(participant, _)| (participant.id, Decimal::ZERO))
+            .collect::<BTreeMap<_, _>>();
         for spending in &spendings {
             let requested_date = match mode {
                 RateMode::Historical => spending.spent_date,
@@ -266,7 +337,10 @@ impl DebtUseCases for DebtService {
         quantize_balances(&mut balances, group.currency).map_err(calculation_error)?;
         let transfers = simplify(&balances).map_err(calculation_error)?;
         Ok(DebtResult {
+            group_is_archived: group.is_archived,
             currency: group.currency,
+            participants: snapshot.participants,
+            has_spendings: !spendings.is_empty(),
             transfers,
             balances,
             rates,
@@ -285,7 +359,8 @@ mod tests {
     use async_trait::async_trait;
     use chrono::{DateTime, Datelike, NaiveDate, TimeZone, Utc};
     use debtor_domain::model::{
-        Allocation, Description, EntityId, Group, Name, Spending, SpendingType,
+        Allocation, Color, Description, EntityId, Group, GroupMember, Name, Participant, Spending,
+        SpendingType,
     };
     use rust_decimal::Decimal;
 
@@ -315,6 +390,22 @@ mod tests {
         }
     }
 
+    fn participant(id: EntityId) -> (Participant, GroupMember) {
+        (
+            Participant {
+                id,
+                name: Name::new(format!("Participant {id}")).unwrap(),
+                color: Color::new("#123456").unwrap(),
+                is_archived: false,
+            },
+            GroupMember {
+                group_id: GROUP_ID,
+                participant_id: id,
+                is_active: true,
+            },
+        )
+    }
+
     struct FixedClock(DateTime<Utc>);
     impl Clock for FixedClock {
         fn now(&self) -> DateTime<Utc> {
@@ -329,11 +420,33 @@ mod tests {
             &self,
             group_id: EntityId,
         ) -> Result<LedgerSnapshot, ApplicationError> {
+            let participant_ids = self
+                .0
+                .iter()
+                .flat_map(|spending| {
+                    spending
+                        .payers
+                        .iter()
+                        .chain(spending.shares.iter())
+                        .map(|allocation| allocation.participant_id)
+                })
+                .collect::<BTreeSet<_>>();
             Ok(LedgerSnapshot {
                 group: group(group_id),
                 spendings: self.0.clone(),
-                participants: Vec::new(),
+                participants: participant_ids.into_iter().map(participant).collect(),
             })
+        }
+    }
+
+    struct ParticipantSnapshot {
+        snapshot: LedgerSnapshot,
+    }
+
+    #[async_trait]
+    impl LedgerSnapshotReader for ParticipantSnapshot {
+        async fn ledger_snapshot(&self, _: EntityId) -> Result<LedgerSnapshot, ApplicationError> {
+            Ok(self.snapshot.clone())
         }
     }
 
@@ -672,7 +785,7 @@ mod tests {
                 snapshot: LedgerSnapshot {
                     group: group(GROUP_ID),
                     spendings: vec![spending],
-                    participants: Vec::new(),
+                    participants: vec![participant(1), participant(2)],
                 },
                 completed: completed.clone(),
             }),
@@ -692,5 +805,74 @@ mod tests {
 
         assert_eq!(completed.load(Ordering::SeqCst), 1);
         assert_eq!(called_before_snapshot.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn debt_service_includes_zero_balance_participants_without_activity() {
+        let participant = Participant {
+            id: 3,
+            name: Name::new("Inactive").unwrap(),
+            color: Color::new("#123456").unwrap(),
+            is_archived: false,
+        };
+        let service = DebtService::new(
+            Arc::new(ParticipantSnapshot {
+                snapshot: LedgerSnapshot {
+                    group: group(GROUP_ID),
+                    spendings: Vec::new(),
+                    participants: vec![(
+                        participant,
+                        GroupMember {
+                            group_id: GROUP_ID,
+                            participant_id: 3,
+                            is_active: false,
+                        },
+                    )],
+                },
+            }),
+            Arc::new(RateFake(Mutex::new(Vec::new()))),
+            Arc::new(FixedClock(
+                Utc.with_ymd_and_hms(2026, 7, 8, 12, 30, 0).unwrap(),
+            )),
+        );
+
+        let result = service
+            .calculate(GROUP_ID, RateMode::Historical)
+            .await
+            .unwrap();
+
+        assert_eq!(result.balances, BTreeMap::from([(3, Decimal::ZERO)]));
+    }
+
+    #[tokio::test]
+    async fn debt_service_synthesizes_same_currency_rates_without_provider_access() {
+        let spending = Spending {
+            id: 1,
+            group_id: GROUP_ID,
+            description: Description::new("Lunch").unwrap(),
+            total: Decimal::new(100, 2),
+            currency: Currency::Usd,
+            spending_type: SpendingType::Food,
+            spent_date: date(4),
+            payers: vec![allocation(PARTICIPANT_ONE, 100)],
+            shares: vec![allocation(PARTICIPANT_TWO, 100)],
+        };
+        let rates = Arc::new(RateFake(Mutex::new(Vec::new())));
+        let service = DebtService::new(
+            Arc::new(DebtSnapshot(vec![spending])),
+            rates.clone(),
+            Arc::new(FixedClock(
+                Utc.with_ymd_and_hms(2026, 7, 8, 12, 30, 0).unwrap(),
+            )),
+        );
+
+        let result = service
+            .calculate(GROUP_ID, RateMode::Historical)
+            .await
+            .unwrap();
+
+        assert!(rates.0.lock().unwrap().is_empty());
+        assert_eq!(result.rates.len(), 1);
+        assert_eq!(result.rates[0].rate, Decimal::ONE);
     }
 }

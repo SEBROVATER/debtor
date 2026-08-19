@@ -268,8 +268,11 @@ async fn safe_read_timeout_with_limits(
     } else {
         read_timeout
     };
+    let is_debt = request.uri().path().ends_with("/debts");
+    let query = request.uri().query().map(str::to_owned);
     match tokio::time::timeout(timeout, next.run(request)).await {
         Ok(response) => response,
+        Err(_) if is_debt => crate::handlers::response::debt_timeout_response(query.as_deref()),
         Err(_) => timeout_response(),
     }
 }

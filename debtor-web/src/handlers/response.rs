@@ -3,6 +3,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse, Response},
 };
+use debtor_application::{ApplicationError, RateMode};
 
 use crate::templates::ErrorTemplate;
 
@@ -15,6 +16,49 @@ pub(super) fn render(template: &impl Template) -> Response {
 
 pub(super) fn error_response(status: StatusCode, message: &str) -> Response {
     error_response_with_recovery(status, message, "/groups")
+}
+
+pub(super) fn debt_error_response(
+    error: ApplicationError,
+    mode: RateMode,
+    calculated_at: chrono::DateTime<chrono::Utc>,
+) -> Response {
+    let (status, message) = match error {
+        ApplicationError::Unavailable(debtor_application::UnavailableReason::ExchangeRates) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Exchange-rate service unavailable.",
+        ),
+        ApplicationError::Calculation(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Unable to calculate debts.",
+        ),
+        ApplicationError::Storage(debtor_application::StorageReason::InvalidData) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, "Stored data is invalid.")
+        }
+        other => return map_error(other),
+    };
+    let mode = match mode {
+        RateMode::Historical => "Historical",
+        RateMode::Current => "Current",
+    };
+    let message = format!(
+        "{message} Attempted {mode} calculation at {calculated_at} UTC. Target currency was not resolved."
+    );
+    error_response(status, &message)
+}
+
+pub(crate) fn debt_timeout_response(query: Option<&str>) -> Response {
+    let mode =
+        if query.is_some_and(|value| value.split('&').any(|part| part == "rate_mode=current")) {
+            "Current"
+        } else {
+            "Historical"
+        };
+    let message = format!(
+        "Debt calculation timed out. Attempted {mode} calculation at {} UTC. Target currency was not resolved.",
+        chrono::Utc::now()
+    );
+    error_response(StatusCode::GATEWAY_TIMEOUT, &message)
 }
 
 fn error_response_with_recovery(

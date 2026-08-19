@@ -228,6 +228,10 @@ pub struct DebtsTemplate {
     pub archived: bool,
     /// Currency.
     pub currency: String,
+    /// Whether the snapshot contained any Spending.
+    pub has_spendings: bool,
+    /// Complete Participant balance rows.
+    pub balances: Vec<BalanceRow>,
     /// Transfers.
     pub transfers: Vec<TransferRow>,
     /// Mode.
@@ -252,6 +256,20 @@ pub struct TransferRow {
     pub amount: String,
 }
 
+/// Renderable Participant balance.
+pub struct BalanceRow {
+    /// Current Participant name.
+    pub participant: String,
+    /// Whether the identity is archived.
+    pub archived: bool,
+    /// Participant marker color.
+    pub color: String,
+    /// Exact display amount including symbol and ISO code.
+    pub amount: String,
+    /// Explicit human-readable balance direction.
+    pub direction: String,
+}
+
 /// Renderable exchange-rate disclosure row.
 pub struct RateRow {
     /// Base currency.
@@ -260,6 +278,8 @@ pub struct RateRow {
     pub quote: String,
     /// Requested date.
     pub requested_date: String,
+    /// Cache/provider fetch date used for the requested context.
+    pub fetch_date: String,
     /// Provider effective date.
     pub effective_date: String,
     /// Exact rate.

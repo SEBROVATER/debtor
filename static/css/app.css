@@ -195,6 +195,16 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .rate-disclosure h3 { font-family: Georgia, "Times New Roman", serif; font-weight: 500; }
 .rate-disclosure ul { display: grid; gap: .75rem; list-style: none; margin: 0; padding: 0; }
 .rate-disclosure li { border-block-end: 1px solid var(--line); display: grid; gap: .25rem; overflow-wrap: anywhere; padding-block: .5rem; }
+.debt-results { overflow-wrap: anywhere; }
+.debt-results h2 { font-family: Georgia, "Times New Roman", serif; font-weight: 500; }
+.debt-results h2:focus { outline: 2px solid var(--focus); outline-offset: 2px; }
+.debt-status { border-block: 1px solid transparent; color: #AAA59C; min-block-size: 48px; padding-block: .75rem; }
+.debt-results.htmx-request .debt-status { color: var(--warn); }
+.debt-results.htmx-request .debt-status::before { content: "Updating debt balances. "; }
+.debt-mode-form fieldset { margin-block: 1rem; }
+.debt-results table { background: transparent; color: var(--ink); }
+.debt-results td, .debt-results th { overflow-wrap: anywhere; }
+.settlement-results { border-block-start: 1px solid var(--line); margin-block-start: 1rem; padding-block-start: 1rem; }
 @media (max-width: 40rem) {
   .transaction-row summary { align-items: start; grid-template-columns: minmax(0, 1fr); }
   .transaction-total { justify-self: end; }
