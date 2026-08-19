@@ -31,6 +31,8 @@ pub struct RateQuote {
     pub quote: Currency,
     /// Date requested by the calculation mode.
     pub requested_date: NaiveDate,
+    /// Cache/provider fetch date for the requested context.
+    pub fetch_date: NaiveDate,
     /// Date returned by the provider.
     pub effective_date: NaiveDate,
     /// Exact rate.
@@ -369,6 +371,7 @@ mod tests {
                 base,
                 quote,
                 requested_date,
+                fetch_date: requested_date.min(today),
                 effective_date: requested_date,
                 rate: Decimal::ONE,
                 is_stale: false,
@@ -395,6 +398,7 @@ mod tests {
                 base,
                 quote,
                 requested_date,
+                fetch_date: requested_date.min(today),
                 effective_date: requested_date,
                 rate: Decimal::ONE,
                 is_stale: false,
@@ -433,6 +437,7 @@ mod tests {
                 base,
                 quote,
                 requested_date,
+                fetch_date: requested_date.min(today),
                 effective_date: requested_date,
                 rate: Decimal::ONE,
                 is_stale: false,

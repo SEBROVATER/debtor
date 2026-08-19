@@ -120,8 +120,12 @@ pub struct SourcePayerRow {
 pub enum ConvertedSummaryState {
     /// Values are complete and use only non-future contexts.
     Ready,
+    /// Values use at least one eligible stale quote and no future context.
+    Stale,
     /// Values include at least one future-dated provisional context.
     Provisional,
+    /// Values use stale evidence for a future Spending.
+    ProvisionalStale,
     /// Values are being refreshed by an enhanced request.
     Updating,
     /// No converted values are available.
@@ -141,7 +145,12 @@ impl ConvertedSummaryState {
 
     /// Whether the values are provisional.
     pub fn is_provisional(self) -> bool {
-        matches!(self, Self::Provisional)
+        matches!(self, Self::Provisional | Self::ProvisionalStale)
+    }
+
+    /// Whether the values use stale rate evidence.
+    pub fn is_stale(self) -> bool {
+        matches!(self, Self::Stale | Self::ProvisionalStale)
     }
 }
 

@@ -200,9 +200,9 @@
            <p id="converted-summary-status" class="summary-status" role="status" aria-live="polite" aria-atomic="true">{% if converted_summary.state.is_updating() %}Updating converted values.{% else %}{{ converted_summary.status }}{% endif %}</p>
            {% if converted_summary.state.is_unavailable() %}
            <p class="warning">Converted values are unavailable. Reopen this section to retry.</p>
-           {% else %}{% if converted_summary.empty %}
-           <p class="empty">No current-month Spendings are available for conversion.</p>
-           {% else %}
+            {% else %}{% if converted_summary.empty %}
+            <p class="empty">No current-month Spendings are available for conversion.</p>
+            {% else %}
            <dl class="source-money-list converted-money-list">
              <div class="source-group-total converted-group-total"><dt>Group total</dt><dd>{{ converted_summary.total }}</dd></div>
              {% for payer in converted_summary.payers %}
@@ -212,9 +212,10 @@
              </div>
              {% endfor %}
            </dl>
-           <section class="rate-disclosure" aria-labelledby="rate-disclosure-heading">
-             <h3 id="rate-disclosure-heading">Rate evidence</h3>
-             {% if converted_summary.state.is_provisional() %}<p class="warning">Provisional: a current rate was used for a future Spending.</p>{% endif %}
+            <section class="rate-disclosure" aria-labelledby="rate-disclosure-heading">
+              <h3 id="rate-disclosure-heading">Rate evidence</h3>
+              {% if converted_summary.state.is_stale() %}<p class="warning">Converted values use eligible stale rate evidence.</p>{% endif %}
+              {% if converted_summary.state.is_provisional() %}<p class="warning">Provisional: a current rate was used for a future Spending.</p>{% endif %}
              <ul>
                {% for rate in converted_summary.rates %}
                <li>

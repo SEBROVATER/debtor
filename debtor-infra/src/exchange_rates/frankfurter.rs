@@ -332,6 +332,7 @@ impl ExchangeRateProvider for FrankfurterClient {
                 base,
                 quote,
                 requested_date: original_requested_date,
+                fetch_date,
                 effective_date: fetch_date,
                 rate: Decimal::ONE,
                 is_stale: false,
@@ -430,6 +431,7 @@ impl FrankfurterClient {
             base,
             quote,
             requested_date: original_requested_date,
+            fetch_date,
             effective_date: payload.date,
             rate: payload.rate,
             is_stale: false,
@@ -466,6 +468,15 @@ impl FrankfurterClient {
     fn stale_or_error(&self, key: CacheKey, today: NaiveDate) -> FlightResult {
         let (base, quote, requested_date, fetch_date) = key;
         if requested_date < today {
+            let stale = self.stable_cache.write().ok().and_then(|mut cache| {
+                cache.get(key).map(|mut value| {
+                    value.is_stale = true;
+                    value
+                })
+            });
+            if let Some(value) = stale {
+                return Ok(value);
+            }
             tracing::warn!(
                 target: "debtor.provider",
                 event = "provider_fallback",
@@ -473,8 +484,8 @@ impl FrankfurterClient {
             );
             return Err(UnavailableReason::ExchangeRates);
         }
-        let stale = self.refreshable_cache.read().ok().and_then(|cache| {
-            cache
+        let stale = self.refreshable_cache.write().ok().and_then(|mut cache| {
+            let candidate = cache
                 .values
                 .iter()
                 .filter(
@@ -482,6 +493,7 @@ impl FrankfurterClient {
                         *cached_base == base
                             && *cached_quote == quote
                             && *cached_fetch < fetch_date
+                            && *cached_fetch + chrono::Duration::days(7) >= today
                             && if requested_date == today {
                                 *cached_requested == *cached_fetch
                             } else {
@@ -490,7 +502,11 @@ impl FrankfurterClient {
                     },
                 )
                 .max_by_key(|((_, _, _, cached_fetch), _)| *cached_fetch)
-                .map(|(_, quote)| quote.clone())
+                .map(|(key, value)| (*key, value.clone()));
+            candidate.map(|(key, value)| {
+                cache.touch(key, value.clone());
+                value
+            })
         });
         if let Some(mut quote) = stale {
             tracing::info!(
@@ -880,6 +896,127 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn fixed_past_failure_uses_only_the_exact_stable_context() {
+        let client = FrankfurterClient::with_base_url("http://127.0.0.1:1");
+        let requested = date(2026, 1, 1);
+        let fetch = requested;
+        let wrong_requested = date(2026, 1, 2);
+        client.stable_cache.write().expect("stable cache").touch(
+            (Currency::Usd, Currency::Eur, requested, fetch),
+            RateQuote {
+                base: Currency::Usd,
+                quote: Currency::Eur,
+                requested_date: requested,
+                fetch_date: fetch,
+                effective_date: fetch,
+                rate: Decimal::ONE,
+                is_stale: false,
+                is_provisional: false,
+            },
+        );
+        client.stable_cache.write().expect("stable cache").touch(
+            (
+                Currency::Usd,
+                Currency::Eur,
+                wrong_requested,
+                wrong_requested,
+            ),
+            quote((
+                Currency::Usd,
+                Currency::Eur,
+                wrong_requested,
+                wrong_requested,
+            )),
+        );
+
+        let value = client
+            .stale_or_error(
+                (Currency::Usd, Currency::Eur, requested, fetch),
+                date(2026, 2, 1),
+            )
+            .expect("exact stable fallback");
+
+        assert_eq!(value.requested_date, requested);
+        assert_eq!(value.effective_date, fetch);
+        assert!(value.is_stale);
+    }
+
+    #[tokio::test]
+    async fn refreshable_fallback_is_inclusive_for_seven_days_and_rejects_day_eight() {
+        let client = FrankfurterClient::with_base_url("http://127.0.0.1:1");
+        let prior = date(2026, 1, 1);
+        let requested = date(2026, 1, 1);
+        insert_refreshable(
+            &client,
+            Currency::Usd,
+            Currency::Eur,
+            requested,
+            prior,
+            prior,
+        );
+
+        let eligible = client
+            .rate(
+                Currency::Usd,
+                Currency::Eur,
+                date(2026, 1, 8),
+                date(2026, 1, 8),
+            )
+            .await
+            .expect("seventh UTC day remains eligible");
+        assert!(eligible.is_stale);
+        assert!(!eligible.is_provisional);
+
+        assert!(
+            client
+                .rate(
+                    Currency::Usd,
+                    Currency::Eur,
+                    date(2026, 1, 9),
+                    date(2026, 1, 9)
+                )
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn future_fallback_requires_the_same_requested_date_and_preserves_fetch_date() {
+        let client = FrankfurterClient::with_base_url("http://127.0.0.1:1");
+        let prior_fetch = date(2026, 1, 3);
+        let requested = date(2026, 1, 12);
+        insert_refreshable(
+            &client,
+            Currency::Usd,
+            Currency::Eur,
+            requested,
+            prior_fetch,
+            prior_fetch,
+        );
+
+        let value = client
+            .rate(Currency::Usd, Currency::Eur, requested, date(2026, 1, 10))
+            .await
+            .expect("matching future fallback");
+        assert_eq!(value.requested_date, requested);
+        assert_eq!(value.fetch_date, prior_fetch);
+        assert!(value.is_stale);
+        assert!(value.is_provisional);
+
+        assert!(
+            client
+                .rate(
+                    Currency::Usd,
+                    Currency::Eur,
+                    date(2026, 1, 13),
+                    date(2026, 1, 10)
+                )
+                .await
+                .is_err()
+        );
+    }
+
     #[test]
     fn stable_cache_evicts_oldest_context_after_refreshing_a_hot_entry() {
         let mut cache = StableCache::new();
@@ -990,6 +1127,7 @@ mod tests {
             base,
             quote,
             requested_date,
+            fetch_date: effective_date,
             effective_date,
             rate: Decimal::ONE,
             is_stale: false,
@@ -1015,6 +1153,7 @@ mod tests {
                 base,
                 quote,
                 requested_date,
+                fetch_date,
                 effective_date,
                 rate: Decimal::ONE,
                 is_stale: false,

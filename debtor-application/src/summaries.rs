@@ -354,6 +354,7 @@ impl SummaryService {
                     base: context.base,
                     quote: context.quote,
                     requested_date: context.requested_date,
+                    fetch_date: context.fetch_date,
                     effective_date: context.fetch_date,
                     rate: Decimal::ONE,
                     is_stale: false,
@@ -368,6 +369,10 @@ impl SummaryService {
             if quote.base != context.base
                 || quote.quote != context.quote
                 || quote.requested_date != context.requested_date
+                || (!quote.is_stale && quote.fetch_date != context.fetch_date)
+                || (quote.is_stale
+                    && quote.fetch_date > context.fetch_date
+                    && quote.requested_date >= today)
                 || quote.rate <= Decimal::ZERO
                 || quote.effective_date > context.fetch_date
                 || quote.is_provisional != (context.requested_date > today)
@@ -453,7 +458,7 @@ impl SummaryService {
                     base: context.base,
                     quote: context.quote,
                     requested_date: context.requested_date,
-                    fetch_date: context.fetch_date,
+                    fetch_date: quote.fetch_date,
                     effective_date: quote.effective_date,
                     rate: quote.rate,
                     is_stale: quote.is_stale,
@@ -553,6 +558,7 @@ mod tests {
                 base,
                 quote,
                 requested_date,
+                fetch_date: requested_date.min(today),
                 effective_date: requested_date.min(today),
                 rate: self.rate,
                 is_stale: false,

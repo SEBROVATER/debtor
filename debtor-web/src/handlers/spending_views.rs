@@ -152,11 +152,7 @@ pub(super) async fn build_group_template(
                     ),
                     summary.converted.map_or_else(
                         |_| unavailable_converted_summary_view(summary_currency),
-                        |summary| {
-                            let mut view = converted_summary_view(summary);
-                            view.state = ConvertedSummaryState::Updating;
-                            view
-                        },
+                        converted_summary_view,
                     ),
                 )
             }
@@ -506,6 +502,7 @@ fn unavailable_source_summary_view(today: chrono::NaiveDate) -> SourceSummaryVie
 }
 
 fn converted_summary_view(summary: ConvertedSummary) -> ConvertedSummaryView {
+    let stale = summary.rates.iter().any(|rate| rate.is_stale);
     let provisional = summary.rates.iter().any(|rate| rate.is_provisional);
     let payers = summary
         .payers
@@ -536,16 +533,24 @@ fn converted_summary_view(summary: ConvertedSummary) -> ConvertedSummaryView {
         currency: summary.currency.to_string(),
         symbol: summary.currency.symbol().to_owned(),
         empty: payers.is_empty(),
-        state: if provisional {
+        state: if provisional && stale {
+            ConvertedSummaryState::ProvisionalStale
+        } else if provisional {
             ConvertedSummaryState::Provisional
+        } else if stale {
+            ConvertedSummaryState::Stale
         } else {
             ConvertedSummaryState::Ready
         },
         total: summary.display_total,
         payers,
         rates,
-        status: if provisional {
+        status: if provisional && stale {
+            "Converted values ready with stale evidence; a current rate was used for a future Spending.".into()
+        } else if provisional {
             "Converted values ready; one or more future Spendings use a current rate.".into()
+        } else if stale {
+            "Converted values ready with stale rate evidence.".into()
         } else {
             "Converted values ready.".into()
         },
@@ -556,9 +561,10 @@ pub(super) async fn build_converted_summary_template(
     state: &AppState,
     id: i64,
 ) -> Result<ConvertedSummaryTemplate, GroupTemplateError> {
-    let group = state.groups.group(id).await?;
-    let converted_summary = state.summaries.converted_summary(id).await.map_or_else(
-        |_| unavailable_converted_summary_view(group.currency),
+    let summary = state.summaries.monthly_summary(id).await?;
+    let currency = summary.currency;
+    let converted_summary = summary.converted.map_or_else(
+        |_| unavailable_converted_summary_view(currency),
         converted_summary_view,
     );
     Ok(ConvertedSummaryTemplate {
@@ -891,7 +897,45 @@ pub(super) fn initialize_exact_defaults(
 mod tests {
     use std::collections::HashMap;
 
-    use super::{ExpenseForm, exact_allocation_status};
+    use chrono::NaiveDate;
+    use debtor_application::{ConvertedPayerTotal, ConvertedSummary, RateEvidence};
+    use debtor_domain::currency::Currency;
+    use debtor_domain::model::{Color, Name, Participant};
+    use debtor_domain::money::parse_decimal;
+
+    use super::{
+        ConvertedSummaryState, ExpenseForm, converted_summary_view, exact_allocation_status,
+    };
+
+    fn converted_summary(stale: bool, provisional: bool) -> ConvertedSummary {
+        let date = NaiveDate::from_ymd_opt(2026, 8, 1).expect("test date");
+        ConvertedSummary {
+            month: date,
+            currency: Currency::Usd,
+            total: parse_decimal("1").expect("test amount"),
+            display_total: "$1.00 USD".into(),
+            payers: vec![ConvertedPayerTotal {
+                participant: Participant {
+                    id: 1,
+                    name: Name::new("Ada").expect("test name"),
+                    color: Color::new("#123456").expect("test color"),
+                    is_archived: false,
+                },
+                total: parse_decimal("1").expect("test amount"),
+                display_total: "$1.00 USD".into(),
+            }],
+            rates: vec![RateEvidence {
+                base: Currency::Eur,
+                quote: Currency::Usd,
+                requested_date: date,
+                fetch_date: date,
+                effective_date: date,
+                rate: parse_decimal("1").expect("test rate"),
+                is_stale: stale,
+                is_provisional: provisional,
+            }],
+        }
+    }
 
     fn exact_form(total: &str, amounts: &[(&str, &str)]) -> ExpenseForm {
         let mut extra = HashMap::new();
@@ -936,5 +980,25 @@ mod tests {
             )),
             "Exact Share total is too large."
         );
+    }
+
+    #[test]
+    fn converted_projection_distinguishes_fresh_stale_and_future_stale_states() {
+        assert!(matches!(
+            converted_summary_view(converted_summary(false, false)).state,
+            ConvertedSummaryState::Ready
+        ));
+        assert!(matches!(
+            converted_summary_view(converted_summary(true, false)).state,
+            ConvertedSummaryState::Stale
+        ));
+        assert!(matches!(
+            converted_summary_view(converted_summary(false, true)).state,
+            ConvertedSummaryState::Provisional
+        ));
+        assert!(matches!(
+            converted_summary_view(converted_summary(true, true)).state,
+            ConvertedSummaryState::ProvisionalStale
+        ));
     }
 }

@@ -17,6 +17,7 @@
   </dl>
   <section class="rate-disclosure" aria-labelledby="rate-disclosure-heading">
     <h3 id="rate-disclosure-heading">Rate evidence</h3>
+    {% if converted_summary.state.is_stale() %}<p class="warning">Converted values use eligible stale rate evidence.</p>{% endif %}
     {% if converted_summary.state.is_provisional() %}<p class="warning">Provisional: a current rate was used for a future Spending.</p>{% endif %}
     <ul>
       {% for rate in converted_summary.rates %}

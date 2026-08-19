@@ -610,8 +610,8 @@ mod tests {
         assert!(body.contains("Requested 2026-08-01; fetched 2026-08-01; effective 2026-08-01"));
         assert!(body.contains("id=\"converted-summary-status\""));
         assert!(body.contains("aria-describedby=\"converted-summary-status\""));
-        assert!(body.contains("aria-busy=\"true\""));
-        assert!(body.contains("Updating converted values."));
+        assert!(body.contains("aria-busy=\"false\""));
+        assert!(body.contains("Converted values ready."));
         assert!(body.contains("hx-get=\"/groups/1/summary/converted\""));
         assert!(!body.contains("Retry"));
     }
