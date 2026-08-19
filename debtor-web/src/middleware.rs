@@ -270,9 +270,12 @@ async fn safe_read_timeout_with_limits(
     };
     let is_debt = request.uri().path().ends_with("/debts");
     let query = request.uri().query().map(str::to_owned);
+    let enhanced = request.headers().contains_key("hx-request");
     match tokio::time::timeout(timeout, next.run(request)).await {
         Ok(response) => response,
-        Err(_) if is_debt => crate::handlers::response::debt_timeout_response(query.as_deref()),
+        Err(_) if is_debt => {
+            crate::handlers::response::debt_timeout_response(query.as_deref(), enhanced)
+        }
         Err(_) => timeout_response(),
     }
 }

@@ -2260,10 +2260,10 @@ So that I can compare historical obligations with what settlement means today.
 **Then** Current remains encoded in the URL for that result but is not persisted, and the native forward response focuses the result heading
 **And** an enhanced replacement retains focus on the selected Current radio and announces status instead of moving focus.
 
-**Given** Current calculation is pending or replaces a prior complete result
-**When** state changes
-**Then** the prior result remains only when Group, Group Currency, mode, captured process-local mutation epoch, and corrected Source Currencies match, is labelled Updating, and the owning region exposes `aria-busy`
-**And** otherwise an Updating placeholder replaces incompatible prior data.
+**Given** an enhanced Current calculation is pending or replaces a prior complete result
+**When** the mode form requests the replacement
+**Then** HTMX's request class hides prior financial content and shows one scoped Updating placeholder
+**And** the completed server-rendered replacement restores complete results or the scoped no-partial failure without dynamic `aria-busy`, retained client-side financial state, custom application JavaScript, inline script attributes, or a custom HTMX extension.
 
 **Given** Current succeeds with fresh or eligible stale evidence
 **When** results render
@@ -2277,7 +2277,7 @@ So that I can compare historical obligations with what settlement means today.
 
 **Requirements:** SPEC-FR75..SPEC-FR83; SPEC-NFR4..SPEC-NFR5, SPEC-NFR10, SPEC-NFR12..SPEC-NFR13, SPEC-NFR25..SPEC-NFR30, SPEC-NFR32..SPEC-NFR34; non-persisted Current mode, current-class stale fallback, seven-day eligibility, exact-zero-sum reuse, disclosure, and no-partial requirements; UX contracts: `UX-SHELL-01`, `UX-TARGET-01`, `UX-FOCUS-01`, `UX-STATUS-01`, `UX-RESPONSIVE-01`, `UX-VISUAL-01`.
 
-**UX acceptance evidence:** Tests cite the listed UX contracts and verify URL/non-persistence, selected-radio/native result focus, compatible Updating retention, status/`aria-busy`, stale/unavailable disclosure, no partial output, 48-by-48 mode controls at 320px/400% zoom, and native/enhanced parity. Brownfield disposition: retain Epic 4 refreshable cache/rate owners; remove persisted Current preferences, mixed Historical/Current fallback, manual refresh, mode-specific duplicate arithmetic, and focus-moving enhanced swaps.
+**UX acceptance evidence:** Tests cite the listed UX contracts and verify URL/non-persistence, selected-radio/native result focus, CSS-only Updating placeholder, final stable status semantics, absence of inline handlers/custom scripts, stale/unavailable disclosure, no partial output, 48-by-48 mode controls at 320px/400% zoom, and native/enhanced parity. Brownfield disposition: retain Epic 4 refreshable cache/rate owners; remove persisted Current preferences, mixed Historical/Current fallback, manual refresh, mode-specific duplicate arithmetic, client-side financial state, and focus-moving enhanced swaps.
 
 ### Story 5.3: Derive Complete Advisory Settlement Transfers
 

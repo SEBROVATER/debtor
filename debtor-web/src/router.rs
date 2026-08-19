@@ -192,8 +192,8 @@ mod tests {
 
     use super::{router, router_with_sessions};
     use crate::handlers::test_support::{
-        TestState, state, state_with_errors, state_with_login_admission, state_with_password,
-        state_with_readiness_failure,
+        TestState, state, state_with_current_debts, state_with_errors, state_with_login_admission,
+        state_with_password, state_with_readiness_failure,
     };
     use crate::{
         session,
@@ -500,6 +500,146 @@ mod tests {
                 .await
                 .contains("href=\"/groups/1/transactions\">Open Transactions</a>")
         );
+    }
+
+    #[tokio::test]
+    async fn debts_current_request_renders_current_context() {
+        let test_state = state_with_current_debts();
+        let app = app(&test_state);
+        let session_cookie = login(&app).await;
+
+        let response = app
+            .oneshot(request(
+                Method::GET,
+                "/groups/1/debts?rate_mode=current",
+                "",
+                Some(&session_cookie),
+            ))
+            .await
+            .expect("current debts response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        assert!(body.contains("Current calculation"));
+        assert!(body.contains("Current rates are selected for this result."));
+        assert!(body.contains("value=\"current\" aria-controls=\"debts-results\" checked"));
+        assert!(!body.contains("Historical calculation</h2>"));
+    }
+
+    #[tokio::test]
+    async fn enhanced_current_debts_response_retains_mode_control_outside_results() {
+        let test_state = state_with_current_debts();
+        let app = app(&test_state);
+        let session_cookie = login(&app).await;
+        let mut request = request(
+            Method::GET,
+            "/groups/1/debts?rate_mode=current",
+            "",
+            Some(&session_cookie),
+        );
+        request
+            .headers_mut()
+            .insert("hx-request", HeaderValue::from_static("true"));
+
+        let response = app.oneshot(request).await.expect("enhanced debts response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        assert!(body.contains("value=\"current\" aria-controls=\"debts-results\" checked"));
+        assert!(body.contains("id=\"debts-results\""));
+        assert!(body.contains("role=\"status\" aria-live=\"polite\" aria-atomic=\"true\""));
+    }
+
+    #[tokio::test]
+    async fn enhanced_debt_failure_replaces_results_and_leaves_mode_control_mounted() {
+        let test_state = state(false);
+        let app = app(&test_state);
+        let session_cookie = login(&app).await;
+        let mut request = request(
+            Method::GET,
+            "/groups/1/debts?rate_mode=current",
+            "",
+            Some(&session_cookie),
+        );
+        request
+            .headers_mut()
+            .insert("hx-request", HeaderValue::from_static("true"));
+
+        let response = app.oneshot(request).await.expect("enhanced debt failure");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = response_body(response).await;
+        assert!(body.contains("id=\"debts-results\""));
+        assert!(body.contains("Debt calculation unavailable."));
+        assert!(!body.contains("<table"));
+        assert!(!body.contains("<form"));
+    }
+
+    #[tokio::test]
+    async fn debts_request_without_mode_resets_to_historical() {
+        let test_state = state_with_current_debts();
+        let app = app(&test_state);
+        let session_cookie = login(&app).await;
+
+        let response = app
+            .oneshot(request(
+                Method::GET,
+                "/groups/1/debts",
+                "",
+                Some(&session_cookie),
+            ))
+            .await
+            .expect("historical debts response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+        assert!(body.contains("Historical calculation"));
+        assert!(body.contains("value=\"historical\" aria-controls=\"debts-results\" checked"));
+        assert!(!body.contains("value=\"current\" aria-controls=\"debts-results\" checked"));
+    }
+
+    #[tokio::test]
+    async fn enhanced_unknown_debt_mode_replaces_only_the_result_region() {
+        let test_state = state_with_current_debts();
+        let app = app(&test_state);
+        let session_cookie = login(&app).await;
+
+        let mut request = request(
+            Method::GET,
+            "/groups/1/debts?rate_mode=unexpected",
+            "",
+            Some(&session_cookie),
+        );
+        request
+            .headers_mut()
+            .insert("hx-request", HeaderValue::from_static("true"));
+        let response = app.oneshot(request).await.expect("mode error response");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_body(response).await;
+        assert!(body.contains("id=\"debts-results\""));
+        assert!(body.contains("Unknown rate mode."));
+        assert!(!body.contains("<html"));
+    }
+
+    #[tokio::test]
+    async fn enhanced_malformed_debt_mode_replaces_only_the_result_region() {
+        let test_state = state_with_current_debts();
+        let app = app(&test_state);
+        let session_cookie = login(&app).await;
+
+        let mut request = request(
+            Method::GET,
+            "/groups/1/debts?rate_mode=current&rate_mode=historical",
+            "",
+            Some(&session_cookie),
+        );
+        request
+            .headers_mut()
+            .insert("hx-request", HeaderValue::from_static("true"));
+        let response = app.oneshot(request).await.expect("malformed mode response");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_body(response).await;
+        assert!(body.contains("id=\"debts-results\""));
+        assert!(body.contains("Unknown rate mode."));
+        assert!(!body.contains("<html"));
     }
 
     #[tokio::test]

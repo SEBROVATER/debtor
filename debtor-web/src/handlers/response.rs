@@ -22,6 +22,7 @@ pub(super) fn debt_error_response(
     error: ApplicationError,
     mode: RateMode,
     calculated_at: chrono::DateTime<chrono::Utc>,
+    enhanced: bool,
 ) -> Response {
     let (status, message) = match error {
         ApplicationError::Unavailable(debtor_application::UnavailableReason::ExchangeRates) => (
@@ -35,7 +36,12 @@ pub(super) fn debt_error_response(
         ApplicationError::Storage(debtor_application::StorageReason::InvalidData) => {
             (StatusCode::INTERNAL_SERVER_ERROR, "Stored data is invalid.")
         }
-        other => return map_error(other),
+        other => {
+            if !enhanced {
+                return map_error(other);
+            }
+            (map_error(other).status(), "Debt calculation unavailable.")
+        }
     };
     let mode = match mode {
         RateMode::Historical => "Historical",
@@ -44,20 +50,41 @@ pub(super) fn debt_error_response(
     let message = format!(
         "{message} Attempted {mode} calculation at {calculated_at} UTC. Target currency was not resolved."
     );
+    if enhanced {
+        return (status, Html(format!(
+            "<section id=\"debts-results\" class=\"financial-results debt-results\" aria-labelledby=\"debts-results-heading\" aria-describedby=\"debts-status\" aria-busy=\"false\"><h2 id=\"debts-results-heading\" tabindex=\"-1\" autofocus>Debt calculation unavailable</h2><p id=\"debts-status\" class=\"debt-status\" role=\"status\" aria-live=\"polite\" aria-atomic=\"true\">{message}</p><p class=\"empty\">No Balances or Settlement Transfers are shown. Reopen Debts to retry.</p></section>"
+        )))
+        .into_response();
+    }
     error_response(status, &message)
 }
 
-pub(crate) fn debt_timeout_response(query: Option<&str>) -> Response {
-    let mode =
-        if query.is_some_and(|value| value.split('&').any(|part| part == "rate_mode=current")) {
-            "Current"
-        } else {
-            "Historical"
-        };
+pub(super) fn debt_mode_error_response(enhanced: bool) -> Response {
+    if enhanced {
+        return (StatusCode::BAD_REQUEST, Html(
+            "<section id=\"debts-results\" class=\"financial-results debt-results\" aria-labelledby=\"debts-results-heading\" aria-describedby=\"debts-status\" aria-busy=\"false\"><h2 id=\"debts-results-heading\" tabindex=\"-1\" autofocus>Debt calculation unavailable</h2><p id=\"debts-status\" class=\"debt-status\" role=\"status\" aria-live=\"polite\" aria-atomic=\"true\">Unknown rate mode.</p><p class=\"empty\">No Balances or Settlement Transfers are shown. Reopen Debts to retry.</p></section>"
+        ))
+        .into_response();
+    }
+    error_response(StatusCode::BAD_REQUEST, "Unknown rate mode.")
+}
+
+pub(crate) fn debt_timeout_response(query: Option<&str>, enhanced: bool) -> Response {
+    let attempted = match crate::handlers::debt_mode_from_raw_query(query) {
+        Ok(RateMode::Current) => "Attempted Current calculation",
+        Ok(RateMode::Historical) => "Attempted Historical calculation",
+        Err(()) => "Attempted calculation with an invalid rate mode",
+    };
     let message = format!(
-        "Debt calculation timed out. Attempted {mode} calculation at {} UTC. Target currency was not resolved.",
+        "Debt calculation timed out. {attempted} at {} UTC. Target currency was not resolved.",
         chrono::Utc::now()
     );
+    if enhanced {
+        return (StatusCode::GATEWAY_TIMEOUT, Html(format!(
+            "<section id=\"debts-results\" class=\"financial-results debt-results\" aria-labelledby=\"debts-results-heading\" aria-describedby=\"debts-status\" aria-busy=\"false\"><h2 id=\"debts-results-heading\" tabindex=\"-1\" autofocus>Debt calculation unavailable</h2><p id=\"debts-status\" class=\"debt-status\" role=\"status\" aria-live=\"polite\" aria-atomic=\"true\">{message}</p><p class=\"empty\">No Balances or Settlement Transfers are shown. Reopen Debts to retry.</p></section>"
+        )))
+        .into_response();
+    }
     error_response(StatusCode::GATEWAY_TIMEOUT, &message)
 }
 
@@ -251,10 +278,11 @@ pub(super) fn map_error(error: debtor_application::ApplicationError) -> Response
 mod tests {
     use axum::{body::to_bytes, http::StatusCode};
     use debtor_application::{
-        ApplicationError, CalculationReason, ConfigurationError, StorageReason, UnavailableReason,
+        ApplicationError, CalculationReason, ConfigurationError, RateMode, StorageReason,
+        UnavailableReason,
     };
 
-    use super::map_error;
+    use super::{debt_error_response, debt_timeout_response, map_error};
 
     #[test]
     fn maps_each_safe_error_category_to_its_status() {
@@ -314,5 +342,68 @@ mod tests {
 
         assert!(body.contains("Exchange-rate service unavailable."));
         assert!(!body.contains("provider-internal-detail"));
+    }
+
+    #[tokio::test]
+    async fn enhanced_debt_failure_replaces_financial_results_without_partial_rows() {
+        let response = debt_error_response(
+            ApplicationError::Unavailable(UnavailableReason::ExchangeRates),
+            RateMode::Current,
+            chrono::DateTime::parse_from_rfc3339("2026-08-19T06:00:00Z")
+                .expect("test timestamp")
+                .with_timezone(&chrono::Utc),
+            true,
+        );
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = to_bytes(response.into_body(), 4096)
+            .await
+            .expect("rendered debt error");
+        let body = String::from_utf8(body.to_vec()).expect("UTF-8 error body");
+
+        assert!(body.contains("id=\"debts-results\""));
+        assert!(body.contains("Attempted Current calculation"));
+        assert!(body.contains("No Balances or Settlement Transfers are shown."));
+        assert!(!body.contains("<table"));
+    }
+
+    #[tokio::test]
+    async fn enhanced_unmapped_debt_failure_also_uses_result_fragment() {
+        let response = debt_error_response(
+            ApplicationError::Storage(StorageReason::Contention),
+            RateMode::Historical,
+            chrono::Utc::now(),
+            true,
+        );
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = to_bytes(response.into_body(), 4096)
+            .await
+            .expect("rendered debt error");
+        let body = String::from_utf8(body.to_vec()).expect("UTF-8 error body");
+        assert!(body.contains("id=\"debts-results\""));
+        assert!(body.contains("Debt calculation unavailable."));
+        assert!(!body.contains("<html"));
+    }
+
+    #[tokio::test]
+    async fn timeout_decodes_current_mode_before_rendering_the_fragment() {
+        let response = debt_timeout_response(Some("rate_mode=cur%72ent"), true);
+        let body = to_bytes(response.into_body(), 4096)
+            .await
+            .expect("rendered timeout error");
+        let body = String::from_utf8(body.to_vec()).expect("UTF-8 error body");
+
+        assert!(body.contains("Attempted Current calculation"));
+    }
+
+    #[tokio::test]
+    async fn timeout_rejects_duplicate_rate_modes() {
+        let response = debt_timeout_response(Some("rate_mode=current&rate_mode=historical"), true);
+        let body = to_bytes(response.into_body(), 4096)
+            .await
+            .expect("rendered timeout error");
+        let body = String::from_utf8(body.to_vec()).expect("UTF-8 error body");
+
+        assert!(body.contains("invalid rate mode"));
+        assert!(!body.contains("Attempted Current calculation"));
     }
 }

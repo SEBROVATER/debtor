@@ -24,24 +24,26 @@
     <main>
       <div class="page-heading">
         <div>
-          <h1 id="debts-heading" class="group-heading" tabindex="-1" autofocus>All-time Debts{% if archived %} <span>Archived</span>{% endif %}</h1>
+          <h1 id="debts-heading" class="group-heading" tabindex="-1">All-time Debts{% if archived %} <span>Archived</span>{% endif %}</h1>
           <p>Target currency: <strong>{{ currency }}</strong>.</p>
         </div>
         {% if !archived %}<p><a class="button" href="/groups/{{ group_id }}/spendings/new">Add Spending</a></p>{% endif %}
       </div>
-      <form method="get" action="/groups/{{ group_id }}/debts" class="debt-mode-form" hx-ext="response-targets" hx-get="/groups/{{ group_id }}/debts" hx-target="#debts-results" hx-target-4xx="#debts-results" hx-target-5xx="#debts-results" hx-select="#debts-results" hx-swap="outerHTML" hx-indicator="#debts-results">
+      <form method="get" action="/groups/{{ group_id }}/debts" class="debt-mode-form" hx-ext="response-targets" hx-get="/groups/{{ group_id }}/debts" hx-trigger="change" hx-push-url="true" hx-target="#debts-results" hx-target-4xx="#debts-results" hx-target-5xx="#debts-results" hx-select="#debts-results" hx-swap="outerHTML" hx-indicator="#debts-results">
         <fieldset>
           <legend>Rate mode</legend>
           <div class="choice-row">
-            <label><input type="radio" name="rate_mode" value="historical"{% if mode == "historical" %} checked{% endif %} /> Historical</label>
-            <label><input type="radio" name="rate_mode" value="current"{% if mode == "current" %} checked{% endif %} /> Current</label>
+            <label><input id="rate-mode-historical" type="radio" name="rate_mode" value="historical" aria-controls="debts-results"{% if mode == "historical" %} checked{% endif %} /> Historical</label>
+            <label><input id="rate-mode-current" type="radio" name="rate_mode" value="current" aria-controls="debts-results"{% if mode == "current" %} checked{% endif %} /> Current</label>
           </div>
           <button type="submit">Calculate balances</button>
         </fieldset>
       </form>
       <section id="debts-results" class="financial-results debt-results" aria-labelledby="debts-results-heading" aria-describedby="debts-status" aria-busy="false">
-        <h2 id="debts-results-heading" tabindex="-1">Historical calculation</h2>
-        <p id="debts-status" class="debt-status" role="status" aria-live="polite" aria-atomic="true">Calculation complete. Historical rates are selected by default.</p>
+        <h2 id="debts-results-heading" tabindex="-1" autofocus>{% if mode == "current" %}Current calculation{% else %}Historical calculation{% endif %}</h2>
+        <p id="debts-status" class="debt-status" role="status" aria-live="polite" aria-atomic="true">{% if mode == "current" %}Calculation complete. Current rates are selected for this result.{% else %}Calculation complete. Historical rates are selected by default.{% endif %}</p>
+        <p class="debt-updating-placeholder" role="status" aria-live="polite">Updating debt balances.</p>
+        <div class="debt-financial-content">
         <p class="summary-context">Mode: {{ mode }}. Calculated at {{ calculated_at }} UTC.</p>
         {% if !has_spendings %}<p class="empty">No Spendings exist. Every Group-owned Participant is shown at exact zero.</p>{% endif %}
         <h2 id="balances-heading">Balances</h2>
@@ -81,6 +83,7 @@
         </section>
         {% match warning %}{% when Some with (message) %}<p class="warning">{{ message }}</p>{% when None %}{% endmatch %}
         <p class="helper">Balances are derived from all-time history. Transfers are advisory and are not recorded as payments.</p>
+        </div>
       </section>
     </main>
   </body>

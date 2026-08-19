@@ -84,6 +84,7 @@ A spending retains its source currency; a group currency is a freely changeable 
 - Final balances are quantized to target minor units with largest-remainder allocation and participant ID tie-breaking, preserving an exact zero sum.
 - Settlement uses a deterministic greedy matcher ordered by descending absolute balance then participant ID. Transfers are positive, settle every balance, do not repeat a participant pair, and number at most `n - 1`. They are not guaranteed globally minimal.
 - The debts view MUST disclose the selected mode, calculation time, target currency, unique rates used, and stale/provisional warnings.
+- During an enhanced Debts mode recalculation, HTMX's request class MAY show a scoped Updating placeholder and hide prior financial content. The completed server-rendered result or no-partial failure retains the stable announced status region. This transition MUST NOT require dynamic `aria-busy`, retained client-side financial state, custom application JavaScript, inline script attributes, or a custom HTMX extension.
 
 ## Security
 

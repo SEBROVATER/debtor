@@ -1,6 +1,6 @@
 use axum::{
-    extract::{Path, Query, State},
-    http::StatusCode,
+    extract::{Path, Query, State, rejection::QueryRejection},
+    http::{HeaderMap, StatusCode},
     response::Response,
 };
 use debtor_application::RateMode;
@@ -9,6 +9,7 @@ use tower_sessions::Session;
 use super::{
     DebtQuery,
     auth::{authenticated_shell, require_auth},
+    debt_mode,
     response::{debt_error_response, error_response, render},
 };
 use crate::{
@@ -33,21 +34,34 @@ fn format_money(
 pub(crate) async fn debts(
     State(state): State<AppState>,
     session: Session,
+    headers: HeaderMap,
     Path(id): Path<i64>,
-    Query(query): Query<DebtQuery>,
+    query: Result<Query<DebtQuery>, QueryRejection>,
 ) -> Response {
     if let Err(response) = require_auth(&session).await {
         return response;
     }
-    let mode = match query.rate_mode.as_deref() {
-        None | Some("historical") => RateMode::Historical,
-        Some("current") => RateMode::Current,
-        Some(_) => return error_response(StatusCode::BAD_REQUEST, "Unknown rate mode."),
+    let Ok(Query(query)) = query else {
+        return crate::handlers::response::debt_mode_error_response(
+            headers.contains_key("hx-request"),
+        );
+    };
+    let Ok(mode) = debt_mode(query.rate_mode.as_deref()) else {
+        return crate::handlers::response::debt_mode_error_response(
+            headers.contains_key("hx-request"),
+        );
     };
     let calculated_at = state.clock.now();
     let result = match state.debts.calculate(id, mode).await {
         Ok(value) => value,
-        Err(error) => return debt_error_response(error, mode, calculated_at),
+        Err(error) => {
+            return debt_error_response(
+                error,
+                mode,
+                calculated_at,
+                headers.contains_key("hx-request"),
+            );
+        }
     };
     let participants = result
         .participants

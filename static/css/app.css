@@ -199,8 +199,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .debt-results h2 { font-family: Georgia, "Times New Roman", serif; font-weight: 500; }
 .debt-results h2:focus { outline: 2px solid var(--focus); outline-offset: 2px; }
 .debt-status { border-block: 1px solid transparent; color: #AAA59C; min-block-size: 48px; padding-block: .75rem; }
-.debt-results.htmx-request .debt-status { color: var(--warn); }
-.debt-results.htmx-request .debt-status::before { content: "Updating debt balances. "; }
+.debt-updating-placeholder { display: none; color: var(--warn); min-block-size: 48px; padding-block: .75rem; }
+.debt-results.htmx-request .debt-status { display: none; }
+.debt-results.htmx-request .debt-updating-placeholder { display: block; }
+.debt-results.htmx-request .debt-financial-content { display: none; }
 .debt-mode-form fieldset { margin-block: 1rem; }
 .debt-results table { background: transparent; color: var(--ink); }
 .debt-results td, .debt-results th { overflow-wrap: anywhere; }

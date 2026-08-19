@@ -290,6 +290,81 @@ pub struct RateRow {
     pub provisional: bool,
 }
 
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use askama::Template;
+
+    use super::{AuthenticatedShell, BalanceRow, DebtsTemplate, RateRow, TransferRow};
+
+    #[test]
+    fn debts_template_discloses_current_mode_and_selection() {
+        let template = DebtsTemplate {
+            group_id: 1,
+            archived: false,
+            currency: "USD".to_owned(),
+            has_spendings: true,
+            balances: vec![BalanceRow {
+                participant: "Ada".to_owned(),
+                archived: false,
+                color: "#123456".to_owned(),
+                amount: "$1.00 USD".to_owned(),
+                direction: "is owed".to_owned(),
+            }],
+            transfers: vec![TransferRow {
+                from: "Bob".to_owned(),
+                to: "Ada".to_owned(),
+                amount: "$1.00 USD".to_owned(),
+            }],
+            mode: "current".to_owned(),
+            warning: None,
+            calculated_at: "2026-08-19T06:00:00+00:00".to_owned(),
+            rates: vec![RateRow {
+                base: "EUR".to_owned(),
+                quote: "USD".to_owned(),
+                requested_date: "2026-08-19".to_owned(),
+                fetch_date: "2026-08-19".to_owned(),
+                effective_date: "2026-08-19".to_owned(),
+                rate: "1.10".to_owned(),
+                stale: false,
+                provisional: false,
+            }],
+            shell: AuthenticatedShell {
+                csrf: "csrf".to_owned(),
+                submission_token: "submission".to_owned(),
+            },
+        };
+
+        let rendered = template.render().expect("current debts template");
+
+        assert!(rendered.contains("Current calculation"));
+        assert!(rendered.contains("Current rates are selected for this result."));
+        assert!(rendered.contains("value=\"current\" aria-controls=\"debts-results\" checked"));
+        assert!(rendered.contains("hx-push-url=\"true\""));
+        assert!(rendered.contains("hx-trigger=\"change\""));
+        assert!(rendered.contains("aria-busy=\"false\""));
+        assert!(rendered.contains("class=\"debt-updating-placeholder\" role=\"status\""));
+        assert!(!rendered.contains("hx-on::"));
+        assert!(!rendered.contains(" hx-on"));
+        assert!(rendered.contains("<h2 id=\"debts-results-heading\" tabindex=\"-1\" autofocus>"));
+        assert!(
+            !rendered
+                .contains("id=\"debts-heading\" class=\"group-heading\" tabindex=\"-1\" autofocus")
+        );
+        assert!(!rendered.contains("Historical calculation</h2>"));
+
+        let css = include_str!("../../static/css/app.css");
+        assert!(
+            css.contains(
+                ".debt-results.htmx-request .debt-updating-placeholder { display: block; }"
+            )
+        );
+        assert!(
+            css.contains(".debt-results.htmx-request .debt-financial-content { display: none; }")
+        );
+    }
+}
+
 /*
 /// Participant list page.
 #[derive(Template)]

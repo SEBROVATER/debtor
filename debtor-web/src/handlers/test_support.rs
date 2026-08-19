@@ -69,6 +69,12 @@ pub(crate) fn state(archived: bool) -> TestState {
     )
 }
 
+pub(crate) fn state_with_current_debts() -> TestState {
+    let mut test_state = state(false);
+    test_state.app.debts = Arc::new(CurrentDebts);
+    test_state
+}
+
 pub(crate) fn state_with_errors(
     archived: bool,
     group_create_validation_error: bool,
@@ -562,10 +568,44 @@ impl SpendingMutationExecutor for FakeSpendings {
 
 struct FakeDebts;
 
+struct CurrentDebts;
+
 #[async_trait]
 impl DebtUseCases for FakeDebts {
     async fn calculate(&self, _: i64, _: RateMode) -> Result<DebtResult, ApplicationError> {
         Err(ApplicationError::NotFound)
+    }
+}
+
+#[async_trait]
+impl DebtUseCases for CurrentDebts {
+    async fn calculate(&self, group_id: i64, _: RateMode) -> Result<DebtResult, ApplicationError> {
+        let participant = Participant {
+            id: 1,
+            name: Name::new("Ada").expect("test participant"),
+            color: Color::new("#123456").expect("test color"),
+            is_archived: false,
+        };
+        Ok(DebtResult {
+            group_is_archived: false,
+            currency: Currency::Usd,
+            participants: vec![(
+                participant,
+                GroupMember {
+                    group_id,
+                    participant_id: 1,
+                    is_active: true,
+                },
+            )],
+            has_spendings: false,
+            transfers: Vec::new(),
+            balances: std::collections::BTreeMap::from([(
+                1,
+                debtor_domain::money::parse_decimal("0").expect("zero balance"),
+            )]),
+            rates: Vec::new(),
+            calculated_at: chrono::Utc::now(),
+        })
     }
 }
 

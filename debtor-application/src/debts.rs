@@ -284,6 +284,10 @@ impl DebtUseCases for DebtService {
                             && quote.fetch_date != context.requested_date.min(context.today))
                         || (quote.is_stale
                             && quote.fetch_date > context.requested_date.min(context.today))
+                        || (mode == RateMode::Current
+                            && quote.is_stale
+                            && (quote.fetch_date >= context.today
+                                || quote.fetch_date + chrono::Duration::days(7) < context.today))
                         || quote.rate <= Decimal::ZERO
                         || quote.effective_date > quote.fetch_date
                         || quote.is_provisional != (context.requested_date > context.today)
@@ -575,6 +579,21 @@ mod tests {
         }
     }
 
+    struct FixedQuoteRate(RateQuote);
+
+    #[async_trait]
+    impl ExchangeRateProvider for FixedQuoteRate {
+        async fn rate(
+            &self,
+            _: Currency,
+            _: Currency,
+            _: NaiveDate,
+            _: NaiveDate,
+        ) -> Result<RateQuote, ApplicationError> {
+            Ok(self.0.clone())
+        }
+    }
+
     #[tokio::test]
     async fn debt_service_uses_fixed_clock_for_current_and_spending_dates_for_historical_rates() {
         let spending = Spending {
@@ -617,6 +636,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn current_mode_deduplicates_spendings_to_one_calculation_date_context() {
+        let spendings = [4_u32, 5]
+            .into_iter()
+            .enumerate()
+            .map(|(index, day)| Spending {
+                id: i64::try_from(index + 1).expect("test ID"),
+                group_id: GROUP_ID,
+                description: Description::new("Lunch").unwrap(),
+                total: Decimal::new(100, 2),
+                currency: Currency::Eur,
+                spending_type: SpendingType::Food,
+                spent_date: date(day),
+                payers: vec![allocation(PARTICIPANT_ONE, 100)],
+                shares: vec![allocation(PARTICIPANT_TWO, 100)],
+            })
+            .collect::<Vec<_>>();
+        let rates = Arc::new(RateFake(Mutex::new(Vec::new())));
+        let service = DebtService::new(
+            Arc::new(DebtSnapshot(spendings)),
+            rates.clone(),
+            Arc::new(FixedClock(
+                Utc.with_ymd_and_hms(2026, 7, 8, 12, 30, 0).unwrap(),
+            )),
+        );
+
+        service
+            .calculate(GROUP_ID, RateMode::Current)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            *rates.0.lock().unwrap(),
+            vec![(Currency::Eur, Currency::Usd, date(8), date(8))]
+        );
+    }
+
+    #[tokio::test]
     async fn debt_service_propagates_rate_provider_errors() {
         let spending = Spending {
             id: 1,
@@ -642,6 +698,75 @@ mod tests {
             .await
             .unwrap_err();
 
+        assert!(matches!(
+            error,
+            ApplicationError::Unavailable(UnavailableReason::ExchangeRates)
+        ));
+    }
+
+    #[tokio::test]
+    async fn current_mode_accepts_day_seven_stale_evidence_and_rejects_day_eight() {
+        let spending = Spending {
+            id: 1,
+            group_id: GROUP_ID,
+            description: Description::new("Lunch").unwrap(),
+            total: Decimal::new(100, 2),
+            currency: Currency::Eur,
+            spending_type: SpendingType::Food,
+            spent_date: date(4),
+            payers: vec![allocation(PARTICIPANT_ONE, 100)],
+            shares: vec![allocation(PARTICIPANT_TWO, 100)],
+        };
+        let clock = Arc::new(FixedClock(
+            Utc.with_ymd_and_hms(2026, 7, 8, 12, 30, 0).unwrap(),
+        ));
+        let quote = |fetch_date| RateQuote {
+            base: Currency::Eur,
+            quote: Currency::Usd,
+            requested_date: date(8),
+            fetch_date,
+            effective_date: fetch_date,
+            rate: Decimal::ONE,
+            is_stale: true,
+            is_provisional: false,
+        };
+
+        let eligible = DebtService::new(
+            Arc::new(DebtSnapshot(vec![spending.clone()])),
+            Arc::new(FixedQuoteRate(quote(date(1)))),
+            clock.clone(),
+        );
+        eligible
+            .calculate(GROUP_ID, RateMode::Current)
+            .await
+            .expect("day-seven stale Current quote is eligible");
+
+        let expired = DebtService::new(
+            Arc::new(DebtSnapshot(vec![spending.clone()])),
+            Arc::new(FixedQuoteRate(quote(
+                chrono::NaiveDate::from_ymd_opt(2026, 6, 30).unwrap(),
+            ))),
+            clock.clone(),
+        );
+        let error = expired
+            .calculate(GROUP_ID, RateMode::Current)
+            .await
+            .expect_err("day-eight stale Current quote is ineligible");
+
+        assert!(matches!(
+            error,
+            ApplicationError::Unavailable(UnavailableReason::ExchangeRates)
+        ));
+
+        let same_day = DebtService::new(
+            Arc::new(DebtSnapshot(vec![spending])),
+            Arc::new(FixedQuoteRate(quote(date(8)))),
+            clock,
+        );
+        let error = same_day
+            .calculate(GROUP_ID, RateMode::Current)
+            .await
+            .expect_err("stale Current evidence must be prior");
         assert!(matches!(
             error,
             ApplicationError::Unavailable(UnavailableReason::ExchangeRates)
@@ -808,12 +933,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn debt_service_includes_zero_balance_participants_without_activity() {
+    async fn current_mode_includes_archived_inactive_zero_balance_participants_without_activity() {
         let participant = Participant {
             id: 3,
             name: Name::new("Inactive").unwrap(),
             color: Color::new("#123456").unwrap(),
-            is_archived: false,
+            is_archived: true,
         };
         let service = DebtService::new(
             Arc::new(ParticipantSnapshot {
@@ -837,7 +962,7 @@ mod tests {
         );
 
         let result = service
-            .calculate(GROUP_ID, RateMode::Historical)
+            .calculate(GROUP_ID, RateMode::Current)
             .await
             .unwrap();
 

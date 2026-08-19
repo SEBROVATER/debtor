@@ -12,6 +12,7 @@ mod spendings;
 #[cfg(test)]
 pub(crate) mod test_support;
 
+use debtor_application::RateMode;
 use serde::Deserialize;
 
 pub(crate) use crate::forms::ExpenseForm;
@@ -56,4 +57,24 @@ pub(crate) struct ManageQuery {
 #[derive(Deserialize)]
 pub(crate) struct DebtQuery {
     pub(super) rate_mode: Option<String>,
+}
+
+pub(crate) fn debt_mode(rate_mode: Option<&str>) -> Result<RateMode, ()> {
+    match rate_mode {
+        None | Some("historical") => Ok(RateMode::Historical),
+        Some("current") => Ok(RateMode::Current),
+        Some(_) => Err(()),
+    }
+}
+
+pub(crate) fn debt_mode_from_raw_query(query: Option<&str>) -> Result<RateMode, ()> {
+    let mut rate_mode = None;
+    if let Some(query) = query {
+        for (name, value) in form_urlencoded::parse(query.as_bytes()) {
+            if name == "rate_mode" && rate_mode.replace(value).is_some() {
+                return Err(());
+            }
+        }
+    }
+    debt_mode(rate_mode.as_deref())
 }
