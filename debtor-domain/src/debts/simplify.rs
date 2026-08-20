@@ -101,7 +101,7 @@ mod tests {
 
     use rust_decimal::Decimal;
 
-    use super::simplify;
+    use super::{Transfer, simplify};
 
     #[test]
     fn creates_deterministic_positive_transfers() {
@@ -119,6 +119,53 @@ mod tests {
                 .iter()
                 .all(|transfer| transfer.amount > Decimal::ZERO)
         );
+    }
+
+    #[test]
+    fn preserves_greedy_queue_order_for_ties_and_partial_settlements() {
+        let balances = BTreeMap::from([
+            (1, Decimal::new(-7, 0)),
+            (2, Decimal::new(-3, 0)),
+            (3, Decimal::new(5, 0)),
+            (4, Decimal::new(5, 0)),
+        ]);
+
+        assert_eq!(
+            simplify(&balances).unwrap(),
+            vec![
+                Transfer {
+                    from_participant_id: 1,
+                    to_participant_id: 3,
+                    amount: Decimal::new(5, 0),
+                },
+                Transfer {
+                    from_participant_id: 1,
+                    to_participant_id: 4,
+                    amount: Decimal::new(2, 0),
+                },
+                Transfer {
+                    from_participant_id: 2,
+                    to_participant_id: 4,
+                    amount: Decimal::new(3, 0),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn returns_no_transfers_when_every_balance_is_zero() {
+        let balances = BTreeMap::from([(1, Decimal::ZERO), (2, Decimal::ZERO)]);
+
+        assert!(simplify(&balances).unwrap().is_empty());
+    }
+
+    #[test]
+    fn preserves_quantized_target_currency_amounts() {
+        let jpy = BTreeMap::from([(1, Decimal::new(-12, 0)), (2, Decimal::new(12, 0))]);
+        let omr = BTreeMap::from([(1, Decimal::new(-123, 3)), (2, Decimal::new(123, 3))]);
+
+        assert_eq!(simplify(&jpy).unwrap()[0].amount, Decimal::new(12, 0));
+        assert_eq!(simplify(&omr).unwrap()[0].amount, Decimal::new(123, 3));
     }
 
     #[test]

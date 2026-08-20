@@ -25,3 +25,7 @@
 
 - Fresh fixed-past Historical rate evidence is labeled `current` [debtor-web/templates/debts.html:80] — pre-existing behavior, not introduced by the Story 5.2 diff.
 - Resolved by the 2026-08-19 Debts UX redesign: enhanced mode recalculation uses HTMX's request class for the scoped Updating placeholder and final server-rendered status announcement; dynamic `aria-busy` and retained client-side financial state are not required under the no-custom-JavaScript CSP contract.
+
+## Deferred from: code review of 5-3-derive-complete-advisory-settlement-transfers (2026-08-20)
+
+- Settlement uses saturating arithmetic [debtor-domain/src/debts/simplify.rs:60] — pre-existing use of `saturating_sub` conflicts with the project’s checked-arithmetic preference but was not introduced by Story 5.3.

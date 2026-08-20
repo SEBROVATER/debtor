@@ -52,7 +52,7 @@ pub(super) fn debt_error_response(
     );
     if enhanced {
         return (status, Html(format!(
-            "<section id=\"debts-results\" class=\"financial-results debt-results\" aria-labelledby=\"debts-results-heading\" aria-describedby=\"debts-status\" aria-busy=\"false\"><h2 id=\"debts-results-heading\" tabindex=\"-1\" autofocus>Debt calculation unavailable</h2><p id=\"debts-status\" class=\"debt-status\" role=\"status\" aria-live=\"polite\" aria-atomic=\"true\">{message}</p><p class=\"empty\">No Balances or Settlement Transfers are shown. Reopen Debts to retry.</p></section>"
+            "<section id=\"debts-results\" class=\"financial-results debt-results\" aria-labelledby=\"debts-results-heading\" aria-describedby=\"debts-status\" aria-busy=\"false\"><h2 id=\"debts-results-heading\" tabindex=\"-1\">Debt calculation unavailable</h2><p id=\"debts-status\" class=\"debt-status\" role=\"status\" aria-live=\"polite\" aria-atomic=\"true\">{message}</p><p class=\"empty\">No Balances or Settlement Transfers are shown. Reopen Debts to retry.</p></section>"
         )))
         .into_response();
     }
@@ -62,7 +62,7 @@ pub(super) fn debt_error_response(
 pub(super) fn debt_mode_error_response(enhanced: bool) -> Response {
     if enhanced {
         return (StatusCode::BAD_REQUEST, Html(
-            "<section id=\"debts-results\" class=\"financial-results debt-results\" aria-labelledby=\"debts-results-heading\" aria-describedby=\"debts-status\" aria-busy=\"false\"><h2 id=\"debts-results-heading\" tabindex=\"-1\" autofocus>Debt calculation unavailable</h2><p id=\"debts-status\" class=\"debt-status\" role=\"status\" aria-live=\"polite\" aria-atomic=\"true\">Unknown rate mode.</p><p class=\"empty\">No Balances or Settlement Transfers are shown. Reopen Debts to retry.</p></section>"
+            "<section id=\"debts-results\" class=\"financial-results debt-results\" aria-labelledby=\"debts-results-heading\" aria-describedby=\"debts-status\" aria-busy=\"false\"><h2 id=\"debts-results-heading\" tabindex=\"-1\">Debt calculation unavailable</h2><p id=\"debts-status\" class=\"debt-status\" role=\"status\" aria-live=\"polite\" aria-atomic=\"true\">Unknown rate mode.</p><p class=\"empty\">No Balances or Settlement Transfers are shown. Reopen Debts to retry.</p></section>"
         ))
         .into_response();
     }
@@ -81,7 +81,7 @@ pub(crate) fn debt_timeout_response(query: Option<&str>, enhanced: bool) -> Resp
     );
     if enhanced {
         return (StatusCode::GATEWAY_TIMEOUT, Html(format!(
-            "<section id=\"debts-results\" class=\"financial-results debt-results\" aria-labelledby=\"debts-results-heading\" aria-describedby=\"debts-status\" aria-busy=\"false\"><h2 id=\"debts-results-heading\" tabindex=\"-1\" autofocus>Debt calculation unavailable</h2><p id=\"debts-status\" class=\"debt-status\" role=\"status\" aria-live=\"polite\" aria-atomic=\"true\">{message}</p><p class=\"empty\">No Balances or Settlement Transfers are shown. Reopen Debts to retry.</p></section>"
+            "<section id=\"debts-results\" class=\"financial-results debt-results\" aria-labelledby=\"debts-results-heading\" aria-describedby=\"debts-status\" aria-busy=\"false\"><h2 id=\"debts-results-heading\" tabindex=\"-1\">Debt calculation unavailable</h2><p id=\"debts-status\" class=\"debt-status\" role=\"status\" aria-live=\"polite\" aria-atomic=\"true\">{message}</p><p class=\"empty\">No Balances or Settlement Transfers are shown. Reopen Debts to retry.</p></section>"
         )))
         .into_response();
     }
@@ -364,6 +364,7 @@ mod tests {
         assert!(body.contains("Attempted Current calculation"));
         assert!(body.contains("No Balances or Settlement Transfers are shown."));
         assert!(!body.contains("<table"));
+        assert!(!body.contains("autofocus"));
     }
 
     #[tokio::test]
@@ -382,6 +383,7 @@ mod tests {
         assert!(body.contains("id=\"debts-results\""));
         assert!(body.contains("Debt calculation unavailable."));
         assert!(!body.contains("<html"));
+        assert!(!body.contains("autofocus"));
     }
 
     #[tokio::test]

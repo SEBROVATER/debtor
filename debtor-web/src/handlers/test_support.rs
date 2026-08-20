@@ -14,6 +14,7 @@ use debtor_application::{
 };
 use debtor_domain::{
     currency::Currency,
+    debts::Transfer,
     model::{
         Allocation, Color, Description, Group, GroupMember, Name, Participant, Spending,
         SpendingType, ValidationError,
@@ -72,6 +73,12 @@ pub(crate) fn state(archived: bool) -> TestState {
 pub(crate) fn state_with_current_debts() -> TestState {
     let mut test_state = state(false);
     test_state.app.debts = Arc::new(CurrentDebts);
+    test_state
+}
+
+pub(crate) fn state_with_settlement_debts() -> TestState {
+    let mut test_state = state(false);
+    test_state.app.debts = Arc::new(SettlementDebts);
     test_state
 }
 
@@ -570,6 +577,8 @@ struct FakeDebts;
 
 struct CurrentDebts;
 
+struct SettlementDebts;
+
 #[async_trait]
 impl DebtUseCases for FakeDebts {
     async fn calculate(&self, _: i64, _: RateMode) -> Result<DebtResult, ApplicationError> {
@@ -603,6 +612,56 @@ impl DebtUseCases for CurrentDebts {
                 1,
                 debtor_domain::money::parse_decimal("0").expect("zero balance"),
             )]),
+            rates: Vec::new(),
+            calculated_at: chrono::Utc::now(),
+        })
+    }
+}
+
+#[async_trait]
+impl DebtUseCases for SettlementDebts {
+    async fn calculate(&self, group_id: i64, _: RateMode) -> Result<DebtResult, ApplicationError> {
+        let debtor = Participant {
+            id: 1,
+            name: Name::new("Archived Bob").expect("test participant"),
+            color: Color::new("#123456").expect("test color"),
+            is_archived: true,
+        };
+        let creditor = Participant {
+            id: 2,
+            name: Name::new("Ada").expect("test participant"),
+            color: Color::new("#654321").expect("test color"),
+            is_archived: false,
+        };
+        let amount = debtor_domain::money::parse_decimal("1").expect("test amount");
+        Ok(DebtResult {
+            group_is_archived: false,
+            currency: Currency::Usd,
+            participants: vec![
+                (
+                    debtor,
+                    GroupMember {
+                        group_id,
+                        participant_id: 1,
+                        is_active: false,
+                    },
+                ),
+                (
+                    creditor,
+                    GroupMember {
+                        group_id,
+                        participant_id: 2,
+                        is_active: true,
+                    },
+                ),
+            ],
+            has_spendings: true,
+            transfers: vec![Transfer {
+                from_participant_id: 1,
+                to_participant_id: 2,
+                amount,
+            }],
+            balances: std::collections::BTreeMap::from([(1, -amount), (2, amount)]),
             rates: Vec::new(),
             calculated_at: chrono::Utc::now(),
         })

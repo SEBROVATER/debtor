@@ -193,7 +193,7 @@ mod tests {
     use super::{router, router_with_sessions};
     use crate::handlers::test_support::{
         TestState, state, state_with_current_debts, state_with_errors, state_with_login_admission,
-        state_with_password, state_with_readiness_failure,
+        state_with_password, state_with_readiness_failure, state_with_settlement_debts,
     };
     use crate::{
         session,
@@ -526,6 +526,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn debts_render_explicit_archived_settlement_transfers() {
+        let test_state = state_with_settlement_debts();
+        let app = app(&test_state);
+        let session_cookie = login(&app).await;
+
+        let response = app
+            .oneshot(request(
+                Method::GET,
+                "/groups/1/debts",
+                "",
+                Some(&session_cookie),
+            ))
+            .await
+            .expect("settlement debts response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body(response).await;
+
+        let balances = body.find("<h2 id=\"balances-heading\">Balances</h2>");
+        let transfers = body.find("<h2 id=\"settlement-heading\">Settlement Transfers</h2>");
+        let rates = body.find("<h2 id=\"rates-heading\">Rates used</h2>");
+        assert!(balances < transfers && transfers < rates);
+        assert!(body.contains("from Archived Bob <span>Archived</span> to Ada"));
+        assert!(body.contains("$1.00 USD"));
+    }
+
+    #[tokio::test]
     async fn enhanced_current_debts_response_retains_mode_control_outside_results() {
         let test_state = state_with_current_debts();
         let app = app(&test_state);
@@ -546,6 +572,7 @@ mod tests {
         assert!(body.contains("value=\"current\" aria-controls=\"debts-results\" checked"));
         assert!(body.contains("id=\"debts-results\""));
         assert!(body.contains("role=\"status\" aria-live=\"polite\" aria-atomic=\"true\""));
+        assert!(!body.contains("autofocus"));
     }
 
     #[tokio::test]
@@ -570,6 +597,7 @@ mod tests {
         assert!(body.contains("Debt calculation unavailable."));
         assert!(!body.contains("<table"));
         assert!(!body.contains("<form"));
+        assert!(!body.contains("autofocus"));
     }
 
     #[tokio::test]

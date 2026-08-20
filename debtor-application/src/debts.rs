@@ -287,7 +287,10 @@ impl DebtUseCases for DebtService {
                         || (mode == RateMode::Current
                             && quote.is_stale
                             && (quote.fetch_date >= context.today
-                                || quote.fetch_date + chrono::Duration::days(7) < context.today))
+                                || quote
+                                    .fetch_date
+                                    .checked_add_signed(chrono::Duration::days(7))
+                                    .is_none_or(|expiry| expiry < context.today)))
                         || quote.rate <= Decimal::ZERO
                         || quote.effective_date > quote.fetch_date
                         || quote.is_provisional != (context.requested_date > context.today)
@@ -774,6 +777,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn current_mode_rejects_stale_evidence_with_an_overflowing_expiry() {
+        let spending = Spending {
+            id: 1,
+            group_id: GROUP_ID,
+            description: Description::new("Lunch").unwrap(),
+            total: Decimal::new(100, 2),
+            currency: Currency::Eur,
+            spending_type: SpendingType::Food,
+            spent_date: date(4),
+            payers: vec![allocation(PARTICIPANT_ONE, 100)],
+            shares: vec![allocation(PARTICIPANT_TWO, 100)],
+        };
+        let fetch_date = NaiveDate::MAX.pred_opt().unwrap();
+        let quote = RateQuote {
+            base: Currency::Eur,
+            quote: Currency::Usd,
+            requested_date: NaiveDate::MAX,
+            fetch_date,
+            effective_date: fetch_date,
+            rate: Decimal::ONE,
+            is_stale: true,
+            is_provisional: false,
+        };
+        let clock =
+            DateTime::from_naive_utc_and_offset(NaiveDate::MAX.and_hms_opt(0, 0, 0).unwrap(), Utc);
+        let service = DebtService::new(
+            Arc::new(DebtSnapshot(vec![spending])),
+            Arc::new(FixedQuoteRate(quote)),
+            Arc::new(FixedClock(clock)),
+        );
+
+        let error = service
+            .calculate(GROUP_ID, RateMode::Current)
+            .await
+            .expect_err("overflowing stale expiry is ineligible");
+
+        assert!(matches!(
+            error,
+            ApplicationError::Unavailable(UnavailableReason::ExchangeRates)
+        ));
+    }
+
+    #[tokio::test]
     async fn debt_service_maps_calculation_failures_to_safe_reasons() {
         let spending = Spending {
             id: 1,
@@ -999,5 +1045,52 @@ mod tests {
         assert!(rates.0.lock().unwrap().is_empty());
         assert_eq!(result.rates.len(), 1);
         assert_eq!(result.rates[0].rate, Decimal::ONE);
+    }
+
+    #[tokio::test]
+    async fn debt_service_derives_the_same_ordered_transfer_in_both_rate_modes() {
+        let spending = Spending {
+            id: 1,
+            group_id: GROUP_ID,
+            description: Description::new("Dinner").unwrap(),
+            total: Decimal::new(100, 2),
+            currency: Currency::Usd,
+            spending_type: SpendingType::Food,
+            spent_date: date(4),
+            payers: vec![allocation(PARTICIPANT_ONE, 100)],
+            shares: vec![allocation(PARTICIPANT_TWO, 100)],
+        };
+        let service = DebtService::new(
+            Arc::new(DebtSnapshot(vec![spending])),
+            Arc::new(RateFake(Mutex::new(Vec::new()))),
+            Arc::new(FixedClock(
+                Utc.with_ymd_and_hms(2026, 7, 8, 12, 30, 0).unwrap(),
+            )),
+        );
+
+        let historical = service
+            .calculate(GROUP_ID, RateMode::Historical)
+            .await
+            .unwrap();
+        let current = service
+            .calculate(GROUP_ID, RateMode::Current)
+            .await
+            .unwrap();
+        let expected = vec![Transfer {
+            from_participant_id: PARTICIPANT_TWO,
+            to_participant_id: PARTICIPANT_ONE,
+            amount: Decimal::new(100, 2),
+        }];
+
+        assert_eq!(historical.transfers, expected);
+        assert_eq!(current.transfers, expected);
+    }
+
+    #[test]
+    fn settlement_invariant_maps_to_the_safe_calculation_reason() {
+        assert!(matches!(
+            calculation_error(CalculationError::SettlementInvariant),
+            ApplicationError::Calculation(CalculationReason::SettlementInvariant)
+        ));
     }
 }

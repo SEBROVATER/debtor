@@ -206,6 +206,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .debt-mode-form fieldset { margin-block: 1rem; }
 .debt-results table { background: transparent; color: var(--ink); }
 .debt-results td, .debt-results th { overflow-wrap: anywhere; }
+.transfer-amount { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .settlement-results { border-block-start: 1px solid var(--line); margin-block-start: 1rem; padding-block-start: 1rem; }
 @media (max-width: 40rem) {
   .transaction-row summary { align-items: start; grid-template-columns: minmax(0, 1fr); }
@@ -217,4 +218,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .source-money-list > div { gap: .5rem; grid-template-columns: minmax(0, 1fr) minmax(0, max-content); }
   .source-payer-row { padding-inline-start: .5rem; }
   .converted-payer-row { padding-inline-start: .5rem; }
+  .settlement-results td[data-label="Amount"] { padding-inline-start: 0; }
+  .settlement-results td[data-label="Amount"]::before { display: block; position: static; width: auto; }
 }

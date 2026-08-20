@@ -101,7 +101,12 @@ pub(crate) async fn debts(
     let participants = result
         .participants
         .into_iter()
-        .map(|(participant, _)| (participant.id, participant.name.to_string()))
+        .map(|(participant, _)| {
+            (
+                participant.id,
+                (participant.name.to_string(), participant.is_archived),
+            )
+        })
         .collect::<std::collections::BTreeMap<_, _>>();
     let has_stale = result.rates.iter().any(|rate| rate.is_stale);
     let has_provisional = result.rates.iter().any(|rate| rate.is_provisional);
@@ -118,19 +123,36 @@ pub(crate) async fn debts(
     }
     let warning =
         (!warnings.is_empty()).then(|| format!("Some conversions use {}.", warnings.join(" and ")));
+    let status = match mode {
+        RateMode::Historical => {
+            "Calculation complete. Historical rates are selected by default.".to_owned()
+        }
+        RateMode::Current => {
+            "Calculation complete. Current rates are selected for this result.".to_owned()
+        }
+    };
+    let status = if let Some(warning) = &warning {
+        format!("{status} {warning}")
+    } else {
+        status
+    };
     let transfers = result
         .transfers
         .into_iter()
         .map(|transfer| {
+            let (from, from_archived) = participants
+                .get(&transfer.from_participant_id)
+                .cloned()
+                .ok_or(())?;
+            let (to, to_archived) = participants
+                .get(&transfer.to_participant_id)
+                .cloned()
+                .ok_or(())?;
             Ok(TransferRow {
-                from: participants
-                    .get(&transfer.from_participant_id)
-                    .cloned()
-                    .ok_or(())?,
-                to: participants
-                    .get(&transfer.to_participant_id)
-                    .cloned()
-                    .ok_or(())?,
+                from,
+                from_archived,
+                to,
+                to_archived,
                 amount: format_money(transfer.amount, result.currency),
             })
         })
@@ -155,6 +177,8 @@ pub(crate) async fn debts(
             "historical".into()
         },
         warning,
+        status,
+        focus_results: !headers.contains_key("hx-request"),
         calculated_at: result.calculated_at.to_rfc3339(),
         rates: result
             .rates

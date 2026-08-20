@@ -2,7 +2,7 @@
 story_key: 5-2-recalculate-balances-at-current-rates
 story_id: 5.2
 epic: 5
-status: review
+status: done
 created: 2026-08-19
 baseline_commit: 15f4b48a5a3c4dfae151cba014d5b33ce0c40b56
 completion_note: Ultimate context engine analysis completed - comprehensive developer guide created
@@ -10,7 +10,7 @@ completion_note: Ultimate context engine analysis completed - comprehensive deve
 
 # Story 5.2: Recalculate Balances at Current Rates
 
-Status: review
+Status: done
 
 ## Story
 
@@ -83,8 +83,14 @@ Requirements: `SPEC-FR75..SPEC-FR83`, `SPEC-NFR4..SPEC-NFR5`, `SPEC-NFR10`, `SPE
   - [x] `cargo check --workspace --all-features --locked`
   - [x] `SQLX_OFFLINE=true cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
   - [x] `cargo test --workspace --all-features --locked`
-  - [x] `cargo run --bin architecture-check --locked`
-  - [x] Never use `cargo build --release` for validation.
+- [x] `cargo run --bin architecture-check --locked`
+- [x] Never use `cargo build --release` for validation.
+
+### Review Findings
+
+- [x] [Review][Patch] Preserve rate-mode control focus in enhanced debt results [debtor-web/templates/debts.html:43]
+- [x] [Review][Patch] Announce the group-level stale-rate warning with the final enhanced result status [debtor-web/templates/debts.html:44]
+- [x] [Review][Patch] Reject overflowing stale-current quote expiry dates without panicking [debtor-application/src/debts.rs:290]
 
 ## Dev Notes
 

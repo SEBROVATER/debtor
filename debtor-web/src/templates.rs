@@ -238,6 +238,10 @@ pub struct DebtsTemplate {
     pub mode: String,
     /// Warning.
     pub warning: Option<String>,
+    /// Final calculation status announcement.
+    pub status: String,
+    /// Whether native navigation should move focus to the result heading.
+    pub focus_results: bool,
     /// Calculation timestamp.
     pub calculated_at: String,
     /// Unique rates used by the calculation.
@@ -250,8 +254,12 @@ pub struct DebtsTemplate {
 pub struct TransferRow {
     /// Payer.
     pub from: String,
+    /// Whether the payer identity is archived.
+    pub from_archived: bool,
     /// Recipient.
     pub to: String,
+    /// Whether the recipient identity is archived.
+    pub to_archived: bool,
     /// Amount.
     pub amount: String,
 }
@@ -313,11 +321,15 @@ mod tests {
             }],
             transfers: vec![TransferRow {
                 from: "Bob".to_owned(),
+                from_archived: false,
                 to: "Ada".to_owned(),
+                to_archived: false,
                 amount: "$1.00 USD".to_owned(),
             }],
             mode: "current".to_owned(),
-            warning: None,
+            warning: Some("Some conversions use stale rates.".to_owned()),
+            status: "Calculation complete. Current rates are selected for this result. Some conversions use stale rates.".to_owned(),
+            focus_results: true,
             calculated_at: "2026-08-19T06:00:00+00:00".to_owned(),
             rates: vec![RateRow {
                 base: "EUR".to_owned(),
@@ -339,6 +351,7 @@ mod tests {
 
         assert!(rendered.contains("Current calculation"));
         assert!(rendered.contains("Current rates are selected for this result."));
+        assert!(rendered.contains("Some conversions use stale rates."));
         assert!(rendered.contains("value=\"current\" aria-controls=\"debts-results\" checked"));
         assert!(rendered.contains("hx-push-url=\"true\""));
         assert!(rendered.contains("hx-trigger=\"change\""));
@@ -352,6 +365,11 @@ mod tests {
                 .contains("id=\"debts-heading\" class=\"group-heading\" tabindex=\"-1\" autofocus")
         );
         assert!(!rendered.contains("Historical calculation</h2>"));
+        assert!(rendered.contains("<h2 id=\"settlement-heading\">Settlement Transfers</h2>"));
+        assert!(rendered.contains("from Bob to Ada"));
+        assert!(rendered.contains("data-label=\"Transfer\""));
+        assert!(rendered.contains("data-label=\"Amount\""));
+        assert!(!rendered.contains("All balances are settled."));
 
         let css = include_str!("../../static/css/app.css");
         assert!(
@@ -362,6 +380,78 @@ mod tests {
         assert!(
             css.contains(".debt-results.htmx-request .debt-financial-content { display: none; }")
         );
+        assert!(css.contains(
+            ".transfer-amount { font-variant-numeric: tabular-nums; white-space: nowrap; }"
+        ));
+        assert!(css.contains(
+            ".settlement-results td[data-label=\"Amount\"] { padding-inline-start: 0; }"
+        ));
+    }
+
+    #[test]
+    fn debts_template_marks_archived_transfer_endpoints() {
+        let template = DebtsTemplate {
+            group_id: 1,
+            archived: false,
+            currency: "USD".to_owned(),
+            has_spendings: true,
+            balances: Vec::new(),
+            transfers: vec![TransferRow {
+                from: "Bob".to_owned(),
+                from_archived: true,
+                to: "Ada".to_owned(),
+                to_archived: true,
+                amount: "$1.00 USD".to_owned(),
+            }],
+            mode: "historical".to_owned(),
+            warning: None,
+            status: "Calculation complete. Historical rates are selected by default.".to_owned(),
+            focus_results: true,
+            calculated_at: "2026-08-20T00:00:00+00:00".to_owned(),
+            rates: Vec::new(),
+            shell: AuthenticatedShell {
+                csrf: "csrf".to_owned(),
+                submission_token: "submission".to_owned(),
+            },
+        };
+
+        let rendered = template.render().expect("archived transfer template");
+
+        assert!(rendered.contains("from Bob <span>Archived</span> to Ada <span>Archived</span>"));
+        assert!(rendered.contains("$1.00 USD"));
+    }
+
+    #[test]
+    fn debts_template_distinguishes_settled_balances_from_no_participants() {
+        let template = DebtsTemplate {
+            group_id: 1,
+            archived: false,
+            currency: "USD".to_owned(),
+            has_spendings: false,
+            balances: vec![BalanceRow {
+                participant: "Ada".to_owned(),
+                archived: false,
+                color: "#123456".to_owned(),
+                amount: "$0.00 USD".to_owned(),
+                direction: "is settled".to_owned(),
+            }],
+            transfers: Vec::new(),
+            mode: "historical".to_owned(),
+            warning: None,
+            status: "Calculation complete. Historical rates are selected by default.".to_owned(),
+            focus_results: true,
+            calculated_at: "2026-08-20T00:00:00+00:00".to_owned(),
+            rates: Vec::new(),
+            shell: AuthenticatedShell {
+                csrf: "csrf".to_owned(),
+                submission_token: "submission".to_owned(),
+            },
+        };
+
+        let rendered = template.render().expect("settled transfer template");
+
+        assert!(rendered.contains("All balances are settled."));
+        assert!(!rendered.contains("no Settlement Transfers are available"));
     }
 }
 
