@@ -101,6 +101,12 @@ pub trait ParticipantRepository: Send + Sync {
         participant_id: EntityId,
         admission: ArchiveAdmission,
     ) -> Result<(), ApplicationError>;
+    /// Restores one archived Participant belonging to the supplied active Group.
+    async fn restore_group_participant(
+        &self,
+        group_id: EntityId,
+        participant_id: EntityId,
+    ) -> Result<(), ApplicationError>;
     /// Adds an active group membership.
     async fn add_member(
         &self,
@@ -137,6 +143,12 @@ pub trait ParticipantUseCases: Send + Sync {
     ) -> Result<Participant, ApplicationError>;
     /// Archives an active Group-owned Participant only at an exact Historical zero balance.
     async fn archive_group_participant(
+        &self,
+        group_id: EntityId,
+        participant_id: EntityId,
+    ) -> Result<(), ApplicationError>;
+    /// Restores an archived Group-owned Participant without financial eligibility checks.
+    async fn restore_group_participant(
         &self,
         group_id: EntityId,
         participant_id: EntityId,
@@ -266,6 +278,28 @@ impl ParticipantUseCases for ParticipantService {
             .await
     }
 
+    async fn restore_group_participant(
+        &self,
+        group_id: EntityId,
+        participant_id: EntityId,
+    ) -> Result<(), ApplicationError> {
+        if group_id <= 0 || participant_id <= 0 || self.groups.group(group_id).await?.is_archived {
+            return Err(ApplicationError::Conflict);
+        }
+        let archived = self
+            .reader
+            .group_members(group_id)
+            .await?
+            .into_iter()
+            .any(|(participant, _)| participant.id == participant_id && participant.is_archived);
+        if !archived {
+            return Err(ApplicationError::NotFound);
+        }
+        self.repository
+            .restore_group_participant(group_id, participant_id)
+            .await
+    }
+
     async fn members(
         &self,
         group_id: EntityId,
@@ -315,6 +349,9 @@ mod tests {
         updated: Mutex<Vec<(EntityId, Name, Color)>>,
         member_requests: Mutex<Vec<EntityId>>,
         deactivated: Mutex<Vec<(EntityId, EntityId, bool)>>,
+        restored: Mutex<Vec<(EntityId, EntityId)>>,
+        participant_archived: Mutex<bool>,
+        group_archived: Mutex<bool>,
     }
 
     struct FakeDebts;
@@ -351,11 +388,14 @@ mod tests {
             &self,
             id: EntityId,
         ) -> Result<debtor_domain::model::Group, ApplicationError> {
+            if id != GROUP_ID {
+                return Err(ApplicationError::NotFound);
+            }
             Ok(debtor_domain::model::Group {
                 id,
                 name: Name::new("Trip").expect("valid group name"),
                 currency: debtor_domain::currency::Currency::Usd,
-                is_archived: false,
+                is_archived: *self.group_archived.lock().expect("group archived lock"),
             })
         }
     }
@@ -374,8 +414,13 @@ mod tests {
                 .lock()
                 .expect("member requests lock")
                 .push(group_id);
+            let mut member = participant(PARTICIPANT_ONE);
+            member.is_archived = *self
+                .participant_archived
+                .lock()
+                .expect("participant archived lock");
             Ok(vec![(
-                participant(PARTICIPANT_ONE),
+                member,
                 GroupMember {
                     group_id,
                     participant_id: PARTICIPANT_ONE,
@@ -433,6 +478,18 @@ mod tests {
             Ok(())
         }
 
+        async fn restore_group_participant(
+            &self,
+            group_id: EntityId,
+            participant_id: EntityId,
+        ) -> Result<(), ApplicationError> {
+            self.restored
+                .lock()
+                .expect("restored participants lock")
+                .push((group_id, participant_id));
+            Ok(())
+        }
+
         async fn add_member(&self, _: EntityId, _: EntityId) -> Result<(), ApplicationError> {
             Ok(())
         }
@@ -458,6 +515,9 @@ mod tests {
             updated: Mutex::new(Vec::new()),
             member_requests: Mutex::new(Vec::new()),
             deactivated: Mutex::new(Vec::new()),
+            restored: Mutex::new(Vec::new()),
+            participant_archived: Mutex::new(false),
+            group_archived: Mutex::new(false),
         });
         let service = ParticipantService::new(
             fake.clone(),
@@ -580,5 +640,70 @@ mod tests {
         ] {
             assert!(validate_participant_update(&input).is_err());
         }
+    }
+
+    #[tokio::test]
+    async fn restore_requires_an_archived_owned_participant_without_calculation() {
+        let fake = Arc::new(Fake {
+            created: Mutex::new(Vec::new()),
+            updated: Mutex::new(Vec::new()),
+            member_requests: Mutex::new(Vec::new()),
+            deactivated: Mutex::new(Vec::new()),
+            restored: Mutex::new(Vec::new()),
+            participant_archived: Mutex::new(true),
+            group_archived: Mutex::new(false),
+        });
+        let service = ParticipantService::new(
+            fake.clone(),
+            fake.clone(),
+            fake.clone(),
+            Arc::new(FakeDebts),
+        );
+
+        service
+            .restore_group_participant(GROUP_ID, PARTICIPANT_ONE)
+            .await
+            .expect("restore archived participant");
+        assert_eq!(
+            *fake.restored.lock().expect("restored participants lock"),
+            vec![(GROUP_ID, PARTICIPANT_ONE)]
+        );
+
+        for (group_id, participant_id) in
+            [(0, PARTICIPANT_ONE), (GROUP_ID, 0), (99, PARTICIPANT_ONE)]
+        {
+            assert!(
+                service
+                    .restore_group_participant(group_id, participant_id)
+                    .await
+                    .is_err()
+            );
+        }
+        assert_eq!(
+            *fake.restored.lock().expect("restored participants lock"),
+            vec![(GROUP_ID, PARTICIPANT_ONE)]
+        );
+
+        *fake
+            .participant_archived
+            .lock()
+            .expect("participant archived lock") = false;
+        assert!(matches!(
+            service
+                .restore_group_participant(GROUP_ID, PARTICIPANT_ONE)
+                .await,
+            Err(ApplicationError::NotFound)
+        ));
+        *fake.group_archived.lock().expect("group archived lock") = true;
+        assert!(matches!(
+            service
+                .restore_group_participant(GROUP_ID, PARTICIPANT_ONE)
+                .await,
+            Err(ApplicationError::Conflict)
+        ));
+        assert_eq!(
+            *fake.restored.lock().expect("restored participants lock"),
+            vec![(GROUP_ID, PARTICIPANT_ONE)]
+        );
     }
 }

@@ -35,11 +35,11 @@
           >Delete empty group</a
         >{% endif %}
       </div>
-       {% if members.len() == 0 && !archived %}
+        {% if members.len() == 0 && !archived %}
       <p id="add-spending-guidance" class="helper">
         <button type="button" disabled>Add Spending</button>
         <span>Add Spending is unavailable until this Group has an active Participant.</span>
-        <a href="/groups/{{ group_id }}/manage#participants">Manage Participants</a>
+         {% if has_archived_members %}<a href="/groups/{{ group_id }}/participants/archived">Archived Participants</a>{% else %}<a href="/groups/{{ group_id }}/manage#participants">Manage Participants</a>{% endif %}
        </p>
        {% endif %}
        {% if members.len() > 0 && !archived %}
@@ -89,7 +89,9 @@
          <section id="participants" class="manage-section" aria-labelledby="participants-heading">
            <h2 id="participants-heading" tabindex="-1"{% if participant_archive_notice %} autofocus{% endif %}>Participants</h2>
            {% if participant_archive_notice %}<p class="notice" role="status" aria-live="polite" aria-atomic="true">Participant archived. History remains readable.</p>{% endif %}
-           {% if participant_archive_failed %}<p class="warning" role="status" aria-live="polite" aria-atomic="true">Participant was not archived. Reopen Manage to retry.</p>{% endif %}
+            {% if participant_archive_failed %}<p class="warning" role="status" aria-live="polite" aria-atomic="true">Participant was not archived. Reopen Manage to retry.</p>{% endif %}
+            {% if participant_restore_notice %}<p class="notice" role="status" aria-live="polite" aria-atomic="true">Participant restored.</p>{% endif %}
+          <p><a href="/groups/{{ group_id }}/participants/archived">Archived Participants</a></p>
          <p id="participant-guidance" class="helper">Participants are accounting identities owned by this Group. Add one before recording a Spending.</p>
          {% if members.len() == 0 %}
          <p class="empty">No active Participants in this Group.</p>

@@ -150,6 +150,16 @@ pub(crate) async fn group_manage(
                 query.participant_archived.as_deref() == Some("1");
             template.participant_archive_failed =
                 query.participant_archive_failed.as_deref() == Some("1");
+            let restore_nonce = query.restore.as_deref().unwrap_or_default();
+            let Ok(restore_notice) =
+                session::take_participant_restore_notice(&session, id, restore_nonce).await
+            else {
+                return super::response::session_error();
+            };
+            if let Some((focus, true)) = restore_notice {
+                template.focus_participant = Some(focus);
+                template.participant_restore_notice = true;
+            }
             render(&template)
         }
         Err(error) => map_group_template_error(error),

@@ -174,6 +174,15 @@ pub trait GroupMutationExecutor: Send + Sync {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<(), ApplicationError>> + Send + '_>,
     >;
+
+    /// Restores a Group-owned archived Participant under the shared mutation owner.
+    fn restore_group_participant(
+        &self,
+        group_id: EntityId,
+        participant_id: EntityId,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), ApplicationError>> + Send + '_>,
+    >;
 }
 
 /// Group workflow implementation.

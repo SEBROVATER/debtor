@@ -2478,7 +2478,7 @@ So that historical identities remain available without cluttering new allocation
 
 **Given** Restore is activated
 **When** dispatch is pending and then commits
-**Then** the initiator is unavailable under one scoped status/`aria-busy`, no Balance/provider/generation check occurs, and the canonical Manage response focuses the restored Participant row/action with one announcement
+**Then** the initiator is unavailable under one scoped pending status, no Balance/provider/generation check occurs, and the canonical Manage response focuses the restored Participant row/action with one announcement
 **And** replay cannot dispatch twice.
 
 **Given** Restore fails or the owning Group is archived

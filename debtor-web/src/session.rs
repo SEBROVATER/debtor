@@ -11,6 +11,8 @@ const GROUP_DELETE_ID: &str = "group_delete_id";
 const GROUP_DELETE_PARTICIPANTS: &str = "group_delete_participants";
 const GROUP_DELETE_TOKEN: &str = "group_delete_token";
 const GROUP_RESTORE_FOCUS: &str = "group_restore_focus";
+const PARTICIPANT_RESTORE_NOTICES: &str = "participant_restore_notices";
+const PARTICIPANT_RESTORE_NOTICE_CAPACITY: usize = 32;
 const SPENDING_PREVIEW_GROUP: &str = "spending_preview_group";
 const SPENDING_PREVIEW_ID: &str = "spending_preview_id";
 const SPENDING_PREVIEW_FIELDS: &str = "spending_preview_fields";
@@ -398,6 +400,74 @@ pub(crate) async fn take_restore_focus(session: &Session) -> Result<Option<i64>,
     Ok(focus)
 }
 
+/// Binds the restored Participant row focus to the authenticated session.
+pub(crate) async fn set_participant_restore_focus(
+    session: &Session,
+    group_id: i64,
+    participant_id: i64,
+) -> Result<String, SessionError> {
+    set_participant_restore_notice(session, group_id, participant_id, true).await
+}
+
+/// Binds a failed Participant restore focus target to the authenticated session.
+pub(crate) async fn set_participant_restore_failure_focus(
+    session: &Session,
+    group_id: i64,
+    participant_id: i64,
+) -> Result<String, SessionError> {
+    set_participant_restore_notice(session, group_id, participant_id, false).await
+}
+
+async fn set_participant_restore_notice(
+    session: &Session,
+    group_id: i64,
+    participant_id: i64,
+    succeeded: bool,
+) -> Result<String, SessionError> {
+    let mut notices = session
+        .get::<Vec<(String, i64, i64, bool)>>(PARTICIPANT_RESTORE_NOTICES)
+        .await
+        .map_err(|_| SessionError)?
+        .unwrap_or_default();
+    if notices.len() == PARTICIPANT_RESTORE_NOTICE_CAPACITY {
+        notices.remove(0);
+    }
+    let nonce = Uuid::new_v4().to_string();
+    notices.push((nonce.clone(), group_id, participant_id, succeeded));
+    session
+        .insert(PARTICIPANT_RESTORE_NOTICES, notices)
+        .await
+        .map_err(|_| SessionError)?;
+    Ok(nonce)
+}
+
+/// Consumes one server-owned Participant restore notice for its Group and redirect nonce.
+pub(crate) async fn take_participant_restore_notice(
+    session: &Session,
+    group_id: i64,
+    nonce: &str,
+) -> Result<Option<(i64, bool)>, SessionError> {
+    let mut notices = session
+        .get::<Vec<(String, i64, i64, bool)>>(PARTICIPANT_RESTORE_NOTICES)
+        .await
+        .map_err(|_| SessionError)?
+        .unwrap_or_default();
+    let Some(index) = notices
+        .iter()
+        .position(|(stored_nonce, stored_group, _, _)| {
+            stored_nonce == nonce && *stored_group == group_id
+        })
+    else {
+        return Ok(None);
+    };
+    let (_, _, participant_id, succeeded) = notices.remove(index);
+    session
+        .insert(PARTICIPANT_RESTORE_NOTICES, notices)
+        .await
+        .map_err(|_| SessionError)?;
+    Ok(Some((participant_id, succeeded)))
+}
+
 /// Rotates and durably establishes an authenticated session.
 pub(crate) async fn establish(session: &Session) -> Result<(), SessionError> {
     // Cycle before saving so the authenticated record can never reuse the
@@ -432,8 +502,9 @@ mod tests {
 
     use super::{
         AUTHENTICATED, anonymous_expiry, authenticated, authenticated_expiry, csrf_token,
-        establish, flush, set_spending_preview, spending_preview_matches,
-        take_matching_spending_preview,
+        establish, flush, set_participant_restore_failure_focus, set_participant_restore_focus,
+        set_spending_preview, spending_preview_matches, take_matching_spending_preview,
+        take_participant_restore_notice,
     };
     use crate::session_store::ReapingMemoryStore;
 
@@ -505,6 +576,79 @@ mod tests {
             spending_preview_matches(&session, 7, Some(11), &fields)
                 .await
                 .expect("retain edit preview after mismatch")
+        );
+    }
+
+    #[tokio::test]
+    async fn participant_restore_focus_is_server_owned_and_single_use() {
+        let store = Arc::new(ReapingMemoryStore::default());
+        let session = Session::new(None, store, Some(authenticated_expiry()));
+        session.save().await.expect("save authenticated session");
+
+        let success = set_participant_restore_focus(&session, 1, 7)
+            .await
+            .expect("set restore focus");
+        assert_eq!(
+            take_participant_restore_notice(&session, 1, &success)
+                .await
+                .expect("take restore focus"),
+            Some((7, true))
+        );
+        let success = set_participant_restore_focus(&session, 1, 7)
+            .await
+            .expect("reset restore focus");
+        assert_eq!(
+            take_participant_restore_notice(&session, 2, &success)
+                .await
+                .expect("reject wrong group restore focus"),
+            None
+        );
+        assert_eq!(
+            take_participant_restore_notice(&session, 1, &success)
+                .await
+                .expect("consume matching restore focus"),
+            Some((7, true))
+        );
+
+        let failure = set_participant_restore_failure_focus(&session, 1, 7)
+            .await
+            .expect("set restore failure focus");
+        assert_eq!(
+            take_participant_restore_notice(&session, 2, &failure)
+                .await
+                .expect("reject wrong group failure focus"),
+            None
+        );
+        assert_eq!(
+            take_participant_restore_notice(&session, 1, &failure)
+                .await
+                .expect("consume matching restore failure focus"),
+            Some((7, false))
+        );
+        assert_eq!(
+            take_participant_restore_notice(&session, 1, &failure)
+                .await
+                .expect("failure focus is single use"),
+            None
+        );
+
+        let first = set_participant_restore_focus(&session, 1, 7)
+            .await
+            .expect("set first concurrent restore focus");
+        let second = set_participant_restore_focus(&session, 1, 8)
+            .await
+            .expect("set second concurrent restore focus");
+        assert_eq!(
+            take_participant_restore_notice(&session, 1, &first)
+                .await
+                .expect("consume first concurrent restore focus"),
+            Some((7, true))
+        );
+        assert_eq!(
+            take_participant_restore_notice(&session, 1, &second)
+                .await
+                .expect("consume second concurrent restore focus"),
+            Some((8, true))
         );
     }
 }

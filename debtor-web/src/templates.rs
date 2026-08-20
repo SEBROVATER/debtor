@@ -548,6 +548,8 @@ pub struct GroupTemplate {
     pub members: Vec<MemberRow>,
     /// Inactive memberships available for reactivation.
     pub inactive_members: Vec<MemberRow>,
+    /// Whether this Group has archived identities available for restoration.
+    pub has_archived_members: bool,
     /// Spending rows.
     pub spendings: Vec<SpendingRow>,
     /// Cursor link for older spending rows.
@@ -572,6 +574,8 @@ pub struct GroupTemplate {
     pub participant_archive_notice: bool,
     /// Whether a Participant archive attempt was rejected after dispatch.
     pub participant_archive_failed: bool,
+    /// Whether a Participant restore completed on the prior request.
+    pub participant_restore_notice: bool,
     /// Participant name draft.
     pub create_name: String,
     /// Participant color draft.
@@ -582,6 +586,26 @@ pub struct GroupTemplate {
     pub source_summary: SourceSummaryView,
     /// Current-month Group Currency financial result.
     pub converted_summary: ConvertedSummaryView,
+}
+
+/// Group-contextual archived Participant view.
+#[derive(Template)]
+#[template(path = "archived_participants.html")]
+pub struct ArchivedParticipantsTemplate {
+    /// Group identity.
+    pub group_id: i64,
+    /// Group display name.
+    pub group_name: String,
+    /// Archived Participant rows.
+    pub members: Vec<MemberRow>,
+    /// Shared authenticated protection values.
+    pub shell: AuthenticatedShell,
+    /// Whether the owning Group is archived and therefore read-only.
+    pub group_archived: bool,
+    /// Row to focus after failed restore.
+    pub focus_participant: Option<i64>,
+    /// Generic scoped restore failure message.
+    pub restore_error: Option<String>,
 }
 
 /// Focused full-page Spending create/preview form.

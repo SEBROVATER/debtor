@@ -41,7 +41,7 @@
 # - Retrospective appends its action items to action_items; sprint-status surfaces open ones
 
 generated: 2026-08-12T12:16:16+06:00
-last_updated: 2026-08-20T13:43:42+06:00
+last_updated: 2026-08-20T20:39:11+06:00
 project: debtor
 project_key: NOKEY
 tracking_system: file-system
@@ -84,5 +84,5 @@ development_status:
   5-2-recalculate-balances-at-current-rates: done
   5-3-derive-complete-advisory-settlement-transfers: done
   5-4-archive-a-zero-balance-participant-safely: done
-  5-5-browse-and-restore-archived-participants: backlog
+  5-5-browse-and-restore-archived-participants: done
   epic-5-retrospective: optional

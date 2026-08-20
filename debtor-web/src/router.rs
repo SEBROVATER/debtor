@@ -105,6 +105,14 @@ pub fn router_with_sessions<S: SessionStore + Clone>(
             get(handlers::archive_group_participant_form).post(handlers::archive_group_participant),
         )
         .route(
+            "/groups/{group_id}/participants/archived",
+            get(handlers::archived_group_participants),
+        )
+        .route(
+            "/groups/{group_id}/participants/{participant_id}/restore",
+            post(handlers::restore_group_participant),
+        )
+        .route(
             "/groups/{id}/spendings/new",
             get(handlers::new_spending_form),
         )
@@ -503,6 +511,186 @@ mod tests {
             response_body(response)
                 .await
                 .contains("href=\"/groups/1/transactions\">Open Transactions</a>")
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    async fn restore_archived_participant_is_protected_and_dispatches_once() {
+        let test_state = state(false);
+        test_state
+            .participants
+            .participant_is_archived
+            .store(true, Ordering::Relaxed);
+        let app = app(&test_state);
+        let cookie = login(&app).await;
+        let archived_page = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                "/groups/1/participants/archived",
+                "",
+                Some(&cookie),
+            ))
+            .await
+            .expect("archived participants page");
+        assert_eq!(archived_page.status(), StatusCode::OK);
+        let body = response_body(archived_page).await;
+        let form = format!(
+            "csrf={}&submission_token={}",
+            csrf(&body),
+            submission_token(&body)
+        );
+
+        let malformed = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                "/groups/1/participants/1/restore",
+                &format!("{form}&unexpected=value"),
+                Some(&cookie),
+            ))
+            .await
+            .expect("malformed restore response");
+        assert_eq!(malformed.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            test_state
+                .groups
+                .participant_restores
+                .load(Ordering::Relaxed),
+            0
+        );
+        let cross_group = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                "/groups/2/participants/1/restore",
+                &form,
+                Some(&cookie),
+            ))
+            .await
+            .expect("cross-group restore response");
+        assert_eq!(cross_group.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            test_state
+                .groups
+                .participant_restores
+                .load(Ordering::Relaxed),
+            0
+        );
+
+        let response = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                "/groups/1/participants/1/restore",
+                &form,
+                Some(&cookie),
+            ))
+            .await
+            .expect("restore response");
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let destination = response.headers()["location"]
+            .to_str()
+            .expect("restore location")
+            .to_owned();
+        assert!(destination.starts_with("/groups/1/manage?restore="));
+        assert_eq!(
+            test_state
+                .groups
+                .participant_restores
+                .load(Ordering::Relaxed),
+            1
+        );
+
+        test_state
+            .participants
+            .participant_is_archived
+            .store(false, Ordering::Relaxed);
+        let restored = app
+            .clone()
+            .oneshot(request(Method::GET, &destination, "", Some(&cookie)))
+            .await
+            .expect("restored manage response");
+        let restored_body = response_body(restored).await;
+        assert!(restored_body.contains("Participant restored."));
+        assert!(
+            restored_body.contains(
+                "id=\"participant-1\" class=\"participant-row\" tabindex=\"-1\" autofocus"
+            )
+        );
+        let replayed_destination = app
+            .clone()
+            .oneshot(request(Method::GET, &destination, "", Some(&cookie)))
+            .await
+            .expect("replayed restore destination");
+        assert!(
+            !response_body(replayed_destination)
+                .await
+                .contains("Participant restored.")
+        );
+
+        let replay = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                "/groups/1/participants/1/restore",
+                &form,
+                Some(&cookie),
+            ))
+            .await
+            .expect("replayed restore response");
+        assert_eq!(replay.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            test_state
+                .groups
+                .participant_restores
+                .load(Ordering::Relaxed),
+            1
+        );
+
+        test_state
+            .participants
+            .participant_is_archived
+            .store(true, Ordering::Relaxed);
+        test_state
+            .groups
+            .participant_restore_error
+            .store(true, Ordering::Relaxed);
+        let failure_page = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                "/groups/1/participants/archived",
+                "",
+                Some(&cookie),
+            ))
+            .await
+            .expect("restore failure page");
+        let failure_body = response_body(failure_page).await;
+        let failure_form = format!(
+            "csrf={}&submission_token={}",
+            csrf(&failure_body),
+            submission_token(&failure_body)
+        );
+        let mut enhanced_failure = request(
+            Method::POST,
+            "/groups/1/participants/1/restore",
+            &failure_form,
+            Some(&cookie),
+        );
+        enhanced_failure
+            .headers_mut()
+            .insert("hx-request", HeaderValue::from_static("true"));
+        let enhanced_failure = app
+            .oneshot(enhanced_failure)
+            .await
+            .expect("enhanced restore failure");
+        assert_eq!(enhanced_failure.status(), StatusCode::CONFLICT);
+        assert!(
+            response_body(enhanced_failure)
+                .await
+                .contains("Participant was not restored.")
         );
     }
 
@@ -2097,6 +2285,7 @@ mod tests {
                 "/groups/1/participants/1/edit",
                 "name=Nope&color=%23abcdef",
             ),
+            (Method::POST, "/groups/1/participants/1/restore", ""),
             (Method::POST, "/groups/1/spendings", ""),
             (Method::GET, "/groups/1/spendings/1/edit", ""),
             (Method::GET, "/groups/1/spendings/1/delete", ""),
@@ -2132,6 +2321,13 @@ mod tests {
         assert_eq!(response.status(), StatusCode::CONFLICT);
         assert_eq!(test_state.groups.archived.load(Ordering::Relaxed), 0);
         assert_eq!(test_state.groups.deleted.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            test_state
+                .groups
+                .participant_restores
+                .load(Ordering::Relaxed),
+            0
+        );
     }
 
     #[tokio::test]
@@ -2378,6 +2574,7 @@ mod tests {
             (Method::POST, "/groups/1/spendings/1/delete"),
             (Method::POST, "/groups/1/archive"),
             (Method::POST, "/groups/1/restore"),
+            (Method::POST, "/groups/1/participants/1/restore"),
         ];
         for (method, uri) in routes {
             for body in ["", "csrf=wrong", "csrf=wrong&csrf=another"] {

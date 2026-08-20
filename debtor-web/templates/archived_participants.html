@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Archived Participants | {{ group_name }} | debtor</title>
+    <link rel="stylesheet" href="/static/css/app.css" />
+    <script src="/static/htmx.min.js" integrity="sha384-H5SrcfygHmAuTDZphMHqBJLc3FhssKjG7w/CeCpFReSfwBWDTKpkzPP8c+cLsK+V" crossorigin="anonymous" defer></script>
+    <script src="/static/response-targets.js" integrity="sha384-NtTh9TBZ2X/pFpfsVvQOjSsYWmjmqG6h5ioQWVAe2/j3AuTHRmfqvoqp+iOed+I0" crossorigin="anonymous" defer></script>
+  </head>
+  <body>
+    <header id="authenticated-header" class="site-header" aria-busy="false">
+      <a href="/groups">debtor</a>
+      <nav><a href="/groups">Groups</a><a href="/groups/{{ group_id }}">Summary</a><a href="/groups/{{ group_id }}/transactions">Transactions</a><a href="/groups/{{ group_id }}/debts">Debts</a><a href="/groups/{{ group_id }}/manage">Manage</a></nav>
+      <form method="post" action="/logout" class="sign-out-form" hx-ext="response-targets" hx-target="#sign-out-status" hx-target-4xx="#sign-out-status" hx-target-5xx="#sign-out-status"><input type="hidden" name="csrf" value="{{ shell.csrf }}" /><input type="hidden" name="submission_token" value="{{ shell.submission_token }}" /><button type="submit" class="sign-out-button" hx-post="/logout" hx-disabled-elt="button" hx-indicator="#sign-out-status">Sign out</button><p id="sign-out-status" class="status" role="status" aria-live="polite" aria-atomic="true"> </p></form>
+    </header>
+    <main>
+      <p><a href="/groups/{{ group_id }}/manage">Manage</a></p>
+      <section class="manage-section" aria-labelledby="archived-participants-heading">
+        <h1 id="archived-participants-heading" tabindex="-1" autofocus>Archived Participants</h1>
+        <p class="helper">Archived Participants remain visible in historical records and can be restored to new allocations.</p>
+        {% match restore_error %}{% when Some with (message) %}<p id="restore-error" class="warning" role="status" aria-live="polite" aria-atomic="true">{{ message }}</p>{% when None %}{% endmatch %}
+        {% if members.len() == 0 %}
+        <p class="empty">No archived Participants in this Group.</p>
+        <p><a class="button secondary" href="/groups/{{ group_id }}/manage">Return to Manage</a></p>
+        {% else %}
+        <ul class="participant-list" aria-label="Archived Participants">
+          {% for member in members %}
+          <li id="participant-{{ member.id }}-restore" class="participant-row" tabindex="-1">
+            <span class="swatch named-swatch" style="background: {{ member.color }}" aria-hidden="true"></span>
+            <span class="participant-identity"><strong>{{ member.name }} <span>Archived</span></strong><small>{{ member.color }}</small></span>
+            {% if !group_archived %}<form method="post" action="/groups/{{ group_id }}/participants/{{ member.id }}/restore" class="mutation-form participant-actions" hx-post="/groups/{{ group_id }}/participants/{{ member.id }}/restore" hx-ext="response-targets" hx-target="#participant-{{ member.id }}-restore-status" hx-target-4xx="#participant-{{ member.id }}-restore-status" hx-target-5xx="#participant-{{ member.id }}-restore-status" hx-disabled-elt="button" hx-indicator="#participant-{{ member.id }}-restore-status">
+              <input type="hidden" name="csrf" value="{{ shell.csrf }}" />
+              <input type="hidden" name="submission_token" value="{{ shell.submission_token }}" />
+              <button type="submit"{% if focus_participant.as_ref() == Some(&member.id) %} autofocus{% endif %}>Restore Participant</button>
+              <p id="participant-{{ member.id }}-restore-status" class="mutation-status" role="status" aria-live="polite" aria-atomic="true"> </p>
+            </form>{% endif %}
+          </li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+      </section>
+    </main>
+  </body>
+</html>

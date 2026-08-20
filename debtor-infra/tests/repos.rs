@@ -151,6 +151,131 @@ async fn group_lifecycle_is_state_scoped_and_history_free_delete_is_atomic(pool:
     assert_eq!(participant_count, 0);
 }
 
+#[sqlx::test(migrations = "../migrations")]
+async fn participant_restore_is_group_scoped_and_preserves_membership(pool: SqlitePool) {
+    let (store, group_id, participant_id) = active_group_and_participant(&pool).await;
+    store
+        .add_member(group_id, participant_id)
+        .await
+        .expect("add active allocation member");
+    let persisted_spending = store
+        .create_spending(spending(group_id, participant_id))
+        .await
+        .expect("create historical spending");
+    sqlx::query("UPDATE participants SET is_archived = 1 WHERE id = ?")
+        .bind(participant_id)
+        .execute(&pool)
+        .await
+        .expect("archive participant fixture");
+
+    store
+        .restore_group_participant(group_id, participant_id)
+        .await
+        .expect("restore owned archived participant");
+    let members = store
+        .group_members(group_id)
+        .await
+        .expect("read restored member");
+    assert_eq!(members.len(), 1);
+    assert!(!members[0].0.is_archived);
+    assert!(members[0].1.is_active);
+    let historical = store
+        .spending_detail(group_id, persisted_spending.id)
+        .await
+        .expect("historical allocation remains readable");
+    assert_eq!(historical.payers[0].0.id, participant_id);
+    assert_eq!(historical.shares[0].0.id, participant_id);
+
+    let repeat = store
+        .restore_group_participant(group_id, participant_id)
+        .await
+        .expect_err("active participant cannot restore again");
+    assert!(matches!(repeat, ApplicationError::Conflict));
+
+    let other_group = store
+        .create_group(Name::new("Other").expect("valid name"), Currency::Usd)
+        .await
+        .expect("create other group");
+    let mismatch = store
+        .restore_group_participant(other_group.id, participant_id)
+        .await
+        .expect_err("cross-group participant cannot restore");
+    assert!(matches!(mismatch, ApplicationError::Conflict));
+
+    store.archive_group(group_id).await.expect("archive group");
+    assert!(matches!(
+        store
+            .restore_group_participant(group_id, participant_id)
+            .await,
+        Err(ApplicationError::Conflict)
+    ));
+    assert!(matches!(
+        store
+            .restore_group_participant(group_id, participant_id + 1)
+            .await,
+        Err(ApplicationError::Conflict)
+    ));
+}
+
+#[sqlx::test(migrations = "../migrations")]
+async fn concurrent_participant_restores_have_one_commit_and_preserve_history(pool: SqlitePool) {
+    let runtime = SqliteLedgerRuntime::new(pool.clone());
+    let store = runtime.store();
+    let group = store
+        .create_group(
+            Name::new("Restore race").expect("valid name"),
+            Currency::Usd,
+        )
+        .await
+        .expect("create group");
+    let participant = store
+        .create_group_participant(
+            group.id,
+            Name::new("Ari").expect("valid name"),
+            Color::new("#112233").expect("valid color"),
+        )
+        .await
+        .expect("create participant");
+    sqlx::query("UPDATE participants SET is_archived = 1 WHERE id = ?")
+        .bind(participant.id)
+        .execute(&pool)
+        .await
+        .expect("archive fixture participant");
+
+    let first = runtime.store();
+    let second = runtime.store();
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(3));
+    let first_barrier = barrier.clone();
+    let second_barrier = barrier.clone();
+    let first_task = tokio::spawn(async move {
+        first_barrier.wait().await;
+        first
+            .restore_group_participant(group.id, participant.id)
+            .await
+    });
+    let second_task = tokio::spawn(async move {
+        second_barrier.wait().await;
+        second
+            .restore_group_participant(group.id, participant.id)
+            .await
+    });
+    barrier.wait().await;
+
+    let first_result = first_task.await.expect("first restore task");
+    let second_result = second_task.await.expect("second restore task");
+    assert!(matches!(
+        (first_result, second_result),
+        (Ok(()), Err(ApplicationError::Conflict)) | (Err(ApplicationError::Conflict), Ok(()))
+    ));
+    assert!(
+        !store
+            .participant(participant.id)
+            .await
+            .expect("restored participant")
+            .is_archived
+    );
+}
+
 fn spending(group_id: i64, participant_id: i64) -> Spending {
     Spending {
         id: 0,

@@ -1,8 +1,9 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Redirect, Response},
 };
+use serde::Deserialize;
 use tower_sessions::Session;
 
 use super::{
@@ -13,8 +14,9 @@ use super::{
 };
 use crate::{
     forms::{CsrfValidatedForm, ParticipantForm, parse_participant_form},
+    session,
     state::AppState,
-    templates::{ConfirmTemplate, ParticipantEditRowTemplate},
+    templates::{ArchivedParticipantsTemplate, ConfirmTemplate, ParticipantEditRowTemplate},
 };
 
 pub(crate) async fn create_group_participant(
@@ -184,6 +186,141 @@ pub(crate) async fn archive_group_participant(
         Ok(()) => Redirect::to(&format!("/groups/{group_id}/manage?participant_archived=1"))
             .into_response(),
         Err(_) => archive_failure_response(group_id, participant_id),
+    }
+}
+
+#[derive(Deserialize, Default)]
+pub(crate) struct RestoreQuery {
+    restore: Option<String>,
+}
+
+pub(crate) async fn archived_group_participants(
+    State(state): State<AppState>,
+    session: Session,
+    Path(group_id): Path<i64>,
+    Query(query): Query<RestoreQuery>,
+) -> Response {
+    if let Err(response) = require_auth(&session).await {
+        return response;
+    }
+    let group = match state.groups.group(group_id).await {
+        Ok(group) => group,
+        Err(error) => return map_error(error),
+    };
+    let members = match state.participants.members(group_id).await {
+        Ok(members) => members
+            .into_iter()
+            .filter(|(participant, _)| participant.is_archived)
+            .map(|(participant, member)| crate::templates::MemberRow {
+                id: participant.id,
+                name: participant.name.to_string(),
+                color: participant.color.as_str().to_owned(),
+                active: member.is_active,
+                archived: true,
+                payer_allowed: false,
+                share_allowed: false,
+                selected: false,
+                allocation_error: None,
+                amount: String::new(),
+                derived_amount: String::new(),
+                editing: false,
+                edit_name: participant.name.to_string(),
+                edit_color: participant.color.as_str().to_owned(),
+                edit_error: None,
+                edit_invalid_field: None,
+                historical_balance: None,
+                archive_eligibility: crate::templates::ArchiveEligibility::RatesUnavailable,
+            })
+            .collect(),
+        Err(error) => return map_error(error),
+    };
+    let shell = match super::auth::authenticated_shell(&state, &session).await {
+        Ok(shell) => shell,
+        Err(response) => return response,
+    };
+    let restore_nonce = query.restore.as_deref().unwrap_or_default();
+    let Ok(restore_notice) =
+        session::take_participant_restore_notice(&session, group_id, restore_nonce).await
+    else {
+        return super::response::session_error();
+    };
+    super::response::render(&ArchivedParticipantsTemplate {
+        group_id,
+        group_name: group.name.to_string(),
+        members,
+        shell,
+        group_archived: group.is_archived,
+        focus_participant: restore_notice
+            .and_then(|(participant_id, succeeded)| (!succeeded).then_some(participant_id)),
+        restore_error: restore_notice.and_then(|(_, succeeded)| {
+            (!succeeded)
+                .then(|| "Participant was not restored. Reopen this page to retry.".to_owned())
+        }),
+    })
+}
+
+pub(crate) async fn restore_group_participant(
+    State(state): State<AppState>,
+    session: Session,
+    Path((group_id, participant_id)): Path<(i64, i64)>,
+    headers: HeaderMap,
+    form: CsrfValidatedForm,
+) -> Response {
+    if let Err(response) = require_auth(&session).await {
+        return response;
+    }
+    if let Err(response) = require_writable_group(&state, group_id).await {
+        return response;
+    }
+    if let Err(error) = crate::forms::parse_lifecycle_form(&form.ordered()) {
+        return error_response(error.status, error.message);
+    }
+    let Some(session_id) = session.id() else {
+        return super::response::session_error();
+    };
+    if let Err(response) = form
+        .reserve_and_dispatch(&state.submission_tokens, session_id)
+        .await
+    {
+        return response;
+    }
+    match state
+        .group_mutations
+        .restore_group_participant(group_id, participant_id)
+        .await
+    {
+        Ok(()) => {
+            let Ok(nonce) =
+                session::set_participant_restore_focus(&session, group_id, participant_id).await
+            else {
+                return super::response::session_error();
+            };
+            let destination = format!("/groups/{group_id}/manage?restore={nonce}");
+            if headers.contains_key("hx-request") {
+                return [("HX-Redirect", destination)].into_response();
+            }
+            Redirect::to(&destination).into_response()
+        }
+        Err(_) if headers.contains_key("hx-request") => (
+            StatusCode::CONFLICT,
+            format!(
+                "<p id=\"participant-{participant_id}-restore-status\" class=\"mutation-status warning\" role=\"status\" aria-live=\"polite\">Participant was not restored. Reopen this page to retry.</p>"
+            ),
+        )
+            .into_response(),
+        Err(_) => {
+            let Ok(nonce) = session::set_participant_restore_failure_focus(
+                &session,
+                group_id,
+                participant_id,
+            )
+            .await
+            else {
+                return super::response::session_error();
+            };
+            Redirect::to(&format!("/groups/{group_id}/participants/archived?restore={nonce}"))
+                .into_response()
+        }
     }
 }
 

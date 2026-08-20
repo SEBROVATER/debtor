@@ -493,6 +493,51 @@ impl GroupMutationExecutor for RootGroupMutationExecutor {
             }
         })
     }
+
+    fn restore_group_participant(
+        &self,
+        group_id: i64,
+        participant_id: i64,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<(), debtor_application::ApplicationError>>
+                + Send
+                + '_,
+        >,
+    > {
+        let participants = self.participants.clone();
+        let mutations = self.mutations.clone();
+        let runtime = self.runtime.clone();
+        Box::pin(async move {
+            let Some(lease) = mutations.try_register() else {
+                return Err(debtor_application::ApplicationError::Storage(
+                    debtor_application::StorageReason::Contention,
+                ));
+            };
+            let task = tokio::spawn(async move {
+                let mut guard = GroupMutationGuard::new(lease, mutations, runtime);
+                match participants
+                    .restore_group_participant(group_id, participant_id)
+                    .await
+                {
+                    Ok(()) => {
+                        guard.committed();
+                        Ok(())
+                    }
+                    Err(error) => {
+                        guard.rolled_back();
+                        Err(error)
+                    }
+                }
+            });
+            match task.await {
+                Ok(result) => result,
+                Err(_) => Err(debtor_application::ApplicationError::Storage(
+                    debtor_application::StorageReason::Unknown,
+                )),
+            }
+        })
+    }
 }
 
 impl RootGroupMutationExecutor {

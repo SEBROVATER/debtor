@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE participants SET is_archived = 0, updated_at = datetime('now') WHERE id = ? AND group_id = ? AND is_archived = 1 AND EXISTS (SELECT 1 FROM groups WHERE id = ? AND is_archived = 0)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "db08f969ff3c8349f492481053bd3bca0a66b5559427c30dc5824876f9c558f3"
+}

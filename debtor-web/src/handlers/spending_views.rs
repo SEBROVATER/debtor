@@ -179,6 +179,9 @@ pub(super) async fn build_group_template(
         .filter(|(participant, member)| !member.is_active && !participant.is_archived)
         .map(|(participant, _)| member_row(participant, false, false))
         .collect();
+    let has_archived_members = members
+        .iter()
+        .any(|(participant, _)| participant.is_archived);
     let had_cursor = cursor.is_some();
     let spending_page = state.spendings.spending_page(id, cursor).await?;
     let can_delete = spending_page.items.is_empty() && cursor.is_none();
@@ -282,6 +285,7 @@ pub(super) async fn build_group_template(
         shell,
         members: active_members,
         inactive_members,
+        has_archived_members,
         spendings: spending_page
             .items
             .into_iter()
@@ -304,6 +308,7 @@ pub(super) async fn build_group_template(
         participant_notice: None,
         participant_archive_notice: false,
         participant_archive_failed: false,
+        participant_restore_notice: false,
         create_name,
         create_color,
         expense,
@@ -433,6 +438,7 @@ async fn build_group_settings_fallback(
         shell,
         members: Vec::new(),
         inactive_members: Vec::new(),
+        has_archived_members: false,
         spendings: Vec::new(),
         older_spendings: None,
         newer_spendings: None,
@@ -445,6 +451,7 @@ async fn build_group_settings_fallback(
         participant_notice: None,
         participant_archive_notice: false,
         participant_archive_failed: false,
+        participant_restore_notice: false,
         create_name: String::new(),
         create_color: String::new(),
         expense: ExpenseFormView {

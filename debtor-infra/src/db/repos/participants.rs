@@ -158,6 +158,35 @@ impl ParticipantRepository for SqliteLedgerStore {
         Ok(())
     }
 
+    async fn restore_group_participant(
+        &self,
+        group_id: EntityId,
+        participant_id: EntityId,
+    ) -> Result<(), ApplicationError> {
+        let _write_guard = self.write_guard().await?;
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        let result = sqlx::query!(
+            "UPDATE participants SET is_archived = 0, updated_at = datetime('now') WHERE id = ? AND group_id = ? AND is_archived = 1 AND EXISTS (SELECT 1 FROM groups WHERE id = ? AND is_archived = 0)",
+            participant_id,
+            group_id,
+            group_id
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(storage)?;
+        if result.rows_affected() == 0 {
+            return Err(group_write_failure_in_transaction(
+                &mut tx,
+                group_id,
+                ApplicationError::Conflict,
+            )
+            .await);
+        }
+        tx.commit().await.map_err(storage)?;
+        self.committed();
+        Ok(())
+    }
+
     async fn add_member(
         &self,
         group_id: EntityId,

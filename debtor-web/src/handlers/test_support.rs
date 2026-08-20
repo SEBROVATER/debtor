@@ -43,6 +43,8 @@ pub(crate) struct FakeGroups {
     pub(crate) updated: Mutex<Vec<(i64, String, Currency)>>,
     pub(crate) archived: AtomicUsize,
     pub(crate) deleted: AtomicUsize,
+    pub(crate) participant_restores: AtomicUsize,
+    pub(crate) participant_restore_error: std::sync::atomic::AtomicBool,
 }
 
 pub(crate) struct FakeParticipants {
@@ -55,6 +57,7 @@ pub(crate) struct FakeParticipants {
     pub(crate) group_created: Mutex<Vec<(i64, String, String)>>,
     pub(crate) archived: AtomicUsize,
     pub(crate) memberships: AtomicUsize,
+    pub(crate) participant_is_archived: std::sync::atomic::AtomicBool,
 }
 
 pub(crate) fn state(archived: bool) -> TestState {
@@ -144,6 +147,8 @@ fn state_with_errors_and_password(
         updated: Mutex::new(Vec::new()),
         archived: AtomicUsize::new(0),
         deleted: AtomicUsize::new(0),
+        participant_restores: AtomicUsize::new(0),
+        participant_restore_error: std::sync::atomic::AtomicBool::new(false),
     });
     let participants = Arc::new(FakeParticipants {
         participant: Participant {
@@ -159,6 +164,7 @@ fn state_with_errors_and_password(
         group_created: Mutex::new(Vec::new()),
         archived: AtomicUsize::new(0),
         memberships: AtomicUsize::new(0),
+        participant_is_archived: std::sync::atomic::AtomicBool::new(false),
     });
     let fake_spendings = Arc::new(FakeSpendings);
     let spendings: Arc<dyn SpendingUseCases> = fake_spendings.clone();
@@ -379,6 +385,26 @@ impl GroupMutationExecutor for FakeGroups {
     > {
         Box::pin(async { Ok(()) })
     }
+
+    fn restore_group_participant(
+        &self,
+        _: i64,
+        _: i64,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), ApplicationError>> + Send + '_>,
+    > {
+        self.participant_restores.fetch_add(1, Ordering::Relaxed);
+        Box::pin(async move {
+            if self
+                .participant_restore_error
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                Err(ApplicationError::Conflict)
+            } else {
+                Ok(())
+            }
+        })
+    }
 }
 
 #[async_trait]
@@ -420,12 +446,19 @@ impl ParticipantUseCases for FakeParticipants {
         Ok(())
     }
 
+    async fn restore_group_participant(&self, _: i64, _: i64) -> Result<(), ApplicationError> {
+        self.archived.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
     async fn members(
         &self,
         group_id: i64,
     ) -> Result<Vec<(Participant, GroupMember)>, ApplicationError> {
+        let mut participant = self.participant.clone();
+        participant.is_archived = self.participant_is_archived.load(Ordering::Relaxed);
         Ok(vec![(
-            self.participant.clone(),
+            participant,
             GroupMember {
                 group_id,
                 participant_id: self.participant.id,
