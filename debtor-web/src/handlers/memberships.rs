@@ -14,7 +14,7 @@ use super::{
 use crate::{
     forms::{CsrfValidatedForm, ParticipantForm, parse_participant_form},
     state::AppState,
-    templates::ParticipantEditRowTemplate,
+    templates::{ConfirmTemplate, ParticipantEditRowTemplate},
 };
 
 pub(crate) async fn create_group_participant(
@@ -90,6 +90,108 @@ pub(crate) async fn create_group_participant(
         }
         Err(error) => map_error(error),
     }
+}
+
+pub(crate) async fn archive_group_participant_form(
+    State(state): State<AppState>,
+    session: Session,
+    Path((group_id, participant_id)): Path<(i64, i64)>,
+) -> Response {
+    if let Err(response) = require_auth(&session).await {
+        return response;
+    }
+    if let Err(response) = require_writable_group(&state, group_id).await {
+        return response;
+    }
+    let members = match state.participants.members(group_id).await {
+        Ok(members) => members,
+        Err(error) => return map_error(error),
+    };
+    let Some((participant, _)) = members.into_iter().find(|(participant, member)| {
+        participant.id == participant_id && member.is_active && !participant.is_archived
+    }) else {
+        return error_response(StatusCode::NOT_FOUND, "Participant not found.");
+    };
+    match state
+        .debts
+        .calculate(group_id, debtor_application::RateMode::Historical)
+        .await
+    {
+        Ok(result) if matches!(result.balances.get(&participant_id), Some(balance) if balance.is_zero()) =>
+            {}
+        Ok(_) => {
+            return error_response(
+                StatusCode::CONFLICT,
+                "Archive requires an exactly zero Historical Balance.",
+            );
+        }
+        Err(error) => return map_error(error),
+    }
+    let group = match state.groups.group(group_id).await {
+        Ok(group) => group,
+        Err(error) => return map_error(error),
+    };
+    let shell = match super::auth::authenticated_shell(&state, &session).await {
+        Ok(shell) => shell,
+        Err(response) => return response,
+    };
+    super::response::render(&ConfirmTemplate {
+        heading: "Archive Participant".into(),
+        message: format!(
+            "Archive {} from {}? This is reversible, removes this identity from new allocations, and preserves all history.",
+            participant.name, group.name
+        ),
+        action: format!("/groups/{group_id}/participants/{participant_id}/archive"),
+        cancel: format!("/groups/{group_id}/manage#participant-{participant_id}-archive"),
+        csrf: shell.csrf.clone(),
+        shell,
+        details: Vec::new(),
+        destructive: false,
+        facts: Vec::new(),
+        focus_id: "confirm-heading".into(),
+    })
+}
+
+pub(crate) async fn archive_group_participant(
+    State(state): State<AppState>,
+    session: Session,
+    Path((group_id, participant_id)): Path<(i64, i64)>,
+    form: CsrfValidatedForm,
+) -> Response {
+    if let Err(response) = require_auth(&session).await {
+        return response;
+    }
+    if let Err(response) = require_writable_group(&state, group_id).await {
+        return response;
+    }
+    if let Err(error) = crate::forms::parse_lifecycle_form(&form.ordered()) {
+        return error_response(error.status, error.message);
+    }
+    let Some(session_id) = session.id() else {
+        return super::response::session_error();
+    };
+    if let Err(response) = form
+        .reserve_and_dispatch(&state.submission_tokens, session_id)
+        .await
+    {
+        return response;
+    }
+    match state
+        .group_mutations
+        .archive_group_participant(group_id, participant_id)
+        .await
+    {
+        Ok(()) => Redirect::to(&format!("/groups/{group_id}/manage?participant_archived=1"))
+            .into_response(),
+        Err(_) => archive_failure_response(group_id, participant_id),
+    }
+}
+
+fn archive_failure_response(group_id: i64, participant_id: i64) -> Response {
+    Redirect::to(&format!(
+        "/groups/{group_id}/manage?participant_archive_failed=1#participant-{participant_id}-archive"
+    ))
+    .into_response()
 }
 
 pub(crate) async fn edit_group_participant_form(
@@ -331,5 +433,27 @@ fn application_validation_field(error: &debtor_application::ApplicationError) ->
             participant_validation_field(error)
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use axum::http::{StatusCode, header};
+
+    use super::archive_failure_response;
+
+    #[test]
+    fn archive_failure_returns_to_the_invoking_control_with_a_safe_status() {
+        let response = archive_failure_response(7, 11);
+
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::LOCATION)
+                .expect("archive failure location"),
+            "/groups/7/manage?participant_archive_failed=1#participant-11-archive"
+        );
     }
 }

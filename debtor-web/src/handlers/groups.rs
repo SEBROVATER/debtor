@@ -146,6 +146,10 @@ pub(crate) async fn group_manage(
             template.participant_notice = (query.participant_saved.as_deref() == Some("1"))
                 .then_some(query.participant)
                 .flatten();
+            template.participant_archive_notice =
+                query.participant_archived.as_deref() == Some("1");
+            template.participant_archive_failed =
+                query.participant_archive_failed.as_deref() == Some("1");
             render(&template)
         }
         Err(error) => map_group_template_error(error),

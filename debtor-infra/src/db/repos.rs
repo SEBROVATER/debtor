@@ -8,7 +8,10 @@ mod participants;
 mod snapshots;
 mod spendings;
 
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::Duration;
 
 use debtor_application::{ApplicationError, StorageReason};
@@ -22,12 +25,14 @@ const WRITE_GATE_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct SqliteLedgerStore {
     pub(super) pool: SqlitePool,
     write_gate: Arc<Mutex<()>>,
+    generation: Arc<AtomicU64>,
 }
 
 /// Root-owned `SQLite` resources shared by every persistence adapter handle.
 pub struct SqliteLedgerRuntime {
     pool: SqlitePool,
     write_gate: Arc<Mutex<()>>,
+    generation: Arc<AtomicU64>,
 }
 
 impl SqliteLedgerRuntime {
@@ -36,6 +41,7 @@ impl SqliteLedgerRuntime {
         Self {
             pool,
             write_gate: Arc::new(Mutex::new(())),
+            generation: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -44,6 +50,7 @@ impl SqliteLedgerRuntime {
         SqliteLedgerStore {
             pool: self.pool.clone(),
             write_gate: self.write_gate.clone(),
+            generation: self.generation.clone(),
         }
     }
 
@@ -65,6 +72,14 @@ impl SqliteLedgerStore {
         tokio::time::timeout(timeout, self.write_gate.clone().lock_owned())
             .await
             .map_err(|_| ApplicationError::Storage(StorageReason::Contention))
+    }
+
+    fn committed(&self) {
+        self.generation.fetch_add(1, Ordering::Release);
+    }
+
+    fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
     }
 }
 
@@ -191,14 +206,6 @@ fn is_sqlite_contention(error: &sqlx::Error) -> bool {
     };
     matches!(database_error.code().as_deref(), Some("5" | "6"))
         || database_error.message().contains("database is locked")
-}
-
-fn changed(result: sqlx::sqlite::SqliteQueryResult) -> Result<(), ApplicationError> {
-    if result.rows_affected() == 0 {
-        Err(ApplicationError::NotFound)
-    } else {
-        Ok(())
-    }
 }
 
 #[cfg(test)]

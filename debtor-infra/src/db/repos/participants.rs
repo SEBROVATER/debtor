@@ -1,11 +1,14 @@
 use async_trait::async_trait;
-use debtor_application::{ApplicationError, GroupReader, ParticipantReader, ParticipantRepository};
+use debtor_application::{
+    ApplicationError, ArchiveAdmission, GroupReader, ParticipantReader, ParticipantRepository,
+    archive_admission_is_eligible,
+};
 use debtor_domain::model::{Color, EntityId, GroupMember, Name, Participant};
 
 use super::decoding::{DbGroupMember, DbParticipant, decoded_bool, participant};
 use super::{
-    SqliteLedgerStore, changed, group_mutable, group_write_failure,
-    group_write_failure_in_transaction, participant_mutable, participant_write_failure, storage,
+    SqliteLedgerStore, group_mutable, group_write_failure, group_write_failure_in_transaction,
+    participant_mutable, participant_write_failure, storage,
 };
 
 async fn participant_by_id(
@@ -74,6 +77,7 @@ impl ParticipantRepository for SqliteLedgerStore {
             .await);
         }
         tx.commit().await.map_err(storage)?;
+        self.committed();
         Ok(Participant {
             id,
             name,
@@ -109,17 +113,49 @@ impl ParticipantRepository for SqliteLedgerStore {
             );
         };
         tx.commit().await.map_err(storage)?;
+        self.committed();
         participant(row)
     }
 
-    async fn set_participant_archived(
+    async fn archive_group_participant(
         &self,
-        id: EntityId,
-        archived: bool,
+        group_id: EntityId,
+        participant_id: EntityId,
+        admission: ArchiveAdmission,
     ) -> Result<(), ApplicationError> {
         let _write_guard = self.write_guard().await?;
-        changed(sqlx::query!("UPDATE participants SET is_archived = ?, updated_at = datetime('now') WHERE id = ?", i64::from(archived), id)
-            .execute(&self.pool).await.map_err(storage)?)
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        // The final UTC context is checked only after the guarded transaction begins.
+        if self.generation() != admission.generation
+            || admission.utc_date != chrono::Utc::now().date_naive()
+            || !archive_admission_is_eligible(&admission)
+        {
+            return Err(ApplicationError::Unavailable(
+                debtor_application::UnavailableReason::ExchangeRates,
+            ));
+        }
+        let result = sqlx::query!(
+            "UPDATE participants SET is_archived = 1, updated_at = datetime('now') WHERE id = ? AND group_id = ? AND is_archived = 0 AND EXISTS (SELECT 1 FROM groups WHERE id = ? AND is_archived = 0) AND EXISTS (SELECT 1 FROM group_members WHERE group_id = ? AND participant_id = ? AND is_active = 1)",
+            participant_id,
+            group_id,
+            group_id,
+            group_id,
+            participant_id
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(storage)?;
+        if result.rows_affected() == 0 {
+            return Err(group_write_failure_in_transaction(
+                &mut tx,
+                group_id,
+                ApplicationError::Conflict,
+            )
+            .await);
+        }
+        tx.commit().await.map_err(storage)?;
+        self.committed();
+        Ok(())
     }
 
     async fn add_member(
@@ -137,6 +173,7 @@ impl ParticipantRepository for SqliteLedgerStore {
                 debtor_application::StorageReason::Unexpected,
             ));
         }
+        self.committed();
         Ok(())
     }
 
@@ -154,6 +191,7 @@ impl ParticipantRepository for SqliteLedgerStore {
                 group_write_failure(&self.pool, group_id, ApplicationError::NotFound).await,
             );
         }
+        self.committed();
         Ok(())
     }
 }

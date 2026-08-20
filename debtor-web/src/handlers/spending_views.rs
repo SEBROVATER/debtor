@@ -15,10 +15,11 @@ use crate::{
     participant_color::suggested_participant_color,
     state::AppState,
     templates::{
-        ConvertedPayerRow, ConvertedRateRow, ConvertedSummaryState, ConvertedSummaryTemplate,
-        ConvertedSummaryView, ExpenseFormView, GroupTemplate, MemberRow, SelectOption,
-        SourceCurrencyRow, SourcePayerRow, SourceSummaryView, SpendingFormTemplate, SpendingRow,
-        TransactionAllocationRow, TransactionParticipant, TransactionRow, TransactionsTemplate,
+        ArchiveEligibility, ConvertedPayerRow, ConvertedRateRow, ConvertedSummaryState,
+        ConvertedSummaryTemplate, ConvertedSummaryView, ExpenseFormView, GroupTemplate, MemberRow,
+        SelectOption, SourceCurrencyRow, SourcePayerRow, SourceSummaryView, SpendingFormTemplate,
+        SpendingRow, TransactionAllocationRow, TransactionParticipant, TransactionRow,
+        TransactionsTemplate,
     },
 };
 
@@ -301,6 +302,8 @@ pub(super) async fn build_group_template(
         participant_invalid_field: None,
         focus_participant: None,
         participant_notice: None,
+        participant_archive_notice: false,
+        participant_archive_failed: false,
         create_name,
         create_color,
         expense,
@@ -335,6 +338,23 @@ pub(super) async fn build_group_manage_template(
     template.settings_error = settings_error;
     template.settings_invalid_field = settings_invalid_field;
     template.settings_notice = settings_notice;
+    if !template.archived
+        && let Ok(result) = state
+            .debts
+            .calculate(id, debtor_application::RateMode::Historical)
+            .await
+    {
+        for member in &mut template.members {
+            if let Some(balance) = result.balances.get(&member.id) {
+                member.historical_balance = Some(format!("{balance} {}", result.currency));
+                member.archive_eligibility = if balance.is_zero() {
+                    ArchiveEligibility::Eligible
+                } else {
+                    ArchiveEligibility::Nonzero
+                };
+            }
+        }
+    }
     Ok(template)
 }
 
@@ -423,6 +443,8 @@ async fn build_group_settings_fallback(
         participant_invalid_field: None,
         focus_participant: None,
         participant_notice: None,
+        participant_archive_notice: false,
+        participant_archive_failed: false,
         create_name: String::new(),
         create_color: String::new(),
         expense: ExpenseFormView {
@@ -624,6 +646,8 @@ fn member_row(
         edit_color: participant.color.as_str().to_owned(),
         edit_error: None,
         edit_invalid_field: None,
+        historical_balance: None,
+        archive_eligibility: ArchiveEligibility::RatesUnavailable,
     }
 }
 

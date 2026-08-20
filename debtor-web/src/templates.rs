@@ -303,7 +303,17 @@ pub struct RateRow {
 mod tests {
     use askama::Template;
 
-    use super::{AuthenticatedShell, BalanceRow, DebtsTemplate, RateRow, TransferRow};
+    use super::{
+        ArchiveEligibility, AuthenticatedShell, BalanceRow, DebtsTemplate, RateRow, TransferRow,
+    };
+
+    #[test]
+    fn archive_eligibility_keeps_nonzero_and_rate_unavailable_distinct() {
+        assert!(ArchiveEligibility::Eligible.is_eligible());
+        assert!(ArchiveEligibility::Nonzero.is_nonzero());
+        assert!(!ArchiveEligibility::RatesUnavailable.is_eligible());
+        assert!(!ArchiveEligibility::RatesUnavailable.is_nonzero());
+    }
 
     #[test]
     fn debts_template_discloses_current_mode_and_selection() {
@@ -508,6 +518,7 @@ pub struct ParticipantRow {
 /// Group spending page.
 #[derive(Template)]
 #[template(path = "group.html")]
+#[allow(clippy::struct_excessive_bools)]
 pub struct GroupTemplate {
     /// Group name.
     pub name: String,
@@ -557,6 +568,10 @@ pub struct GroupTemplate {
     pub focus_participant: Option<i64>,
     /// Participant row to announce after a committed edit.
     pub participant_notice: Option<i64>,
+    /// Whether a Participant archive completed on the prior request.
+    pub participant_archive_notice: bool,
+    /// Whether a Participant archive attempt was rejected after dispatch.
+    pub participant_archive_failed: bool,
     /// Participant name draft.
     pub create_name: String,
     /// Participant color draft.
@@ -666,6 +681,29 @@ pub struct SelectOption {
 }
 
 /// Renderable active member.
+#[derive(Clone, Copy)]
+pub enum ArchiveEligibility {
+    /// A complete Historical calculation found an exact zero balance.
+    Eligible,
+    /// A complete Historical calculation found a nonzero balance.
+    Nonzero,
+    /// Historical rate evidence was unavailable for this Manage render.
+    RatesUnavailable,
+}
+
+impl ArchiveEligibility {
+    /// Whether Archive confirmation may be opened.
+    pub fn is_eligible(self) -> bool {
+        matches!(self, Self::Eligible)
+    }
+
+    /// Whether a complete calculation found a nonzero balance.
+    pub fn is_nonzero(self) -> bool {
+        matches!(self, Self::Nonzero)
+    }
+}
+
+/// Renderable active member.
 #[derive(Clone)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct MemberRow {
@@ -701,6 +739,10 @@ pub struct MemberRow {
     pub edit_error: Option<String>,
     /// Edit field with invalid guidance.
     pub edit_invalid_field: Option<String>,
+    /// Historical Balance rendered only on Manage.
+    pub historical_balance: Option<String>,
+    /// Current Manage archive eligibility projection.
+    pub archive_eligibility: ArchiveEligibility,
 }
 
 /// Renderable spending row.

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use debtor_domain::model::{Color, EntityId, GroupMember, Name, Participant};
 
-use crate::{ApplicationError, GroupReader};
+use crate::{ApplicationError, ArchiveAdmission, ArchiveCalculationUseCases, GroupReader};
 
 /// Transport-neutral raw input for creating a Group-owned Participant.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,11 +94,12 @@ pub trait ParticipantRepository: Send + Sync {
         name: Name,
         color: Color,
     ) -> Result<Participant, ApplicationError>;
-    /// Changes participant archive state.
-    async fn set_participant_archived(
+    /// Archives one active Participant belonging to the supplied active Group.
+    async fn archive_group_participant(
         &self,
-        id: EntityId,
-        archived: bool,
+        group_id: EntityId,
+        participant_id: EntityId,
+        admission: ArchiveAdmission,
     ) -> Result<(), ApplicationError>;
     /// Adds an active group membership.
     async fn add_member(
@@ -134,8 +135,12 @@ pub trait ParticipantUseCases: Send + Sync {
         name: String,
         color: String,
     ) -> Result<Participant, ApplicationError>;
-    /// Archives or restores a participant.
-    async fn set_archived(&self, id: EntityId, archived: bool) -> Result<(), ApplicationError>;
+    /// Archives an active Group-owned Participant only at an exact Historical zero balance.
+    async fn archive_group_participant(
+        &self,
+        group_id: EntityId,
+        participant_id: EntityId,
+    ) -> Result<(), ApplicationError>;
     /// Lists memberships with participant data.
     async fn members(
         &self,
@@ -160,6 +165,7 @@ pub struct ParticipantService {
     reader: Arc<dyn ParticipantReader>,
     repository: Arc<dyn ParticipantRepository>,
     groups: Arc<dyn GroupReader>,
+    debts: Arc<dyn ArchiveCalculationUseCases>,
 }
 
 impl ParticipantService {
@@ -168,11 +174,13 @@ impl ParticipantService {
         reader: Arc<dyn ParticipantReader>,
         repository: Arc<dyn ParticipantRepository>,
         groups: Arc<dyn GroupReader>,
+        debts: Arc<dyn ArchiveCalculationUseCases>,
     ) -> Self {
         Self {
             reader,
             repository,
             groups,
+            debts,
         }
     }
 }
@@ -231,8 +239,31 @@ impl ParticipantUseCases for ParticipantService {
             .await
     }
 
-    async fn set_archived(&self, id: EntityId, archived: bool) -> Result<(), ApplicationError> {
-        self.repository.set_participant_archived(id, archived).await
+    async fn archive_group_participant(
+        &self,
+        group_id: EntityId,
+        participant_id: EntityId,
+    ) -> Result<(), ApplicationError> {
+        if group_id <= 0 || participant_id <= 0 || self.groups.group(group_id).await?.is_archived {
+            return Err(ApplicationError::Conflict);
+        }
+        let result = self.debts.calculate_archive(group_id).await?;
+        if result.capture.snapshot.group.is_archived
+            || result.balances.get(&participant_id) != Some(&rust_decimal::Decimal::ZERO)
+        {
+            return Err(ApplicationError::Conflict);
+        }
+        self.repository
+            .archive_group_participant(
+                group_id,
+                participant_id,
+                ArchiveAdmission {
+                    generation: result.capture.generation,
+                    utc_date: result.calculated_at.date_naive(),
+                    quotes: result.quotes,
+                },
+            )
+            .await
     }
 
     async fn members(
@@ -284,6 +315,18 @@ mod tests {
         updated: Mutex<Vec<(EntityId, Name, Color)>>,
         member_requests: Mutex<Vec<EntityId>>,
         deactivated: Mutex<Vec<(EntityId, EntityId, bool)>>,
+    }
+
+    struct FakeDebts;
+
+    #[async_trait]
+    impl ArchiveCalculationUseCases for FakeDebts {
+        async fn calculate_archive(
+            &self,
+            _: EntityId,
+        ) -> Result<crate::ArchiveCalculation, ApplicationError> {
+            Err(ApplicationError::NotFound)
+        }
     }
 
     fn participant(id: EntityId) -> Participant {
@@ -381,10 +424,11 @@ mod tests {
             })
         }
 
-        async fn set_participant_archived(
+        async fn archive_group_participant(
             &self,
             _: EntityId,
-            _: bool,
+            _: EntityId,
+            _: ArchiveAdmission,
         ) -> Result<(), ApplicationError> {
             Ok(())
         }
@@ -415,7 +459,12 @@ mod tests {
             member_requests: Mutex::new(Vec::new()),
             deactivated: Mutex::new(Vec::new()),
         });
-        let service = ParticipantService::new(fake.clone(), fake.clone(), fake.clone());
+        let service = ParticipantService::new(
+            fake.clone(),
+            fake.clone(),
+            fake.clone(),
+            Arc::new(FakeDebts),
+        );
 
         service
             .create_group_participant(GROUP_ID, "  Ada  ".into(), "#aabbcc".into())

@@ -26,7 +26,8 @@ pub(crate) use groups::{
 };
 pub(crate) use health::{health, readiness};
 pub(crate) use memberships::{
-    create_group_participant, edit_group_participant_form, update_group_participant,
+    archive_group_participant, archive_group_participant_form, create_group_participant,
+    edit_group_participant_form, update_group_participant,
 };
 pub(crate) use spendings::{
     create_spending, delete_spending, delete_spending_form, edit_spending_form, new_spending_form,
@@ -52,6 +53,8 @@ pub(crate) struct ManageQuery {
     pub(super) saved: Option<String>,
     pub(super) participant: Option<i64>,
     pub(super) participant_saved: Option<String>,
+    pub(super) participant_archived: Option<String>,
+    pub(super) participant_archive_failed: Option<String>,
 }
 
 #[derive(Deserialize)]

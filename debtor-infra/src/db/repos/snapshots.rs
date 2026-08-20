@@ -4,7 +4,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use debtor_application::{
-    ApplicationError, DatabaseReadiness, LedgerSnapshot, LedgerSnapshotReader, StorageReason,
+    ApplicationError, DatabaseReadiness, LedgerCapture, LedgerSnapshot, LedgerSnapshotReader,
+    StorageReason,
 };
 use debtor_domain::currency::Currency;
 use debtor_domain::model::{
@@ -126,5 +127,16 @@ impl LedgerSnapshotReader for SqliteLedgerStore {
         group_id: EntityId,
     ) -> Result<LedgerSnapshot, ApplicationError> {
         ledger_snapshot(&self.pool, group_id).await
+    }
+
+    async fn ledger_capture(&self, group_id: EntityId) -> Result<LedgerCapture, ApplicationError> {
+        let guard = self.write_guard().await?;
+        let snapshot = ledger_snapshot(&self.pool, group_id).await?;
+        let generation = self.generation();
+        drop(guard);
+        Ok(LedgerCapture {
+            snapshot,
+            generation,
+        })
     }
 }

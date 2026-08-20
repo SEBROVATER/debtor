@@ -369,6 +369,16 @@ impl GroupMutationExecutor for FakeGroups {
             })
         })
     }
+
+    fn archive_group_participant(
+        &self,
+        _: i64,
+        _: i64,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), ApplicationError>> + Send + '_>,
+    > {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 #[async_trait]
@@ -405,7 +415,7 @@ impl ParticipantUseCases for FakeParticipants {
         Ok(self.participant.clone())
     }
 
-    async fn set_archived(&self, _: i64, _: bool) -> Result<(), ApplicationError> {
+    async fn archive_group_participant(&self, _: i64, _: i64) -> Result<(), ApplicationError> {
         self.archived.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }

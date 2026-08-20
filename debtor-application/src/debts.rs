@@ -82,12 +82,50 @@ pub struct LedgerSnapshot {
     pub participants: Vec<(Participant, GroupMember)>,
 }
 
+/// Immutable ledger snapshot captured with the `SQLite` mutation generation.
+#[derive(Debug, Clone)]
+pub struct LedgerCapture {
+    /// Complete ledger state used for the calculation.
+    pub snapshot: LedgerSnapshot,
+    /// Generation owned by the same gate that serializes `SQLite` commits.
+    pub generation: u64,
+}
+
 /// Reads one transactionally consistent ledger snapshot.
 #[async_trait]
 pub trait LedgerSnapshotReader: Send + Sync {
     /// Loads the group and all complete spendings from one read snapshot.
     async fn ledger_snapshot(&self, group_id: EntityId)
     -> Result<LedgerSnapshot, ApplicationError>;
+    /// Captures a snapshot and mutation generation while the ledger gate is held.
+    async fn ledger_capture(&self, group_id: EntityId) -> Result<LedgerCapture, ApplicationError> {
+        let _ = group_id;
+        Err(ApplicationError::Storage(crate::StorageReason::Unexpected))
+    }
+}
+
+/// Immutable evidence used for final participant archive admission.
+#[derive(Debug, Clone)]
+pub struct ArchiveAdmission {
+    /// Generation captured with the ledger snapshot.
+    pub generation: u64,
+    /// UTC date captured before historical quote I/O.
+    pub utc_date: NaiveDate,
+    /// Historical quote evidence. This is revalidated but never refetched at admission.
+    pub quotes: Vec<RateQuote>,
+}
+
+/// Result of the archive-specific Historical calculation.
+#[derive(Debug, Clone)]
+pub struct ArchiveCalculation {
+    /// Immutable capture used to derive the result.
+    pub capture: LedgerCapture,
+    /// Final quantized balances in the group currency.
+    pub balances: BTreeMap<EntityId, Decimal>,
+    /// Historical quote evidence used for the calculation.
+    pub quotes: Vec<RateQuote>,
+    /// UTC instant captured for the calculation context.
+    pub calculated_at: DateTime<Utc>,
 }
 
 /// Result of a debt calculation.
@@ -120,6 +158,16 @@ pub trait DebtUseCases: Send + Sync {
         group_id: EntityId,
         mode: RateMode,
     ) -> Result<DebtResult, ApplicationError>;
+}
+
+/// Historical calculation seam used only by zero-balance archive admission.
+#[async_trait]
+pub trait ArchiveCalculationUseCases: Send + Sync {
+    /// Captures immutable ledger state and produces a complete Historical result.
+    async fn calculate_archive(
+        &self,
+        group_id: EntityId,
+    ) -> Result<ArchiveCalculation, ApplicationError>;
 }
 
 /// Debt workflow implementation.
@@ -167,32 +215,16 @@ impl DebtService {
             clock,
         }
     }
-}
 
-fn calculation_error(error: CalculationError) -> ApplicationError {
-    let reason = match error {
-        CalculationError::ArithmeticOverflow | CalculationError::NonIntegralResidual => {
-            CalculationReason::ArithmeticOverflow
-        }
-        CalculationError::NonZeroSum => CalculationReason::NonZeroSum,
-        CalculationError::UnsettledBalances | CalculationError::SettlementInvariant => {
-            CalculationReason::SettlementInvariant
-        }
-    };
-    ApplicationError::Calculation(reason)
-}
-
-#[async_trait]
-impl DebtUseCases for DebtService {
     #[allow(clippy::too_many_lines)]
-    async fn calculate(
+    async fn calculate_snapshot(
         &self,
         group_id: EntityId,
         mode: RateMode,
+        calculated_at: DateTime<Utc>,
+        snapshot: LedgerSnapshot,
     ) -> Result<DebtResult, ApplicationError> {
-        let calculated_at = self.clock.now();
         let today = calculated_at.date_naive();
-        let snapshot = self.snapshot_reader.ledger_snapshot(group_id).await?;
         let group = snapshot.group;
         let spendings = snapshot.spendings;
         if group.id != group_id {
@@ -241,7 +273,6 @@ impl DebtUseCases for DebtService {
             }
         }
         contexts.sort_unstable();
-
         let mut quotes = BTreeMap::new();
         for context in contexts
             .iter()
@@ -277,24 +308,7 @@ impl DebtUseCases for DebtService {
                             context.today,
                         )
                         .await?;
-                    if quote.base != context.base
-                        || quote.quote != context.quote
-                        || quote.requested_date != context.requested_date
-                        || (!quote.is_stale
-                            && quote.fetch_date != context.requested_date.min(context.today))
-                        || (quote.is_stale
-                            && quote.fetch_date > context.requested_date.min(context.today))
-                        || (mode == RateMode::Current
-                            && quote.is_stale
-                            && (quote.fetch_date >= context.today
-                                || quote
-                                    .fetch_date
-                                    .checked_add_signed(chrono::Duration::days(7))
-                                    .is_none_or(|expiry| expiry < context.today)))
-                        || quote.rate <= Decimal::ZERO
-                        || quote.effective_date > quote.fetch_date
-                        || quote.is_provisional != (context.requested_date > context.today)
-                    {
+                    if !quote_is_eligible(context, &quote, mode) {
                         return Err(ApplicationError::Unavailable(
                             UnavailableReason::ExchangeRates,
                         ));
@@ -307,7 +321,6 @@ impl DebtUseCases for DebtService {
             let (context, quote) = result?;
             quotes.insert(context, quote);
         }
-
         let rates = contexts
             .iter()
             .map(|context| {
@@ -351,6 +364,93 @@ impl DebtUseCases for DebtService {
             transfers,
             balances,
             rates,
+            calculated_at,
+        })
+    }
+}
+
+fn quote_is_eligible(context: RateContext, quote: &RateQuote, mode: RateMode) -> bool {
+    quote.base == context.base
+        && quote.quote == context.quote
+        && quote.requested_date == context.requested_date
+        && (!quote.is_stale && quote.fetch_date == context.requested_date.min(context.today)
+            || quote.is_stale && quote.fetch_date <= context.requested_date.min(context.today))
+        && !(mode == RateMode::Current
+            && quote.is_stale
+            && (quote.fetch_date >= context.today
+                || quote
+                    .fetch_date
+                    .checked_add_signed(chrono::Duration::days(7))
+                    .is_none_or(|expiry| expiry < context.today)))
+        && quote.rate > Decimal::ZERO
+        && quote.effective_date <= quote.fetch_date
+        && quote.is_provisional == (context.requested_date > context.today)
+}
+
+/// Validates immutable Historical evidence at final archive admission without provider I/O.
+pub fn archive_admission_is_eligible(admission: &ArchiveAdmission) -> bool {
+    admission.quotes.iter().all(|quote| {
+        !quote.is_provisional
+            && quote_is_eligible(
+                RateContext {
+                    base: quote.base,
+                    quote: quote.quote,
+                    requested_date: quote.requested_date,
+                    today: admission.utc_date,
+                },
+                quote,
+                RateMode::Historical,
+            )
+    })
+}
+
+fn calculation_error(error: CalculationError) -> ApplicationError {
+    let reason = match error {
+        CalculationError::ArithmeticOverflow | CalculationError::NonIntegralResidual => {
+            CalculationReason::ArithmeticOverflow
+        }
+        CalculationError::NonZeroSum => CalculationReason::NonZeroSum,
+        CalculationError::UnsettledBalances | CalculationError::SettlementInvariant => {
+            CalculationReason::SettlementInvariant
+        }
+    };
+    ApplicationError::Calculation(reason)
+}
+
+#[async_trait]
+impl DebtUseCases for DebtService {
+    async fn calculate(
+        &self,
+        group_id: EntityId,
+        mode: RateMode,
+    ) -> Result<DebtResult, ApplicationError> {
+        let calculated_at = self.clock.now();
+        let snapshot = self.snapshot_reader.ledger_snapshot(group_id).await?;
+        self.calculate_snapshot(group_id, mode, calculated_at, snapshot)
+            .await
+    }
+}
+
+#[async_trait]
+impl ArchiveCalculationUseCases for DebtService {
+    async fn calculate_archive(
+        &self,
+        group_id: EntityId,
+    ) -> Result<ArchiveCalculation, ApplicationError> {
+        let calculated_at = self.clock.now();
+        let capture = self.snapshot_reader.ledger_capture(group_id).await?;
+        let result = self
+            .calculate_snapshot(
+                group_id,
+                RateMode::Historical,
+                calculated_at,
+                capture.snapshot.clone(),
+            )
+            .await?;
+        Ok(ArchiveCalculation {
+            capture,
+            balances: result.balances,
+            quotes: result.rates,
             calculated_at,
         })
     }
@@ -467,6 +567,14 @@ mod tests {
         async fn ledger_snapshot(&self, _: EntityId) -> Result<LedgerSnapshot, ApplicationError> {
             self.completed.store(1, Ordering::SeqCst);
             Ok(self.snapshot.clone())
+        }
+
+        async fn ledger_capture(&self, _: EntityId) -> Result<LedgerCapture, ApplicationError> {
+            self.completed.store(1, Ordering::SeqCst);
+            Ok(LedgerCapture {
+                snapshot: self.snapshot.clone(),
+                generation: 41,
+            })
         }
     }
 
@@ -976,6 +1084,86 @@ mod tests {
 
         assert_eq!(completed.load(Ordering::SeqCst), 1);
         assert_eq!(called_before_snapshot.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn archive_calculation_captures_generation_before_provider_work() {
+        let spending = Spending {
+            id: 1,
+            group_id: GROUP_ID,
+            description: Description::new("Lunch").unwrap(),
+            total: Decimal::ONE,
+            currency: Currency::Eur,
+            spending_type: SpendingType::Food,
+            spent_date: date(4),
+            payers: vec![allocation(PARTICIPANT_ONE, 1)],
+            shares: vec![allocation(PARTICIPANT_TWO, 1)],
+        };
+        let completed = Arc::new(AtomicUsize::new(0));
+        let called_before_snapshot = Arc::new(AtomicUsize::new(0));
+        let service = DebtService::new(
+            Arc::new(ObservedSnapshot {
+                snapshot: LedgerSnapshot {
+                    group: group(GROUP_ID),
+                    spendings: vec![spending],
+                    participants: vec![participant(1), participant(2)],
+                },
+                completed: completed.clone(),
+            }),
+            Arc::new(SnapshotAwareRate {
+                completed: completed.clone(),
+                called_before_snapshot: called_before_snapshot.clone(),
+            }),
+            Arc::new(FixedClock(
+                Utc.with_ymd_and_hms(2026, 7, 8, 12, 30, 0).unwrap(),
+            )),
+        );
+
+        let result = service.calculate_archive(GROUP_ID).await.unwrap();
+
+        assert_eq!(result.capture.generation, 41);
+        assert_eq!(completed.load(Ordering::SeqCst), 1);
+        assert_eq!(called_before_snapshot.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn archive_admission_rejects_ineligible_historical_quote_without_refetching() {
+        let admission = ArchiveAdmission {
+            generation: 1,
+            utc_date: date(8),
+            quotes: vec![RateQuote {
+                base: Currency::Eur,
+                quote: Currency::Usd,
+                requested_date: date(4),
+                fetch_date: date(5),
+                effective_date: date(5),
+                rate: Decimal::ONE,
+                is_stale: false,
+                is_provisional: false,
+            }],
+        };
+
+        assert!(!archive_admission_is_eligible(&admission));
+    }
+
+    #[test]
+    fn archive_admission_rejects_provisional_historical_evidence() {
+        let admission = ArchiveAdmission {
+            generation: 1,
+            utc_date: date(8),
+            quotes: vec![RateQuote {
+                base: Currency::Eur,
+                quote: Currency::Usd,
+                requested_date: date(9),
+                fetch_date: date(8),
+                effective_date: date(8),
+                rate: Decimal::ONE,
+                is_stale: false,
+                is_provisional: true,
+            }],
+        };
+
+        assert!(!archive_admission_is_eligible(&admission));
     }
 
     #[tokio::test]

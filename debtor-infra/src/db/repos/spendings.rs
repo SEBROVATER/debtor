@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use debtor_application::{
@@ -211,6 +212,7 @@ async fn insert_share(
 
 async fn save_spending(
     pool: &sqlx::SqlitePool,
+    generation: &AtomicU64,
     spending: Spending,
     update: bool,
 ) -> Result<Spending, ApplicationError> {
@@ -308,6 +310,7 @@ async fn save_spending(
         insert_share(&mut tx, id, allocation).await?;
     }
     tx.commit().await.map_err(storage)?;
+    generation.fetch_add(1, Ordering::Release);
     let mut committed = spending;
     committed.id = id;
     Ok(committed)
@@ -475,11 +478,11 @@ impl SpendingReader for SqliteLedgerStore {
 impl SpendingRepository for SqliteLedgerStore {
     async fn create_spending(&self, spending: Spending) -> Result<Spending, ApplicationError> {
         let _write_guard = self.write_guard().await?;
-        save_spending(&self.pool, spending, false).await
+        save_spending(&self.pool, &self.generation, spending, false).await
     }
     async fn update_spending(&self, spending: Spending) -> Result<Spending, ApplicationError> {
         let _write_guard = self.write_guard().await?;
-        save_spending(&self.pool, spending, true).await
+        save_spending(&self.pool, &self.generation, spending, true).await
     }
     async fn delete_spending(
         &self,
@@ -493,6 +496,7 @@ impl SpendingRepository for SqliteLedgerStore {
                 group_write_failure(&self.pool, group_id, ApplicationError::NotFound).await,
             );
         }
+        self.committed();
         Ok(())
     }
 }

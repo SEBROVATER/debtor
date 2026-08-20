@@ -101,6 +101,10 @@ pub fn router_with_sessions<S: SessionStore + Clone>(
             get(handlers::edit_group_participant_form).post(handlers::update_group_participant),
         )
         .route(
+            "/groups/{group_id}/participants/{participant_id}/archive",
+            get(handlers::archive_group_participant_form).post(handlers::archive_group_participant),
+        )
+        .route(
             "/groups/{id}/spendings/new",
             get(handlers::new_spending_form),
         )

@@ -56,6 +56,7 @@ impl GroupRepository for SqliteLedgerStore {
         .map_err(storage)
         .and_then(group)?;
         transaction.commit().await.map_err(storage)?;
+        self.committed();
         Ok(created)
     }
 
@@ -87,6 +88,7 @@ impl GroupRepository for SqliteLedgerStore {
         .map_err(storage)
         .and_then(group)?;
         transaction.commit().await.map_err(storage)?;
+        self.committed();
         Ok(updated)
     }
 
@@ -108,7 +110,9 @@ impl GroupRepository for SqliteLedgerStore {
             )
             .await);
         }
-        transaction.commit().await.map_err(storage)
+        transaction.commit().await.map_err(storage)?;
+        self.committed();
+        Ok(())
     }
 
     async fn restore_group(&self, id: EntityId) -> Result<(), ApplicationError> {
@@ -129,7 +133,9 @@ impl GroupRepository for SqliteLedgerStore {
             )
             .await);
         }
-        transaction.commit().await.map_err(storage)
+        transaction.commit().await.map_err(storage)?;
+        self.committed();
+        Ok(())
     }
 
     async fn delete_empty_group(&self, input: GroupDeleteInput) -> Result<(), ApplicationError> {
@@ -181,6 +187,8 @@ impl GroupRepository for SqliteLedgerStore {
             )
             .await);
         }
-        transaction.commit().await.map_err(storage)
+        transaction.commit().await.map_err(storage)?;
+        self.committed();
+        Ok(())
     }
 }

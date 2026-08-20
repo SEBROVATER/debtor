@@ -87,7 +87,9 @@
          </form>
        </section>
          <section id="participants" class="manage-section" aria-labelledby="participants-heading">
-          <h2 id="participants-heading" tabindex="-1">Participants</h2>
+           <h2 id="participants-heading" tabindex="-1"{% if participant_archive_notice %} autofocus{% endif %}>Participants</h2>
+           {% if participant_archive_notice %}<p class="notice" role="status" aria-live="polite" aria-atomic="true">Participant archived. History remains readable.</p>{% endif %}
+           {% if participant_archive_failed %}<p class="warning" role="status" aria-live="polite" aria-atomic="true">Participant was not archived. Reopen Manage to retry.</p>{% endif %}
          <p id="participant-guidance" class="helper">Participants are accounting identities owned by this Group. Add one before recording a Spending.</p>
          {% if members.len() == 0 %}
          <p class="empty">No active Participants in this Group.</p>
@@ -114,10 +116,15 @@
                 {% match member.edit_error %}{% when Some with (message) %}<p id="participant-{{ member.id }}-error" class="error" role="alert" tabindex="-1">{{ message }}</p>{% when None %}{% endmatch %}
                 <button type="submit">Save</button><p id="participant-{{ member.id }}-status" class="mutation-status" role="status" aria-live="polite" aria-atomic="true"> </p>
               </form>
-              {% else %}
-              <a class="button secondary participant-edit-link" href="/groups/{{ group_id }}/participants/{{ member.id }}/edit">Edit</a>
-              {% endif %}
-              {% if participant_notice.as_ref() == Some(&member.id) %}<p class="notice" role="status" aria-live="polite" aria-atomic="true">Participant saved.</p>{% endif %}
+               {% else %}
+                {% endif %}
+                {% match member.historical_balance %}{% when Some with (balance) %}
+                <p class="participant-balance">Historical Balance: {{ balance }}</p>
+                {% when None %}{% endmatch %}
+                {% if member.archive_eligibility.is_nonzero() %}<p class="helper participant-archive-copy">Archive requires an exactly zero Historical Balance.</p>{% endif %}
+                {% if !member.archive_eligibility.is_eligible() && !member.archive_eligibility.is_nonzero() %}<p class="helper participant-archive-copy">Rates are unavailable, so archive was not attempted. Reopen Manage to retry.</p>{% endif %}
+                {% if !member.editing %}<p class="participant-actions"><a class="button secondary" href="/groups/{{ group_id }}/participants/{{ member.id }}/edit">Edit</a>{% if member.archive_eligibility.is_eligible() %}<a id="participant-{{ member.id }}-archive" class="button archive-button" href="/groups/{{ group_id }}/participants/{{ member.id }}/archive">Archive Participant</a>{% endif %}</p>{% endif %}
+                {% if participant_notice.as_ref() == Some(&member.id) %}<p class="notice" role="status" aria-live="polite" aria-atomic="true">Participant saved.</p>{% endif %}
             </li>
            {% endfor %}
          </ul>

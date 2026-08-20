@@ -2,11 +2,11 @@
 
 #![allow(clippy::expect_used)]
 
-use chrono::NaiveDate;
+use chrono::{NaiveDate, Utc};
 use debtor_application::{
-    ApplicationError, GroupDeleteInput, GroupReader, GroupRepository, ParticipantReader,
-    ParticipantRepository, SpendingCursor, SpendingPageDirection, SpendingReader,
-    SpendingRepository, StorageReason,
+    ApplicationError, ArchiveAdmission, GroupDeleteInput, GroupReader, GroupRepository,
+    LedgerSnapshotReader, ParticipantReader, ParticipantRepository, SpendingCursor,
+    SpendingPageDirection, SpendingReader, SpendingRepository, StorageReason,
 };
 use debtor_domain::currency::Currency;
 use debtor_domain::model::{Allocation, Color, Description, Name, Spending, SpendingType};
@@ -522,8 +522,17 @@ async fn archived_mutation_races_consistently_return_conflict(pool: SqlitePool) 
 #[sqlx::test(migrations = "../migrations")]
 async fn archived_participant_rejects_direct_update(pool: SqlitePool) {
     let (store, group_id, participant_id) = active_group_and_participant(&pool).await;
+    let utc_date = Utc::now().date_naive();
     store
-        .set_participant_archived(participant_id, true)
+        .archive_group_participant(
+            group_id,
+            participant_id,
+            ArchiveAdmission {
+                generation: 2,
+                utc_date,
+                quotes: Vec::new(),
+            },
+        )
         .await
         .expect("archive participant");
 
@@ -546,6 +555,50 @@ async fn archived_participant_rejects_direct_update(pool: SqlitePool) {
             .name
             .as_str(),
         "Ari"
+    );
+}
+
+#[sqlx::test(migrations = "../migrations")]
+async fn archive_rejects_a_generation_changed_after_capture(pool: SqlitePool) {
+    let (store, group_id, participant_id) = active_group_and_participant(&pool).await;
+    let utc_date = Utc::now().date_naive();
+    let capture = store
+        .ledger_capture(group_id)
+        .await
+        .expect("capture ledger");
+    store
+        .update_group(
+            group_id,
+            Name::new("Changed").expect("valid name"),
+            Currency::Usd,
+        )
+        .await
+        .expect("commit intervening mutation");
+
+    let result = store
+        .archive_group_participant(
+            group_id,
+            participant_id,
+            ArchiveAdmission {
+                generation: capture.generation,
+                utc_date,
+                quotes: Vec::new(),
+            },
+        )
+        .await;
+
+    assert!(matches!(
+        result,
+        Err(ApplicationError::Unavailable(
+            debtor_application::UnavailableReason::ExchangeRates
+        ))
+    ));
+    assert!(
+        !store
+            .participant(participant_id)
+            .await
+            .expect("participant remains active")
+            .is_archived
     );
 }
 
