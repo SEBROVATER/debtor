@@ -56,8 +56,9 @@ pub fn simplify(balances: &BTreeMap<EntityId, Decimal>) -> Result<Vec<Transfer>,
         .checked_add(creditors.len())
         .ok_or(CalculationError::ArithmeticOverflow)?;
     while debtor < debtors.len() && creditor < creditors.len() {
+        let transfer_limit = transfer_limit(participant_count)?;
         let amount = debtors[debtor].1.min(creditors[creditor].1);
-        if amount <= Decimal::ZERO || transfers.len() >= participant_count.saturating_sub(1) {
+        if amount <= Decimal::ZERO || transfers.len() >= transfer_limit {
             return Err(CalculationError::SettlementInvariant);
         }
         transfers.push(Transfer {
@@ -94,6 +95,12 @@ pub fn simplify(balances: &BTreeMap<EntityId, Decimal>) -> Result<Vec<Transfer>,
     Ok(transfers)
 }
 
+fn transfer_limit(participant_count: usize) -> Result<usize, CalculationError> {
+    participant_count
+        .checked_sub(1)
+        .ok_or(CalculationError::ArithmeticOverflow)
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
@@ -101,7 +108,15 @@ mod tests {
 
     use rust_decimal::Decimal;
 
-    use super::{Transfer, simplify};
+    use super::{Transfer, simplify, transfer_limit};
+
+    #[test]
+    fn rejects_zero_participant_transfer_limit() {
+        assert_eq!(
+            transfer_limit(0),
+            Err(super::CalculationError::ArithmeticOverflow)
+        );
+    }
 
     #[test]
     fn creates_deterministic_positive_transfers() {
