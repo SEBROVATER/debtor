@@ -51,20 +51,14 @@ pub(super) fn debt_error_response(
         "{message} Attempted {mode} calculation at {calculated_at} UTC. Target currency was not resolved."
     );
     if enhanced {
-        return (status, Html(format!(
-            "<section id=\"debts-results\" class=\"financial-results debt-results\" aria-labelledby=\"debts-results-heading\" aria-describedby=\"debts-status\" aria-busy=\"false\"><h2 id=\"debts-results-heading\" tabindex=\"-1\">Debt calculation unavailable</h2><p id=\"debts-status\" class=\"debt-status\" role=\"status\" aria-live=\"polite\" aria-atomic=\"true\">{message}</p><p class=\"empty\">No Balances or Settlement Transfers are shown. Reopen Debts to retry.</p></section>"
-        )))
-        .into_response();
+        return scoped_debt_error_response(status, &message);
     }
     error_response(status, &message)
 }
 
 pub(super) fn debt_mode_error_response(enhanced: bool) -> Response {
     if enhanced {
-        return (StatusCode::BAD_REQUEST, Html(
-            "<section id=\"debts-results\" class=\"financial-results debt-results\" aria-labelledby=\"debts-results-heading\" aria-describedby=\"debts-status\" aria-busy=\"false\"><h2 id=\"debts-results-heading\" tabindex=\"-1\">Debt calculation unavailable</h2><p id=\"debts-status\" class=\"debt-status\" role=\"status\" aria-live=\"polite\" aria-atomic=\"true\">Unknown rate mode.</p><p class=\"empty\">No Balances or Settlement Transfers are shown. Reopen Debts to retry.</p></section>"
-        ))
-        .into_response();
+        return scoped_debt_error_response(StatusCode::BAD_REQUEST, "Unknown rate mode.");
     }
     error_response(StatusCode::BAD_REQUEST, "Unknown rate mode.")
 }
@@ -80,12 +74,19 @@ pub(crate) fn debt_timeout_response(query: Option<&str>, enhanced: bool) -> Resp
         chrono::Utc::now()
     );
     if enhanced {
-        return (StatusCode::GATEWAY_TIMEOUT, Html(format!(
-            "<section id=\"debts-results\" class=\"financial-results debt-results\" aria-labelledby=\"debts-results-heading\" aria-describedby=\"debts-status\" aria-busy=\"false\"><h2 id=\"debts-results-heading\" tabindex=\"-1\">Debt calculation unavailable</h2><p id=\"debts-status\" class=\"debt-status\" role=\"status\" aria-live=\"polite\" aria-atomic=\"true\">{message}</p><p class=\"empty\">No Balances or Settlement Transfers are shown. Reopen Debts to retry.</p></section>"
-        )))
-        .into_response();
+        return scoped_debt_error_response(StatusCode::GATEWAY_TIMEOUT, &message);
     }
     error_response(StatusCode::GATEWAY_TIMEOUT, &message)
+}
+
+fn scoped_debt_error_response(status: StatusCode, message: &str) -> Response {
+    (
+        status,
+        Html(format!(
+            "<section id=\"debts-results\" class=\"financial-results debt-results\" aria-labelledby=\"debts-results-heading\" aria-describedby=\"debts-status\" aria-busy=\"false\"><h2 id=\"debts-results-heading\" tabindex=\"-1\">Debt calculation unavailable</h2><p id=\"debts-status\" class=\"debt-status\" role=\"status\" aria-live=\"polite\" aria-atomic=\"true\">{message}</p><p class=\"empty\">No Balances or Settlement Transfers are shown. Reopen Debts to retry.</p></section>"
+        )),
+    )
+        .into_response()
 }
 
 fn error_response_with_recovery(
@@ -282,7 +283,7 @@ mod tests {
         UnavailableReason,
     };
 
-    use super::{debt_error_response, debt_timeout_response, map_error};
+    use super::{debt_error_response, debt_mode_error_response, debt_timeout_response, map_error};
 
     #[test]
     fn maps_each_safe_error_category_to_its_status() {
@@ -363,6 +364,9 @@ mod tests {
         assert!(body.contains("id=\"debts-results\""));
         assert!(body.contains("Attempted Current calculation"));
         assert!(body.contains("No Balances or Settlement Transfers are shown."));
+        assert!(body.contains("role=\"status\" aria-live=\"polite\" aria-atomic=\"true\""));
+        assert!(!body.contains("<html"));
+        assert!(!body.contains("<form"));
         assert!(!body.contains("<table"));
         assert!(!body.contains("autofocus"));
     }
@@ -383,23 +387,51 @@ mod tests {
         assert!(body.contains("id=\"debts-results\""));
         assert!(body.contains("Debt calculation unavailable."));
         assert!(!body.contains("<html"));
+        assert!(!body.contains("<form"));
+        assert!(!body.contains("<table"));
+        assert!(!body.contains("autofocus"));
+    }
+
+    #[tokio::test]
+    async fn enhanced_invalid_mode_uses_the_same_scoped_non_autofocus_fragment() {
+        let response = debt_mode_error_response(true);
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), 4096)
+            .await
+            .expect("rendered mode error");
+        let body = String::from_utf8(body.to_vec()).expect("UTF-8 error body");
+
+        assert!(body.contains("id=\"debts-results\""));
+        assert!(body.contains("Unknown rate mode."));
+        assert!(body.contains("role=\"status\" aria-live=\"polite\" aria-atomic=\"true\""));
+        assert!(!body.contains("<html"));
+        assert!(!body.contains("<form"));
+        assert!(!body.contains("<table"));
         assert!(!body.contains("autofocus"));
     }
 
     #[tokio::test]
     async fn timeout_decodes_current_mode_before_rendering_the_fragment() {
         let response = debt_timeout_response(Some("rate_mode=cur%72ent"), true);
+        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
         let body = to_bytes(response.into_body(), 4096)
             .await
             .expect("rendered timeout error");
         let body = String::from_utf8(body.to_vec()).expect("UTF-8 error body");
 
         assert!(body.contains("Attempted Current calculation"));
+        assert!(body.contains("id=\"debts-results\""));
+        assert!(body.contains("role=\"status\" aria-live=\"polite\" aria-atomic=\"true\""));
+        assert!(!body.contains("<html"));
+        assert!(!body.contains("<form"));
+        assert!(!body.contains("<table"));
+        assert!(!body.contains("autofocus"));
     }
 
     #[tokio::test]
     async fn timeout_rejects_duplicate_rate_modes() {
         let response = debt_timeout_response(Some("rate_mode=current&rate_mode=historical"), true);
+        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
         let body = to_bytes(response.into_body(), 4096)
             .await
             .expect("rendered timeout error");
@@ -407,5 +439,7 @@ mod tests {
 
         assert!(body.contains("invalid rate mode"));
         assert!(!body.contains("Attempted Current calculation"));
+        assert!(!body.contains("<table"));
+        assert!(!body.contains("autofocus"));
     }
 }

@@ -53,11 +53,11 @@ Debtor is for one administrator who records both personal and shared Spendings i
 - **Group-centered:** After login, the main page lists Groups. Spendings, monthly summaries, Participant management, and all-time debts remain within the selected Group.
 - **Focused entry:** A persistent Add Spending action opens a focused full-page form and returns to Transactions with the committed row visible.
 - **One web experience:** Debtor has one mobile-friendly web interface. It need not provide separate mobile and desktop designs or optimize its appearance for large desktop screens.
-- **Minimal and modern:** The interface avoids redundant animation and decorative effects. Core interaction uses semantic server-rendered HTML and native HTML/CSS states; pinned self-hosted HTMX may enhance valid links/forms without custom application JavaScript.
+- **Minimal and modern:** The interface avoids redundant animation and decorative effects. Core interaction uses semantic server-rendered HTML and native HTML/CSS states; only pinned self-hosted HTMX core and the pinned official `response-targets` extension may enhance valid links/forms.
 
 ## UX Acceptance Requirements
 
-- Core behavior must work through semantic server-rendered HTML and valid native links/forms. Pinned self-hosted HTMX may progressively enhance those interactions; custom application JavaScript and inline script attributes are forbidden.
+- Core behavior must work through semantic server-rendered HTML and valid native links/forms. Pinned self-hosted HTMX core and the pinned official `response-targets` extension are the only currently approved browser-side JavaScript infrastructure. Manually authored application JavaScript, inline scripts and event handlers, custom HTMX extensions, application-owned HTMX event handlers, client-side financial state, and features requiring imperative post-swap behavior are forbidden. Other official extensions require explicit design and security approval before addition.
 - The single web experience must be mobile-friendly and remain usable on desktop without requiring a separate desktop design.
 - The interface must remain usable in the latest stable versions of Chrome, Firefox, Safari, and Edge at viewport widths down to 320 CSS pixels.
 - Every control must be reachable and operable without a pointer and must have a programmatic label and a visible focus indicator that is at least two CSS pixels thick and has at least 3:1 contrast against adjacent colors.
@@ -86,7 +86,7 @@ Debtor is for one administrator who records both personal and shared Spendings i
 - Multiple Payers or direct percentage and itemized Share modes.
 - Globally minimal Settlement Transfer count.
 - Manual exchange-rate refresh or sessions that survive process restart.
-- Native mobile or desktop applications, separate desktop UX, custom application JavaScript, or decorative animation.
+- Native mobile or desktop applications, separate desktop UX, manually authored application JavaScript, inline scripts/event handlers, custom HTMX extensions, application-owned HTMX event handlers, client-side financial state, imperative post-swap behavior, unapproved official HTMX extensions, or decorative animation.
 - Multiple application instances, external database writers, or broad deployment-topology flexibility.
 
 ### Deferred

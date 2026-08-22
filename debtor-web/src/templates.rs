@@ -250,6 +250,30 @@ pub struct DebtsTemplate {
     pub shell: AuthenticatedShell,
 }
 
+/// Scoped Debts result replacement for enhanced recalculations.
+#[derive(Template)]
+#[template(path = "debts_results.html")]
+pub struct DebtsResultsTemplate {
+    /// Whether the snapshot contained any Spending.
+    pub has_spendings: bool,
+    /// Complete Participant balance rows.
+    pub balances: Vec<BalanceRow>,
+    /// Advisory settlement transfers.
+    pub transfers: Vec<TransferRow>,
+    /// Selected calculation rate mode.
+    pub mode: String,
+    /// Rate-evidence warning, if any.
+    pub warning: Option<String>,
+    /// Final calculation status announcement.
+    pub status: String,
+    /// Whether the result heading receives native forward focus.
+    pub focus_results: bool,
+    /// Calculation timestamp.
+    pub calculated_at: String,
+    /// Unique rates used by the calculation.
+    pub rates: Vec<RateRow>,
+}
+
 /// Renderable transfer row.
 pub struct TransferRow {
     /// Payer.

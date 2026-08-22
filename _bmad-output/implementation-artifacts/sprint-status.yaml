@@ -41,7 +41,7 @@
 # - Retrospective appends its action items to action_items; sprint-status surfaces open ones
 
 generated: 2026-08-12T12:16:16+06:00
-last_updated: 2026-08-20T20:39:11+06:00
+last_updated: 2026-08-22T14:07:23+06:00
 project: debtor
 project_key: NOKEY
 tracking_system: file-system
@@ -58,7 +58,6 @@ development_status:
   1-7-extend-replay-protection-beyond-login-and-sign-out: done
   1-8-expose-health-readiness-and-bounded-admission: done
   1-9-shut-down-the-authenticated-runtime-safely: done
-  1-10-define-the-pre-production-https-edge-gate: done
   epic-1-retrospective: optional
   epic-2: in-progress
   2-1-create-and-select-a-group: done
@@ -85,4 +84,25 @@ development_status:
   5-3-derive-complete-advisory-settlement-transfers: done
   5-4-archive-a-zero-balance-participant-safely: done
   5-5-browse-and-restore-archived-participants: done
-  epic-5-retrospective: optional
+  epic-5-retrospective: done
+
+operations_gates:
+  pre-production-https-edge:
+    status: completed
+    owner: Operations / Architect
+    record: 1-10-define-the-pre-production-https-edge-gate.md
+    rollout_condition: Production rollout requires the documented verification evidence.
+
+action_items:
+  - epic: 5
+    action: "Replace settlement saturating_sub with checked arithmetic in debtor-domain/src/debts/simplify.rs."
+    owner: "Amelia (Senior Software Engineer)"
+    status: open
+  - epic: 5
+    action: "Close deferred Debts coverage for native/enhanced focus and scoped error-path parity."
+    owner: "Amelia (Senior Software Engineer)"
+    status: done
+  - epic: 5
+    action: "Add a calculation and lifecycle review checklist and record its use in the next relevant review."
+    owner: "Winston (System Architect)"
+    status: open

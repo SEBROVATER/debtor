@@ -16,16 +16,20 @@
 
 ## Deferred from: code review of 5-2-recalculate-balances-at-current-rates (2026-08-19)
 
-- Pending HTMX state does not expose `aria-busy="true"` or context-compatible Updating retention [debtor-web/templates/debts.html:42-45] — pre-existing behavior, not introduced by the Story 5.2 diff.
-- Native and enhanced result/error flows do not focus the result heading or selected mode control [debtor-web/templates/debts.html:27,43; debtor-web/src/handlers/response.rs:48-52] — pre-existing behavior, not introduced by the Story 5.2 diff.
-- Unknown `rate_mode` values in enhanced requests return a full-page error instead of a scoped result fragment [debtor-web/src/handlers/debts.rs:43-46] — pre-existing behavior, not introduced by the Story 5.2 diff.
-- Web regression coverage omits Historical reset, focus parity, pending state, and incompatible-result retention [debtor-web/src/router.rs:505-526; debtor-web/src/handlers/response.rs:329-353] — pre-existing coverage gap, not introduced by the Story 5.2 diff.
+- Pending HTMX state does not expose `aria-busy="true"` or context-compatible Updating retention [debtor-web/templates/debts.html:42-45] — superseded by the approved Debts exception: HTMX's request class provides the scoped Updating placeholder without dynamic `aria-busy` or client-side financial retention.
+- [x] Native and enhanced result/error flows do not focus the result heading or selected mode control [debtor-web/templates/debts.html; debtor-web/src/handlers/debts.rs; debtor-web/src/handlers/response.rs] — closed 2026-08-22: native results and error documents autofocus headings; enhanced responses replace only `#debts-results` without autofocus, preserving the activated radio outside the swap while its scoped status announces the outcome. Verified by `cargo fmt --all -- --check`, `cargo test -p debtor-web`, `cargo check --workspace --all-features --locked`, `SQLX_OFFLINE=true cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`, and `cargo test --workspace --all-features --locked`.
+- [x] Unknown `rate_mode` values in enhanced requests return a full-page error instead of a scoped result fragment [debtor-web/src/handlers/debts.rs] — closed 2026-08-22: unknown and duplicate mode errors return a `400` scoped `#debts-results` fragment with safe status text and no form, document, table, or autofocus.
+- [x] Web regression coverage omits Historical reset, retained-radio parity for enhanced success/expected errors, the CSS-only pending state, and no-partial result replacement [debtor-web/src/router.rs; debtor-web/src/handlers/response.rs] — closed 2026-08-22: response-boundary tests cover native focus, enhanced result/error scope, invalid and duplicate modes, unavailable and unmapped failures, and percent-decoded/duplicate timeout modes.
 
 ## Deferred from: code review of 5-2-recalculate-balances-at-current-rates (2026-08-19 follow-up)
 
 - Fresh fixed-past Historical rate evidence is labeled `current` [debtor-web/templates/debts.html:80] — pre-existing behavior, not introduced by the Story 5.2 diff.
-- Resolved by the 2026-08-19 Debts UX redesign: enhanced mode recalculation uses HTMX's request class for the scoped Updating placeholder and final server-rendered status announcement; dynamic `aria-busy` and retained client-side financial state are not required under the no-custom-JavaScript CSP contract.
+- [x] Policy resolved by the 2026-08-22 JavaScript reconciliation: enhanced mode recalculation uses HTMX's request class for the scoped Updating placeholder and final server-rendered status announcement; dynamic `aria-busy`, retained client-side financial state, application-owned HTMX event handlers, and imperative post-swap behavior are not permitted. Focus/error parity coverage was closed on 2026-08-22 with the verified scoped-fragment implementation.
 
 ## Deferred from: code review of 5-3-derive-complete-advisory-settlement-transfers (2026-08-20)
 
 - Settlement uses saturating arithmetic [debtor-domain/src/debts/simplify.rs:60] — pre-existing use of `saturating_sub` conflicts with the project’s checked-arithmetic preference but was not introduced by Story 5.3.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-close-deferred-debts-parity-coverage.md`
+  summary: Mark completed epics done in sprint tracking when all stories are done.
+  evidence: `epic-5` and prior epics remain `in-progress` despite every story being done, contradicting the sprint-status definition.

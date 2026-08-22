@@ -1,0 +1,46 @@
+<section id="debts-results" class="financial-results debt-results" aria-labelledby="debts-results-heading" aria-describedby="debts-status" aria-busy="false">
+  <h2 id="debts-results-heading" tabindex="-1"{% if focus_results %} autofocus{% endif %}>{% if mode == "current" %}Current calculation{% else %}Historical calculation{% endif %}</h2>
+  <p id="debts-status" class="debt-status" role="status" aria-live="polite" aria-atomic="true">{{ status }}</p>
+  <p class="debt-updating-placeholder" role="status" aria-live="polite">Updating debt balances.</p>
+  <div class="debt-financial-content">
+  <p class="summary-context">Mode: {{ mode }}. Calculated at {{ calculated_at }} UTC.</p>
+  {% if !has_spendings %}<p class="empty">No Spendings exist. Every Group-owned Participant is shown at exact zero.</p>{% endif %}
+  <h2 id="balances-heading">Balances</h2>
+  {% if balances.len() == 0 %}
+  <p class="empty">No Participants are owned by this Group.</p>
+  {% else %}
+  <table aria-labelledby="balances-heading">
+    <thead><tr><th>Participant</th><th>Balance</th><th>Direction</th></tr></thead>
+    <tbody>
+      {% for balance in balances %}
+      <tr>
+        <td data-label="Participant"><span class="participant-marker" style="background: {{ balance.color }}" aria-hidden="true"></span>{{ balance.participant }}{% if balance.archived %} <span>Archived</span>{% endif %}</td>
+        <td data-label="Balance">{{ balance.amount }}</td>
+        <td data-label="Direction">{{ balance.direction }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  <section class="settlement-results" aria-labelledby="settlement-heading">
+    <h2 id="settlement-heading">Settlement Transfers</h2>
+    {% if transfers.len() == 0 %}{% if balances.len() == 0 %}<p class="empty">No Participants are owned by this Group, so no Settlement Transfers are available.</p>{% else %}<p class="empty">All balances are settled.</p>{% endif %}{% else %}
+    <table>
+      <thead><tr><th>Transfer</th><th>Amount</th></tr></thead>
+      <tbody>{% for transfer in transfers %}<tr><td data-label="Transfer">from {{ transfer.from }}{% if transfer.from_archived %} <span>Archived</span>{% endif %} to {{ transfer.to }}{% if transfer.to_archived %} <span>Archived</span>{% endif %}</td><td data-label="Amount"><span class="transfer-amount">{{ transfer.amount }}</span></td></tr>{% endfor %}</tbody>
+    </table>
+    {% endif %}
+  </section>
+  <section class="rate-disclosure" aria-labelledby="rates-heading">
+    <h2 id="rates-heading">Rates used</h2>
+    {% if rates.len() == 0 %}<p class="empty">No conversions were needed.</p>{% else %}
+    <table>
+      <thead><tr><th>Context</th><th>Requested</th><th>Fetched</th><th>Effective</th><th>Rate</th><th>Status</th></tr></thead>
+      <tbody>{% for rate in rates %}<tr><td data-label="Context">{{ rate.base }}/{{ rate.quote }}</td><td data-label="Requested">{{ rate.requested_date }}</td><td data-label="Fetched">{{ rate.fetch_date }}</td><td data-label="Effective">{{ rate.effective_date }}</td><td data-label="Rate">{{ rate.rate }}</td><td data-label="Status">{% if rate.base == rate.quote %}synthetic{% else %}{% if rate.stale %}stale {% endif %}{% if rate.provisional %}provisional{% endif %}{% if !rate.stale && !rate.provisional %}current{% endif %}{% endif %}</td></tr>{% endfor %}</tbody>
+    </table>
+    {% endif %}
+  </section>
+  {% match warning %}{% when Some with (message) %}<p class="warning">{{ message }}</p>{% when None %}{% endmatch %}
+  <p class="helper">Balances are derived from all-time history. Transfers are advisory and are not recorded as payments.</p>
+  </div>
+</section>

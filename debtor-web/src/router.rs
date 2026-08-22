@@ -714,6 +714,7 @@ mod tests {
         assert!(body.contains("Current calculation"));
         assert!(body.contains("Current rates are selected for this result."));
         assert!(body.contains("value=\"current\" aria-controls=\"debts-results\" checked"));
+        assert!(body.contains("<h2 id=\"debts-results-heading\" tabindex=\"-1\" autofocus>"));
         assert!(!body.contains("Historical calculation</h2>"));
     }
 
@@ -761,9 +762,11 @@ mod tests {
         let response = app.oneshot(request).await.expect("enhanced debts response");
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_body(response).await;
-        assert!(body.contains("value=\"current\" aria-controls=\"debts-results\" checked"));
         assert!(body.contains("id=\"debts-results\""));
         assert!(body.contains("role=\"status\" aria-live=\"polite\" aria-atomic=\"true\""));
+        assert!(body.contains("Current calculation"));
+        assert!(!body.contains("<html"));
+        assert!(!body.contains("<form"));
         assert!(!body.contains("autofocus"));
     }
 
@@ -811,6 +814,7 @@ mod tests {
         let body = response_body(response).await;
         assert!(body.contains("Historical calculation"));
         assert!(body.contains("value=\"historical\" aria-controls=\"debts-results\" checked"));
+        assert!(body.contains("<h2 id=\"debts-results-heading\" tabindex=\"-1\" autofocus>"));
         assert!(!body.contains("value=\"current\" aria-controls=\"debts-results\" checked"));
     }
 
@@ -836,6 +840,36 @@ mod tests {
         assert!(body.contains("id=\"debts-results\""));
         assert!(body.contains("Unknown rate mode."));
         assert!(!body.contains("<html"));
+        assert!(!body.contains("<form"));
+        assert!(!body.contains("<table"));
+        assert!(!body.contains("autofocus"));
+    }
+
+    #[tokio::test]
+    async fn enhanced_empty_debt_mode_replaces_only_the_result_region() {
+        let test_state = state_with_current_debts();
+        let app = app(&test_state);
+        let session_cookie = login(&app).await;
+
+        let mut request = request(
+            Method::GET,
+            "/groups/1/debts?rate_mode=",
+            "",
+            Some(&session_cookie),
+        );
+        request
+            .headers_mut()
+            .insert("hx-request", HeaderValue::from_static("true"));
+        let response = app.oneshot(request).await.expect("empty mode response");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_body(response).await;
+        assert!(body.contains("id=\"debts-results\""));
+        assert!(body.contains("Unknown rate mode."));
+        assert!(!body.contains("<html"));
+        assert!(!body.contains("<form"));
+        assert!(!body.contains("<table"));
+        assert!(!body.contains("autofocus"));
     }
 
     #[tokio::test]
@@ -860,6 +894,55 @@ mod tests {
         assert!(body.contains("id=\"debts-results\""));
         assert!(body.contains("Unknown rate mode."));
         assert!(!body.contains("<html"));
+        assert!(!body.contains("<form"));
+        assert!(!body.contains("<table"));
+        assert!(!body.contains("autofocus"));
+    }
+
+    #[tokio::test]
+    async fn native_unknown_debt_mode_returns_an_autofocused_error_document() {
+        let test_state = state_with_current_debts();
+        let app = app(&test_state);
+        let session_cookie = login(&app).await;
+
+        let response = app
+            .oneshot(request(
+                Method::GET,
+                "/groups/1/debts?rate_mode=unexpected",
+                "",
+                Some(&session_cookie),
+            ))
+            .await
+            .expect("native mode error response");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_body(response).await;
+        assert!(body.contains("Unknown rate mode."));
+        assert!(body.contains("<html"));
+        assert!(body.contains("<h1 id=\"error-heading\" tabindex=\"-1\" autofocus>"));
+    }
+
+    #[tokio::test]
+    async fn native_duplicate_debt_mode_returns_an_autofocused_error_document() {
+        let test_state = state_with_current_debts();
+        let app = app(&test_state);
+        let session_cookie = login(&app).await;
+
+        let response = app
+            .oneshot(request(
+                Method::GET,
+                "/groups/1/debts?rate_mode=current&rate_mode=historical",
+                "",
+                Some(&session_cookie),
+            ))
+            .await
+            .expect("native duplicate mode error response");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_body(response).await;
+        assert!(body.contains("Unknown rate mode."));
+        assert!(body.contains("<html"));
+        assert!(body.contains("<h1 id=\"error-heading\" tabindex=\"-1\" autofocus>"));
     }
 
     #[tokio::test]

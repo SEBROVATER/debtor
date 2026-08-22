@@ -1,17 +1,17 @@
 ---
-story_key: 1-10-define-the-pre-production-https-edge-gate
-story_id: 1.10
-epic: 1
-status: done
+gate_key: pre-production-https-edge
+classification: operations-gate
+status: completed
+owner: Operations / Architect
 created: 2026-08-14
 baseline_commit: 62a5f978ba661051a37852f43e8bfa199aa01970
 ---
 
-# Story 1.10: Define the Pre-Production HTTPS Edge Gate
+# Pre-Production HTTPS Edge Gate
 
-Status: done
+Status: completed
 
-## Story
+## Gate Objective
 
 As the administrator,
 I want an approved edge product and verification environment before production rollout,
@@ -32,7 +32,7 @@ so that deployable HTTPS configuration can satisfy the fixed transport contract 
 
 ## Scope Boundary
 
-- This story produces a pre-production operations gate and decision record for the production HTTPS edge. It does not implement a new Administrator-facing route.
+- This operations gate produces a pre-production decision record for the production HTTPS edge. It does not implement a new Administrator-facing route.
 - Do not add TLS, QUIC, UDP, certificate management, HTTP/3, or `Alt-Svc` behavior to the Rust application. Those remain edge responsibilities.
 - Do not add users, tenants, participant authentication, registration, persistent sessions, shared session storage, multiple app instances, external SQLite writers, or deployment-topology abstractions.
 - Do not move Axum, Tokio, SQLx, Caddy, proxy, certificate, or runtime types into `debtor-application` or `debtor-domain`.
@@ -94,7 +94,7 @@ so that deployable HTTPS configuration can satisfy the fixed transport contract 
 
 ### Developer Context
 
-Story 1.10 is the last Epic 1 backlog item and exists to close the deployment-substrate ambiguity before production rollout. It should not become a backend networking feature. The current application already implements the private HTTP backend, trusted proxy configuration, session-safe request pipeline, body limits, safe diagnostics, and bounded runtime behavior that the edge must preserve.
+This completed operations gate closes the deployment-substrate ambiguity before production rollout. It does not become a backend networking feature. The current application already implements the private HTTP backend, trusted proxy configuration, session-safe request pipeline, body limits, safe diagnostics, and bounded runtime behavior that the edge must preserve.
 
 The current repository already contains an edge section in `README.md` and a non-normative `deploy/Caddyfile.example`. Those are useful starting points, but not sufficient completion evidence. The story requires an approved product/version, verification environment, concrete configuration, and executable/captured verification. Treat the current Caddyfile as an example to fix or replace, not proof that the gate is closed.
 
@@ -181,7 +181,7 @@ Story 1.9 completed the authenticated runtime shutdown foundation. Preserve thes
 
 ### References
 
-- [Source: `_bmad-output/planning-artifacts/epics.md#Story 1.10: Define the Pre-Production HTTPS Edge Gate`]
+- [Source: `_bmad-output/implementation-artifacts/sprint-status.yaml#operations_gates`]
 - [Source: `_bmad-output/planning-artifacts/epics.md#Final-Evidence Ledger`]
 - [Source: `specs/design.md#Edge Proxy Contract`]
 - [Source: `specs/design.md#Operational Limits`]
@@ -250,5 +250,5 @@ openai/gpt-5.5
 
 ### Change Log
 
-- 2026-08-14: Implemented Story 1.10 pre-production HTTPS edge gate with Caddy 2.11.2 ADR, checked edge template, verification runbook, operator documentation, config-example alignment, and architecture deferred-decision update.
-- 2026-08-14: Addressed all nine code-review findings; story moved to done.
+- 2026-08-14: Implemented the pre-production HTTPS edge gate with Caddy 2.11.2 ADR, checked edge template, verification runbook, operator documentation, config-example alignment, and architecture deferred-decision update.
+- 2026-08-14: Addressed all nine code-review findings; gate marked completed.

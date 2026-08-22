@@ -4,7 +4,7 @@ stepsCompleted:
   - step-02-design-epics
   - step-03-create-stories
   - step-04-final-validation
-validationStatus: revalidated-2026-08-12
+validationStatus: pending-revalidation-2026-08-22
 inputDocuments:
   - _bmad-output/specs/spec-debtor/SPEC.md
   - _bmad-output/specs/spec-debtor/glossary.md
@@ -298,7 +298,7 @@ SPEC-NFR28: Every control supports pointer-independent operation, programmatic l
 
 SPEC-NFR29: The current stable Chrome, Firefox, Safari, and Edge are supported down to 320 CSS pixels, and every core interaction retains a native full-page path.
 
-SPEC-NFR30: The UI uses semantic server-rendered Askama HTML and vanilla CSS; only pinned self-hosted HTMX and its official `response-targets` extension are permitted, with no custom JavaScript, custom extensions, inline scripts, or script attributes.
+SPEC-NFR30: The UI uses semantic server-rendered Askama HTML and vanilla CSS. Pinned self-hosted HTMX core and its pinned official `response-targets` extension are the only currently approved browser-side JavaScript infrastructure. Manually authored application JavaScript, inline scripts and event handlers, custom HTMX extensions, application-owned HTMX event handlers, client-side financial state, and features requiring imperative post-swap behavior are forbidden. Other official extensions require explicit design and security approval before addition.
 
 SPEC-NFR31: Shutdown stops admission, drains HTTP for at most ten seconds, then waits for all dispatched mutations before bounded checkpoint and pool close while preserving authoritative mutation outcomes and treating unknown outcomes as fatal.
 
@@ -387,7 +387,7 @@ Identifier namespaces are artifact-qualified and must never be shortened in plan
 
 | Product source | Decomposed requirements | Architecture / UX source | Epic and story acceptance owners |
 |---|---|---|---|
-| `PRD-FR-1` Password-gated access | `SPEC-FR1..SPEC-FR19`, `SPEC-FR90..SPEC-FR105` | AD-10 through AD-18; `UX-SHELL-01`, `UX-TARGET-01`, `UX-FOCUS-01`, `UX-STATUS-01`, `UX-RESPONSIVE-01`, `UX-VISUAL-01` | Epic 1, Stories 1.1-1.10; first real mutation evidence completes in Story 2.1 |
+| `PRD-FR-1` Password-gated access | `SPEC-FR1..SPEC-FR19`, `SPEC-FR90..SPEC-FR105` | AD-10 through AD-18; `UX-SHELL-01`, `UX-TARGET-01`, `UX-FOCUS-01`, `UX-STATUS-01`, `UX-RESPONSIVE-01`, `UX-VISUAL-01` | Epic 1, Stories 1.1-1.9; first real mutation evidence completes in Story 2.1 |
 | `PRD-FR-2` Group lifecycle | `SPEC-FR20..SPEC-FR29` | AD-4 through AD-7, AD-10, AD-11, AD-18; `UX-SHELL-01`, `UX-FOCUS-01`, `UX-CONFIRM-01` | Epic 2, Stories 2.1-2.2 and 2.5; Spending-backed deletion proof completes in Story 3.1 |
 | `PRD-FR-3` Group-owned Participants | `SPEC-FR30..SPEC-FR42` | AD-4 through AD-8, AD-18; `UX-SHELL-01`, `UX-FOCUS-01`, `UX-CONFIRM-01` | Epics 2 and 5, Stories 2.3-2.4 and 5.4-5.5; historical-name projection is proved in Story 3.3 |
 | `PRD-FR-4` Record a Spending | `SPEC-FR43..SPEC-FR59`, `SPEC-FR64` | AD-3 through AD-7, AD-10, AD-11, AD-18; `UX-ALLOC-01`, `UX-PREVIEW-NATIVE-01`, `UX-PREVIEW-LATEST-01`, `UX-RESPONSIVE-01` | Epic 3, Stories 3.1-3.2 |
@@ -1137,56 +1137,6 @@ So that the service can shut down cleanly before ledger mutations are introduced
 **And** secrets, identifiers, SQL, values, query strings, and provider URLs do not appear in captured logs.
 
 **Requirements:** SPEC-FR105; SPEC-NFR25..SPEC-NFR27, SPEC-NFR31..SPEC-NFR34; SQLite diagnostic, root smoke-test, no-active-mutation drain, and resource-shutdown requirements. Story 2.1 completes real-mutation `SPEC-FR103` and `SPEC-FR104` evidence. No UX IDs apply because this story verifies runtime composition rather than changing rendered controls. Brownfield disposition: retain the root lifecycle coordinator and real-socket smoke boundary; remove duplicate shutdown paths, simulated mutation completion, ambiguous `Unknown`-as-rollback handling, and unbounded post-drain resource closure.
-
-### Story 1.10: Define the Pre-Production HTTPS Edge Gate
-
-As the administrator,
-I want an approved edge product and verification environment before production rollout,
-So that deployable HTTPS configuration can satisfy the fixed transport contract without guessing a vendor.
-
-**Acceptance Criteria:**
-
-**Given** Phase 4 application implementation is planned
-**When** its scope is approved
-**Then** no vendor-specific edge configuration or deployment verification is assigned to an application implementation story
-**And** Debtor retains the private HTTP/1.1 backend contract while direct insecure HTTP remains debug/local only.
-
-**Given** pre-production operations planning begins
-**When** an edge product and version are selected
-**Then** the decision records the deployment verification environment and maps each fixed edge obligation to concrete configuration and executable evidence
-**And** production rollout cannot proceed without this completed operations gate.
-
-**Given** a client request carries forwarding headers
-**When** the edge proxies it to Debtor
-**Then** the edge strips untrusted forwarding input or appends its immediate peer while preserving chain order, and its source CIDR/header mode matches `APP_TRUSTED_PROXY_CIDRS` and `APP_TRUSTED_PROXY_HEADER`
-**And** Debtor resolves identical client identity and login-limiter behavior over HTTP/3 and TCP fallback.
-
-**Given** TLS/QUIC early data is available
-**When** an unsafe request is attempted through early data
-**Then** the edge disables early data or returns `425 Too Early`; only explicitly allow-listed, replay-safe, session-free `GET` and `HEAD` routes such as probes or immutable static assets may pass early data
-**And** Login, authenticated HTML, and every route that creates, loads, refreshes, or mutates session/token state are excluded, while CSRF is never treated as replay protection.
-
-**Given** login or another form request reaches the edge
-**When** body limits are enforced
-**Then** the edge permits at most 8 KiB for `/login` and 256 KiB for other form endpoints, matching or tightening application limits
-**And** oversized input is rejected before backend mutation dispatch.
-
-**Given** backend transport is configured
-**When** the edge manages connections and timeouts
-**Then** it reuses private HTTP/1.1 backend connections and may bound connect/response-header waits
-**And** no edge request, read, write, or stream timeout can expire before an admitted post-dispatch mutation reaches definitive completion.
-
-**Given** HTTP/3 is introduced
-**When** rollout begins
-**Then** `Alt-Svc` uses a short lifetime until UDP/443 reachability and edge telemetry are verified
-**And** the lifetime is not increased until blocked UDP falls back to HTTP/2 or HTTP/1.1, unsafe early data receives `425`, and forwarded client identity matches across every protocol.
-
-**Given** edge policy is tested or documented as deployable configuration
-**When** the production contract is validated
-**Then** forwarding sanitation, protocol fallback, body limits, backend reuse/timeouts, early-data rejection, and staged `Alt-Svc` rollout have reproducible verification steps
-**And** no secret, client identity, query string, provider URL, or request-derived value is introduced into application logs.
-
-**Requirements:** SPEC-FR12, SPEC-FR100, SPEC-FR103; SPEC-NFR1, SPEC-NFR3, SPEC-NFR23..SPEC-NFR25, SPEC-NFR31..SPEC-NFR34; pre-production edge decision, vendor-specific verification environment, and fixed TLS/HTTP3, forwarding, early-data, body-limit, timeout, fallback, and rollout obligations. This is a pre-production operations gate, not a Phase 4 application implementation story. No UX IDs apply because this story defines operator/deployment readiness rather than a rendered Administrator route. Brownfield disposition: retain the private HTTP/1.1 backend and trusted-client resolver contract; remove direct production HTTP exposure, backend TLS/QUIC listeners, ambiguous forwarding modes, unsafe early-data mutation paths, and shorter post-dispatch proxy timeouts.
 
 ## Epic 2: Organize Groups and Participants
 
@@ -2200,8 +2150,8 @@ So that I can see an exact zero-sum picture of who is owed and who owes.
 
 **Given** calculation is Updating, Ready, stale/provisional, timed out, or unavailable
 **When** state changes
-**Then** one stable polite atomic status and `aria-busy` own the transition, individual amounts are not live, and unavailable replaces prior results with one no-partial block plus attempted context
-**And** revisiting Debts retries without a manual Retry control.
+**Then** one stable polite atomic status owns the transition, individual amounts are not live, and unavailable replaces prior results with one no-partial block plus attempted context
+**And** enhanced Debts uses HTMX's request class for its scoped Updating placeholder without dynamic `aria-busy`, retains the activated rate-mode radio for enhanced success and expected enhanced errors, and introduces no application-owned HTMX event handler, client-side financial state, or imperative post-swap behavior.
 
 **Given** Debts renders at 320px/400% zoom or wide composition
 **When** mode controls, long names, rates, warnings, and amounts wrap
@@ -2272,8 +2222,8 @@ So that I can compare historical obligations with what settlement means today.
 
 **Given** Current is unavailable
 **When** native/enhanced result renders
-**Then** no partial Balance/Transfer remains, focus stays on the mode control for enhanced failure or follows native result-heading rules, and revisiting/reselecting safely recalculates
-**And** no manual Retry or persisted preference appears.
+**Then** no partial Balance/Transfer remains, enhanced expected errors retain the activated rate-mode control while the scoped server-rendered status announces the failure, native full-page errors may autofocus their heading, and revisiting/reselecting safely recalculates
+**And** no manual Retry, persisted preference, application-owned HTMX event handler, client-side financial state, or imperative post-swap behavior appears.
 
 **Requirements:** SPEC-FR75..SPEC-FR83; SPEC-NFR4..SPEC-NFR5, SPEC-NFR10, SPEC-NFR12..SPEC-NFR13, SPEC-NFR25..SPEC-NFR30, SPEC-NFR32..SPEC-NFR34; non-persisted Current mode, current-class stale fallback, seven-day eligibility, exact-zero-sum reuse, disclosure, and no-partial requirements; UX contracts: `UX-SHELL-01`, `UX-TARGET-01`, `UX-FOCUS-01`, `UX-STATUS-01`, `UX-RESPONSIVE-01`, `UX-VISUAL-01`.
 

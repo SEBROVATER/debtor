@@ -14,7 +14,7 @@ use super::{
 };
 use crate::{
     state::AppState,
-    templates::{BalanceRow, DebtsTemplate, RateRow, TransferRow},
+    templates::{BalanceRow, DebtsResultsTemplate, DebtsTemplate, RateRow, TransferRow},
 };
 
 fn format_money(
@@ -160,6 +160,37 @@ pub(crate) async fn debts(
     let Ok(transfers) = transfers else {
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Unable to render debts.");
     };
+    let enhanced = headers.contains_key("hx-request");
+    if enhanced {
+        return render(&DebtsResultsTemplate {
+            has_spendings: result.has_spendings,
+            balances,
+            transfers,
+            mode: if mode == RateMode::Current {
+                "current".into()
+            } else {
+                "historical".into()
+            },
+            warning,
+            status,
+            focus_results: false,
+            calculated_at: result.calculated_at.to_rfc3339(),
+            rates: result
+                .rates
+                .into_iter()
+                .map(|r| RateRow {
+                    base: r.base.to_string(),
+                    quote: r.quote.to_string(),
+                    requested_date: r.requested_date.to_string(),
+                    fetch_date: r.fetch_date.to_string(),
+                    effective_date: r.effective_date.to_string(),
+                    rate: r.rate.to_string(),
+                    stale: r.is_stale,
+                    provisional: r.is_provisional,
+                })
+                .collect(),
+        });
+    }
     let shell = match authenticated_shell(&state, &session).await {
         Ok(shell) => shell,
         Err(response) => return response,
@@ -178,7 +209,7 @@ pub(crate) async fn debts(
         },
         warning,
         status,
-        focus_results: !headers.contains_key("hx-request"),
+        focus_results: true,
         calculated_at: result.calculated_at.to_rfc3339(),
         rates: result
             .rates
